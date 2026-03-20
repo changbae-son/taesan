@@ -1,0 +1,25 @@
+{
+  "name": "taesan-functions",
+  "description": "태산매매법 - 키움 REST API 동기화",
+  "scripts": {
+    "build": "tsc",
+    "serve": "npm run build && firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "engines": {
+    "node": "18"
+  },
+  "main": "lib/index.js",
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "firebase-functions": "^5.0.0",
+    "node-fetch": "^2.7.0",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/node-fetch": "^2.6.11"
+  },
+  "private": true
+}

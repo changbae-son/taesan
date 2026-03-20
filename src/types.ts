@@ -57,4 +57,4 @@ export interface Snapshot {
   createdAt: number;
 }
 
-export type TabType = 'list' | 'detail' | 'journal' | 'dashboard';
+export type TabType = 'list' | 'detail' | 'journal' | 'dashboard' | 'kiwoom';

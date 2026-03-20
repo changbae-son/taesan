@@ -39,7 +39,14 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
     setKiwoomStatus('loading');
     setKiwoomMsg('키움 데이터 수신 중...');
     try {
-      const res = await fetch('http://localhost:5000/sync');
+      const res = await fetch(
+        'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/kiwoomSync',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }
+      );
       const data = await res.json();
       if (data.success) {
         setKiwoomStatus('success');
@@ -50,7 +57,7 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
       }
     } catch {
       setKiwoomStatus('error');
-      setKiwoomMsg('키움 서버 미연결 (PC에서 kiwoom_server.py 실행 필요)');
+      setKiwoomMsg('키움 연동 설정이 필요합니다');
     }
     setTimeout(() => { setKiwoomStatus('idle'); setKiwoomMsg(''); }, 5000);
   };
