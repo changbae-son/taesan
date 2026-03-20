@@ -12,7 +12,8 @@ interface Props {
 }
 
 function getDotColor(stock: Stock): string {
-  const filledCount = stock.buyPlans.filter((b) => b.filled).length;
+  const plans = stock.buyPlans || [];
+  const filledCount = plans.filter((b) => b.filled).length;
   if (filledCount === 0) return '#ccc';
   if (filledCount <= 2) return '#4caf50';
   if (filledCount === 3) return '#ff9800';
@@ -20,9 +21,10 @@ function getDotColor(stock: Stock): string {
 }
 
 function getStatus(stock: Stock): string {
-  const filledBuys = stock.buyPlans.filter((b) => b.filled).length;
+  const plans = stock.buyPlans || [];
+  const filledBuys = plans.filter((b) => b.filled).length;
   if (filledBuys === 0) return '관찰';
-  if (stock.totalQuantity === 0) return '완료';
+  if ((stock.totalQuantity || 0) === 0) return '완료';
   return '보유';
 }
 
@@ -32,7 +34,7 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
   const [showAdd, setShowAdd] = useState(false);
 
   const filtered = stocks.filter((s) =>
-    s.name.toLowerCase().includes(search.toLowerCase())
+    (s.name || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const totalStocks = stocks.length;

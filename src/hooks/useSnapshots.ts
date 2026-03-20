@@ -21,6 +21,8 @@ export function useSnapshots() {
         ...d.data(),
       })) as Snapshot[];
       setSnapshots(list);
+    }, (err) => {
+      console.warn('Snapshots subscription error:', err);
     });
     return () => unsub();
   }, []);

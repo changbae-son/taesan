@@ -16,16 +16,22 @@ export function useTrades() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const timeout = setTimeout(() => setLoading(false), 3000);
     const q = query(collection(db, 'trades'), orderBy('createdAt', 'desc'));
     const unsub = onSnapshot(q, (snap) => {
+      clearTimeout(timeout);
       const list: Trade[] = snap.docs.map((d) => ({
         id: d.id,
         ...d.data(),
       })) as Trade[];
       setTrades(list);
       setLoading(false);
+    }, (err) => {
+      console.warn('Trades subscription error:', err);
+      clearTimeout(timeout);
+      setLoading(false);
     });
-    return () => unsub();
+    return () => { clearTimeout(timeout); unsub(); };
   }, []);
 
   const addTrade = useCallback(async (trade: Omit<Trade, 'id' | 'createdAt'>) => {
