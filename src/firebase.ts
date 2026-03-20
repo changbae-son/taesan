@@ -1,8 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import {
-  getFirestore,
-  enableIndexedDbPersistence,
-} from 'firebase/firestore';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyCHfH8OMl1GKxjjz9JJjZTlwRsaHJWzII0',
@@ -14,9 +11,6 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
-
-// 오프라인 지원
-enableIndexedDbPersistence(db).catch((err) => {
-  console.warn('IndexedDB persistence failed:', err.code);
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
 });
