@@ -32,6 +32,28 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
   const [search, setSearch] = useState('');
   const [newName, setNewName] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+  const [kiwoomStatus, setKiwoomStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [kiwoomMsg, setKiwoomMsg] = useState('');
+
+  const handleKiwoomSync = async () => {
+    setKiwoomStatus('loading');
+    setKiwoomMsg('키움 데이터 수신 중...');
+    try {
+      const res = await fetch('http://localhost:5000/sync');
+      const data = await res.json();
+      if (data.success) {
+        setKiwoomStatus('success');
+        setKiwoomMsg(`동기화 완료! 종목 ${data.syncedStocks}개, 체결 ${data.syncedTrades}건`);
+      } else {
+        setKiwoomStatus('error');
+        setKiwoomMsg(data.error || '동기화 실패');
+      }
+    } catch {
+      setKiwoomStatus('error');
+      setKiwoomMsg('키움 서버 미연결 (PC에서 kiwoom_server.py 실행 필요)');
+    }
+    setTimeout(() => { setKiwoomStatus('idle'); setKiwoomMsg(''); }, 5000);
+  };
 
   const filtered = stocks.filter((s) =>
     (s.name || '').toLowerCase().includes(search.toLowerCase())
@@ -106,6 +128,24 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
           </div>
         ))}
       </div>
+
+      <button
+        className={styles.kiwoomBtn}
+        onClick={handleKiwoomSync}
+        disabled={kiwoomStatus === 'loading'}
+      >
+        {kiwoomStatus === 'loading' ? '수신 중...' : '키움 데이터 받기'}
+      </button>
+      {kiwoomMsg && (
+        <div
+          className={styles.kiwoomMsg}
+          style={{
+            color: kiwoomStatus === 'success' ? '#4caf50' : kiwoomStatus === 'error' ? '#f44336' : '#666',
+          }}
+        >
+          {kiwoomMsg}
+        </div>
+      )}
 
       {showAdd ? (
         <div className={styles.addForm}>

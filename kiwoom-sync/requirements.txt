@@ -1,0 +1,2 @@
+firebase-admin>=6.0.0
+pykiwoom>=0.3.0

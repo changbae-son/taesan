@@ -1,0 +1,37 @@
+========================================
+  키움 동기화 서버 설치 가이드
+========================================
+
+[사전 준비]
+1. 키움증권 OpenAPI+ 신청 (영웅문 > 도구 > OpenAPI+ 사용 신청)
+2. 키움 OpenAPI+ 모듈 설치 (키움 홈페이지 > 고객센터 > OpenAPI)
+3. Python 32bit 설치 (키움 API는 32bit만 지원)
+   https://www.python.org/downloads/
+
+[Firebase 서비스 계정 키 발급]
+1. Firebase 콘솔 접속: https://console.firebase.google.com
+2. teasan-f4c17 프로젝트 선택
+3. 설정(톱니바퀴) > 프로젝트 설정 > 서비스 계정
+4. "새 비공개 키 생성" 버튼 클릭
+5. 다운로드된 JSON 파일을 이 폴더에 복사
+6. 파일명을 "firebase-service-account.json"으로 변경
+
+[설치]
+1. 명령 프롬프트(cmd)를 관리자 권한으로 실행
+2. 이 폴더로 이동:
+   cd "C:\종목 검색기\taesan-web\kiwoom-sync"
+3. 필요 패키지 설치:
+   pip install -r requirements.txt
+
+[실행]
+1. 키움 HTS(영웅문) 실행 & 로그인
+2. 명령 프롬프트에서:
+   python kiwoom_server.py
+3. "키움 OpenAPI+ 로그인 성공" 메시지 확인
+4. 웹앱(taesank.netlify.app)에서 "키움 데이터 받기" 버튼 클릭
+
+[주의사항]
+- 키움 HTS가 실행된 상태에서만 동작합니다
+- 32bit Python에서만 동작합니다
+- 장중에만 실시간 데이터가 정확합니다
+- 동기화 서버는 PC가 켜져 있는 동안만 동작합니다
