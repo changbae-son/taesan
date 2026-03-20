@@ -1,0 +1,322 @@
+.container {
+  padding: 24px;
+  max-width: 900px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.badge {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.deleteBtn {
+  margin-left: auto;
+  padding: 6px 14px;
+  background: #fff;
+  color: #f44336;
+  border: 1px solid #f44336;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.deleteBtn:hover {
+  background: #fde;
+}
+
+/* 알림 */
+.alertRed {
+  padding: 10px 14px;
+  background: #fdecea;
+  color: #d32f2f;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.alertOrange {
+  padding: 10px 14px;
+  background: #fff3e0;
+  color: #e65100;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.alertBlue {
+  padding: 10px 14px;
+  background: #e3f2fd;
+  color: #1565c0;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+/* 룰 토글 */
+.ruleToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.ruleLabel {
+  font-size: 14px;
+  font-weight: 600;
+  color: #555;
+}
+
+.ruleBtn {
+  padding: 6px 14px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+
+.ruleActive {
+  background: #e8f5e9;
+  border-color: #4caf50;
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.ruleBActive {
+  background: #e3f2fd;
+  border-color: #1565c0;
+  color: #1565c0;
+  font-weight: 600;
+}
+
+.chip {
+  display: inline-block;
+  padding: 3px 8px;
+  background: #fff3e0;
+  color: #e65100;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* 카드 */
+.card {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.cardTitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 12px;
+}
+
+/* 입력 그리드 */
+.inputGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.inputGrid label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: #666;
+  font-weight: 600;
+}
+
+.inputGrid input {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+}
+
+.inputGrid input:focus {
+  border-color: #4a90d9;
+}
+
+.inputGrid input[readonly] {
+  background: #f8f9fa;
+  color: #ff9800;
+  font-weight: 600;
+}
+
+/* 요약바 */
+.summary {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.summaryItem {
+  flex: 1;
+  min-width: 100px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 12px;
+  text-align: center;
+}
+
+.summaryLabel {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 4px;
+}
+
+.summaryValue {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+/* 테이블 */
+.planTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.planTable th {
+  background: #f8f9fa;
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 600;
+  color: #555;
+  border-bottom: 2px solid #e0e0e0;
+}
+
+.planTable td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.numCell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.filledRow {
+  background: #e8f5e9 !important;
+}
+
+.sellFilledRow {
+  background: #fdecea !important;
+}
+
+.maFilledRow {
+  background: #fff3e0 !important;
+}
+
+.fillBtn {
+  padding: 4px 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.fillBtnActive {
+  background: #4caf50;
+  color: #fff;
+  border-color: #4caf50;
+}
+
+.sellBtnActive {
+  background: #f44336;
+  color: #fff;
+  border-color: #f44336;
+}
+
+.maBtnActive {
+  background: #ff9800;
+  color: #fff;
+  border-color: #ff9800;
+}
+
+.nextChip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: #fff9c4;
+  color: #f57f17;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.sellNote {
+  margin-top: 10px;
+  font-size: 13px;
+  color: #555;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.maWarning {
+  color: #ff9800;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 10px;
+}
+
+.maInput {
+  width: 100px;
+  padding: 4px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 13px;
+  text-align: right;
+}
+
+.maInput:focus {
+  border-color: #ff9800;
+  outline: none;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 12px;
+  }
+  .summary {
+    flex-direction: column;
+  }
+  .summaryItem {
+    min-width: auto;
+  }
+  .inputGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .maInput {
+    width: 70px;
+  }
+}

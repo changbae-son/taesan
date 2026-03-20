@@ -1,0 +1,112 @@
+.container {
+  padding: 24px;
+  max-width: 1000px;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 16px;
+  color: #333;
+}
+
+.kpiGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.kpiCard {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 16px;
+  text-align: center;
+}
+
+.kpiLabel {
+  display: block;
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.kpiValue {
+  font-size: 24px;
+  font-weight: 700;
+  color: #333;
+}
+
+.chartCard {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.chartTitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 12px;
+  color: #333;
+}
+
+.patternGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.patternItem {
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.patternLabel {
+  display: block;
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 6px;
+}
+
+.patternValue {
+  font-size: 16px;
+  font-weight: 700;
+  color: #333;
+}
+
+.tagSection {
+  margin-top: 16px;
+}
+
+.tagList {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.tagBadge {
+  padding: 4px 10px;
+  background: #e8f0fe;
+  color: #4a90d9;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 12px;
+  }
+  .kpiGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .patternGrid {
+    grid-template-columns: 1fr;
+  }
+}

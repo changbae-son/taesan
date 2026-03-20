@@ -1,0 +1,232 @@
+.container {
+  padding: 24px;
+  max-width: 900px;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 16px;
+  color: #333;
+}
+
+.form {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.formRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.formRow label,
+.memoLabel {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: #666;
+  font-weight: 600;
+}
+
+.formRow input,
+.formRow select {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+}
+
+.formRow input:focus,
+.formRow select:focus {
+  border-color: #4a90d9;
+}
+
+.memoLabel {
+  margin-bottom: 12px;
+}
+
+.memoLabel textarea {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.memoLabel textarea:focus {
+  border-color: #4a90d9;
+}
+
+.submitBtn {
+  padding: 10px 24px;
+  background: #4a90d9;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-right: 8px;
+}
+
+.submitBtn:hover {
+  background: #3a7bc8;
+}
+
+.cancelEditBtn {
+  padding: 10px 24px;
+  background: #eee;
+  color: #666;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filterInput {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  flex: 1;
+}
+
+.filterInput:focus {
+  border-color: #4a90d9;
+}
+
+.monthGroup {
+  margin-bottom: 20px;
+}
+
+.monthTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: #555;
+  margin: 0 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.tradeCard {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  padding: 12px 16px;
+  margin-bottom: 8px;
+}
+
+.tradeHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tradeDate {
+  font-size: 12px;
+  color: #888;
+}
+
+.tradeType {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tradeStock {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tradePrice {
+  font-size: 13px;
+  color: #555;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.tradeMemo {
+  font-size: 13px;
+  color: #666;
+  margin: 8px 0 0;
+  line-height: 1.5;
+}
+
+.tradeTags {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.tag {
+  padding: 2px 8px;
+  background: #e8f0fe;
+  color: #4a90d9;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tradeActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tradeActions button {
+  padding: 4px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  color: #666;
+}
+
+.tradeActions button:hover {
+  background: #f5f5f5;
+}
+
+.empty {
+  text-align: center;
+  color: #999;
+  padding: 40px;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 12px;
+  }
+  .formRow {
+    grid-template-columns: 1fr;
+  }
+  .filters {
+    flex-direction: column;
+  }
+  .tradeHeader {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .tradePrice {
+    margin-left: 0;
+  }
+}
