@@ -254,6 +254,7 @@ export default function StockDetail({
               <th>차수</th>
               <th>매수가</th>
               <th>수량</th>
+              <th>체결일</th>
               <th>체결</th>
             </tr>
           </thead>
@@ -278,6 +279,9 @@ export default function StockDetail({
                   {bp.price.toLocaleString()}
                 </td>
                 <td className={styles.numCell}>{bp.quantity.toLocaleString()}</td>
+                <td className={styles.dateCell}>
+                  {bp.filledDate || '-'}
+                </td>
                 <td>
                   <button
                     className={`${styles.fillBtn} ${bp.filled ? styles.fillBtnActive : ''}`}
@@ -303,6 +307,7 @@ export default function StockDetail({
               <th>목표</th>
               <th>매도가</th>
               <th>수량</th>
+              <th>체결일</th>
               <th>체결</th>
             </tr>
           </thead>
@@ -314,6 +319,9 @@ export default function StockDetail({
                   {sp.price.toLocaleString()}
                 </td>
                 <td className={styles.numCell}>{sp.quantity.toLocaleString()}</td>
+                <td className={styles.dateCell}>
+                  {sp.filledDate || '-'}
+                </td>
                 <td>
                   <button
                     className={`${styles.fillBtn} ${sp.filled ? styles.sellBtnActive : ''}`}

@@ -3,6 +3,7 @@ export interface BuyPlan {
   price: number;
   quantity: number;
   filled: boolean;
+  filledDate?: string; // 체결일 (YYYY-MM-DD)
 }
 
 export interface SellPlan {
@@ -10,6 +11,7 @@ export interface SellPlan {
   price: number;
   quantity: number;
   filled: boolean;
+  filledDate?: string; // 체결일 (YYYY-MM-DD)
 }
 
 export interface MASell {

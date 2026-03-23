@@ -255,6 +255,129 @@ async function fetchTradeHistory(
   return allTrades;
 }
 
+// ─── 체결내역을 종목별 매수/매도 차수에 매핑 ───
+function mapTradesToPlans(
+  trades: any[],
+  stockName: string,
+  holdings: any
+): {buyPlans: any[]; sellPlans: any[]; sellCount: number; firstBuyPrice: number; firstBuyQty: number} {
+  // 해당 종목의 체결내역을 날짜+시간 순으로 정렬
+  const stockTrades = trades
+    .filter((t) => t.name === stockName)
+    .sort((a, b) => {
+      const dateCompare = (a.date || "").localeCompare(b.date || "");
+      if (dateCompare !== 0) return dateCompare;
+      return (a.time || "").localeCompare(b.time || "");
+    });
+
+  const buys = stockTrades.filter((t) => t.type === "buy");
+  const sells = stockTrades.filter((t) => t.type === "sell");
+
+  // 매수 차수 매핑: 같은 날짜의 매수는 같은 차수로 묶음
+  const buyByDate: Record<string, {totalQty: number; totalAmt: number; date: string}> = {};
+  for (const b of buys) {
+    const dt = b.date || "";
+    if (!buyByDate[dt]) {
+      buyByDate[dt] = {totalQty: 0, totalAmt: 0, date: dt};
+    }
+    buyByDate[dt].totalQty += b.quantity;
+    buyByDate[dt].totalAmt += b.price * b.quantity;
+  }
+
+  const buyDates = Object.keys(buyByDate).sort();
+  const firstBuy = buyDates.length > 0 ? buyByDate[buyDates[0]] : null;
+  const firstBuyPrice = firstBuy ? Math.round(firstBuy.totalAmt / firstBuy.totalQty) : (holdings?.avgPrice || 0);
+  const firstBuyQty = firstBuy ? firstBuy.totalQty : (holdings?.quantity || 0);
+
+  // 매수 계획 생성 (최대 5차)
+  const buyPlans = [];
+  for (let i = 0; i < 5; i++) {
+    const buyDate = buyDates[i];
+    const buyData = buyDate ? buyByDate[buyDate] : null;
+
+    if (buyData) {
+      const avgPrice = Math.round(buyData.totalAmt / buyData.totalQty);
+      const formattedDate = buyDate.length === 8
+        ? `${buyDate.slice(0, 4)}-${buyDate.slice(4, 6)}-${buyDate.slice(6, 8)}`
+        : buyDate;
+      buyPlans.push({
+        level: i + 1,
+        price: avgPrice,
+        quantity: buyData.totalQty,
+        filled: true,
+        filledDate: formattedDate,
+      });
+    } else {
+      // 미체결 차수: 이전 차수 기준 -10%
+      const prevPrice: number = i > 0 && buyPlans[i - 1]
+        ? (buyPlans[i - 1].price as number)
+        : firstBuyPrice;
+      buyPlans.push({
+        level: i + 1,
+        price: prevPrice > 0 ? Math.round(prevPrice * 0.9) : 0,
+        quantity: firstBuyQty,
+        filled: false,
+        filledDate: "",
+      });
+    }
+  }
+
+  // 평균단가 계산 (체결된 매수만)
+  let totalCost = 0;
+  let totalQty = 0;
+  for (const bp of buyPlans) {
+    if (bp.filled) {
+      totalCost += bp.price * bp.quantity;
+      totalQty += bp.quantity;
+    }
+  }
+  const avgPrice = totalQty > 0 ? Math.round(totalCost / totalQty) : firstBuyPrice;
+
+  // 매도 차수 매핑: 같은 날짜의 매도는 같은 차수로 묶음
+  const sellByDate: Record<string, {totalQty: number; totalAmt: number; date: string}> = {};
+  for (const s of sells) {
+    const dt = s.date || "";
+    if (!sellByDate[dt]) {
+      sellByDate[dt] = {totalQty: 0, totalAmt: 0, date: dt};
+    }
+    sellByDate[dt].totalQty += s.quantity;
+    sellByDate[dt].totalAmt += s.price * s.quantity;
+  }
+
+  const sellDates = Object.keys(sellByDate).sort();
+  const sellCount = sellDates.length;
+
+  // 수익 매도 계획 (5단계)
+  const percents = [5, 10, 15, 20, 25];
+  const sellPlans = percents.map((p, i) => {
+    const sellDate = sellDates[i];
+    const sellData = sellDate ? sellByDate[sellDate] : null;
+
+    if (sellData) {
+      const sellAvgPrice = Math.round(sellData.totalAmt / sellData.totalQty);
+      const formattedDate = sellDate.length === 8
+        ? `${sellDate.slice(0, 4)}-${sellDate.slice(4, 6)}-${sellDate.slice(6, 8)}`
+        : sellDate;
+      return {
+        percent: p,
+        price: sellAvgPrice,
+        quantity: sellData.totalQty,
+        filled: true,
+        filledDate: formattedDate,
+      };
+    }
+    return {
+      percent: p,
+      price: avgPrice > 0 ? Math.round(avgPrice * (1 + p / 100)) : 0,
+      quantity: totalQty > 0 ? Math.round(totalQty * 0.2) : 0,
+      filled: false,
+      filledDate: "",
+    };
+  });
+
+  return {buyPlans, sellPlans, sellCount, firstBuyPrice, firstBuyQty};
+}
+
 // ─── Firestore에 동기화 ───
 async function syncToFirestore(
   holdings: any[],
@@ -276,33 +399,25 @@ async function syncToFirestore(
 
   // 잔고 동기화
   for (const h of holdings) {
+    // 체결내역으로 매수/매도 차수 매핑
+    const mapped = mapTradesToPlans(trades, h.name, h);
+
     if (h.name in existingStocks) {
-      // 기존 종목 업데이트
+      // 기존 종목 업데이트 (체결내역 기반 차수 반영)
       await db.collection("stocks").doc(existingStocks[h.name]).update({
         currentPrice: h.currentPrice,
         avgPrice: h.avgPrice,
         totalQuantity: h.quantity,
+        buyPlans: mapped.buyPlans,
+        sellPlans: mapped.sellPlans,
+        sellCount: mapped.sellCount,
+        firstBuyPrice: mapped.firstBuyPrice,
+        firstBuyQuantity: mapped.firstBuyQty,
         updatedAt: now,
       });
     } else {
       // 새 종목 추가
       const docId = `stock_${now}_${syncedStocks}`;
-      const buyPlans = [];
-      for (let i = 0; i < 5; i++) {
-        buyPlans.push({
-          level: i + 1,
-          price: i === 0 ? h.avgPrice : Math.round(h.avgPrice * Math.pow(0.9, i)),
-          quantity: i === 0 ? h.quantity : h.quantity,
-          filled: i === 0,
-        });
-      }
-
-      const sellPlans = [5, 10, 15, 20, 25].map((p) => ({
-        percent: p,
-        price: Math.round(h.avgPrice * (1 + p / 100)),
-        quantity: Math.round(h.quantity * 0.2),
-        filled: false,
-      }));
 
       const maSells = [20, 60, 120].map((ma) => ({
         ma,
@@ -314,15 +429,15 @@ async function syncToFirestore(
       await db.collection("stocks").doc(docId).set({
         name: h.name,
         rule: "A",
-        firstBuyPrice: h.avgPrice,
-        firstBuyQuantity: h.quantity,
+        firstBuyPrice: mapped.firstBuyPrice,
+        firstBuyQuantity: mapped.firstBuyQty,
         currentPrice: h.currentPrice,
         avgPrice: h.avgPrice,
         totalQuantity: h.quantity,
-        buyPlans,
-        sellPlans,
+        buyPlans: mapped.buyPlans,
+        sellPlans: mapped.sellPlans,
         maSells,
-        sellCount: 0,
+        sellCount: mapped.sellCount,
         createdAt: now,
         updatedAt: now,
       });

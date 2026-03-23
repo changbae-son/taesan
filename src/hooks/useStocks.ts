@@ -54,13 +54,14 @@ export function recalcStock(stock: Stock): Stock {
   if (firstBuyPrice > 0 && firstBuyQuantity > 0) {
     s.buyPlans = s.buyPlans.map((bp, i) => {
       if (i === 0) {
-        return { ...bp, price: firstBuyPrice, quantity: firstBuyQuantity };
+        return { ...bp, price: firstBuyPrice, quantity: firstBuyQuantity, filledDate: bp.filledDate };
       }
       const prevPrice = s.buyPlans[i - 1].price || firstBuyPrice * Math.pow(0.9, i);
       return {
         ...bp,
         price: bp.price || Math.round(prevPrice * 0.9),
         quantity: bp.quantity || firstBuyQuantity,
+        filledDate: bp.filledDate,
       };
     });
   }
@@ -93,7 +94,7 @@ export function recalcStock(stock: Stock): Stock {
     s.sellPlans = s.sellPlans.map((sp) => {
       const sellPrice = Math.round(s.avgPrice * (1 + sp.percent / 100));
       const sellQty = Math.round(totalQty * 0.2);
-      return { ...sp, price: sellPrice, quantity: sellQty };
+      return { ...sp, price: sp.filled ? sp.price : sellPrice, quantity: sp.filled ? sp.quantity : sellQty, filledDate: sp.filledDate };
     });
 
     // MA 매도 손익% 계산은 UI에서 표시
