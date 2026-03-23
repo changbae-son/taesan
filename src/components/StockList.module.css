@@ -9,77 +9,66 @@
   color: #333;
 }
 
-.tableWrap {
-  overflow-x: auto;
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.emptyCard {
+  text-align: center;
+  padding: 60px 20px;
+  color: #999;
+  font-size: 15px;
   background: #fff;
-  border-radius: 8px;
+  border-radius: 10px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.table th {
-  background: #f8f9fa;
-  padding: 12px 10px;
-  text-align: left;
-  font-weight: 600;
-  color: #555;
-  border-bottom: 2px solid #e0e0e0;
-  white-space: nowrap;
-}
-
-.table td {
-  padding: 10px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.row {
+/* 카드 */
+.card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  padding: 16px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: box-shadow 0.15s, transform 0.15s;
 }
 
-.row:hover {
-  background: #f5f8ff;
+.card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  transform: translateY(-1px);
 }
 
-.name {
-  font-weight: 600;
-  color: #333;
+/* 헤더 */
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
 }
 
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
+.stockName {
+  font-size: 16px;
+  font-weight: 700;
+  color: #222;
+}
+
+.headerRight {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.statusBadge {
+  padding: 3px 8px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 600;
 }
 
-.dots {
-  display: flex;
-  gap: 4px;
-}
-
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
 .ruleBadge {
-  display: inline-block;
-  padding: 2px 8px;
+  padding: 3px 8px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 700;
@@ -87,21 +76,149 @@
   color: #4a90d9;
 }
 
-.empty {
-  text-align: center;
-  padding: 40px !important;
-  color: #999;
+/* 진행 상태 */
+.progressSection {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 14px;
 }
 
+.progressItem {
+  flex: 1;
+}
+
+.progressLabel {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #666;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.progressCount {
+  font-size: 12px;
+  font-weight: 700;
+  color: #444;
+}
+
+.progressBar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dots {
+  display: flex;
+  gap: 5px;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #e0e0e0;
+  transition: background 0.2s;
+}
+
+.dotFilled {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.dotSellFilled {
+  background: #f44336;
+  box-shadow: 0 1px 3px rgba(244, 67, 54, 0.3);
+}
+
+.bar {
+  height: 4px;
+  background: #f0f0f0;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* 수치 */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid #f0f0f0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.metricItem {
+  text-align: center;
+}
+
+.metricLabel {
+  display: block;
+  font-size: 11px;
+  color: #999;
+  margin-bottom: 2px;
+}
+
+.metricValue {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  font-variant-numeric: tabular-nums;
+}
+
+.profitValue {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 다음 매수/매도 */
+.nextActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.nextBuy {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-radius: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.nextSell {
+  font-size: 12px;
+  padding: 4px 10px;
+  background: #fdecea;
+  color: #c62828;
+  border-radius: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 모바일 */
 @media (max-width: 768px) {
   .container {
     padding: 12px;
   }
-  .table {
-    font-size: 12px;
+
+  .grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
   }
-  .table th,
-  .table td {
-    padding: 8px 6px;
+
+  .metrics {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
   }
 }

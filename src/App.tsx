@@ -130,7 +130,7 @@ export default function App() {
 
         <div className="content">
           {activeTab === 'list' && (
-            <StockList stocks={stocks} onSelect={handleSelectStock} />
+            <StockList stocks={stocks} trades={trades} onSelect={handleSelectStock} />
           )}
           {activeTab === 'detail' &&
             (selectedStock ? (
