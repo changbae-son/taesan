@@ -114,8 +114,8 @@ async function fetchHoldings(
     }));
 }
 
-// ─── 체결 내역 조회 (ka10076 체결요청) ───
-async function fetchTradeHistory(
+// ─── 당일 체결 내역 조회 (ka10076 체결요청) ───
+async function fetchTodayTrades(
   config: KiwoomConfig,
   token: string
 ): Promise<any[]> {
@@ -128,33 +128,131 @@ async function fetchTradeHistory(
         "api-id": "ka10076",
       },
       body: JSON.stringify({
-        acctNo: config.accountNo.replace("-", ""),
+        qry_tp: "0",
+        sell_tp: "0",
+        stex_tp: "1",
       }),
     });
 
     const data = await res.json() as any;
-
-    if (data.return_code && data.return_code !== "0") {
-      console.log("체결내역 조회 실패 (무시):", data.return_msg);
+    if (data.return_code && data.return_code !== 0 && data.return_code !== "0") {
+      console.log("당일 체결 조회 실패:", data.return_msg);
       return [];
     }
 
-    // 체결 내역이 있으면 파싱
-    const trades = data.output || data.list || [];
-    return Array.isArray(trades) ? trades.map((item: any) => ({
-      name: (item.stk_nm || item.prdt_name || "").trim(),
-      code: (item.stk_cd || item.pdno || "").trim(),
-      type: (item.sll_buy_dvsn || "").includes("매도") ? "sell" : "buy",
-      price: parseInt(item.ccld_prc || item.avg_prc || "0"),
-      quantity: parseInt(item.ccld_qty || item.tot_qty || "0"),
-      date: item.ord_dt || item.ccld_dt || "",
-      time: item.ccld_tm || "",
-      orderNo: item.odno || "",
-    })) : [];
+    const trades = data.cntr || [];
+    return Array.isArray(trades) ? trades
+      .filter((item: any) => parseInt(item.cntr_qty || "0") > 0)
+      .map((item: any) => ({
+        name: (item.stk_nm || "").trim(),
+        code: (item.stk_cd || "").trim(),
+        type: (item.trde_tp || "").includes("매도") ? "sell" : "buy",
+        price: parseInt(item.cntr_pric || "0"),
+        quantity: parseInt(item.cntr_qty || "0"),
+        date: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+        time: item.ord_tm || "",
+        orderNo: item.ord_no || "",
+      })) : [];
   } catch (err) {
-    console.log("체결내역 조회 스킵:", err);
+    console.log("당일 체결 조회 스킵:", err);
     return [];
   }
+}
+
+// ─── 기간별 체결 내역 조회 (kt00007 계좌별주문체결내역상세요청) ───
+async function fetchTradeHistory(
+  config: KiwoomConfig,
+  token: string,
+  startDate?: string,
+  endDate?: string
+): Promise<any[]> {
+  const allTrades: any[] = [];
+  const start = startDate || new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const end = endDate || new Date().toISOString().slice(0, 10).replace(/-/g, "");
+
+  // 날짜 범위를 하루씩 순회 (kt00007은 하루 단위 조회)
+  const dates: string[] = [];
+  const startD = new Date(start.slice(0, 4) + "-" + start.slice(4, 6) + "-" + start.slice(6, 8));
+  const endD = new Date(end.slice(0, 4) + "-" + end.slice(4, 6) + "-" + end.slice(6, 8));
+
+  for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
+    const day = d.getDay();
+    if (day === 0 || day === 6) continue; // 주말 제외
+    const yyyymmdd = d.toISOString().slice(0, 10).replace(/-/g, "");
+    dates.push(yyyymmdd);
+  }
+
+  console.log(`체결 내역 조회: ${dates.length}일 (${start} ~ ${end})`);
+
+  for (const dt of dates) {
+    try {
+      let nextKey = "";
+      let hasMore = true;
+
+      while (hasMore) {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json; charset=utf-8",
+          "authorization": `Bearer ${token}`,
+          "api-id": "kt00007",
+        };
+        if (nextKey) {
+          headers["cont-yn"] = "Y";
+          headers["next-key"] = nextKey;
+        }
+
+        const res = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            ord_dt: dt,
+            qry_tp: "4",
+            stk_bond_tp: "1",
+            sell_tp: "0",
+            stk_cd: "",
+            fr_ord_no: "",
+            dmst_stex_tp: "0",
+          }),
+        });
+
+        const data = await res.json() as any;
+        if (data.return_code && data.return_code !== 0 && data.return_code !== "0") {
+          break;
+        }
+
+        const trades = data.acnt_ord_cntr_prps_dtl || [];
+        if (Array.isArray(trades)) {
+          for (const item of trades) {
+            const qty = parseInt(item.cntr_qty || "0");
+            if (qty > 0) {
+              allTrades.push({
+                name: (item.stk_nm || "").trim(),
+                code: (item.stk_cd || "").trim(),
+                type: (item.trde_tp || item.io_tp_nm || "").includes("매도") ? "sell" : "buy",
+                price: parseInt(item.cntr_uv || "0"),
+                quantity: qty,
+                date: dt,
+                time: item.ord_tm || "",
+                orderNo: item.ord_no || "",
+              });
+            }
+          }
+        }
+
+        // 연속 조회 체크
+        const contYn = res.headers.get("cont-yn") || "";
+        nextKey = res.headers.get("next-key") || "";
+        hasMore = contYn === "Y" && !!nextKey;
+      }
+
+      // API 호출 간격 (초당 5회 제한 방지)
+      await new Promise((r) => setTimeout(r, 250));
+    } catch (err) {
+      console.log(`${dt} 체결 조회 스킵:`, err);
+    }
+  }
+
+  console.log(`총 ${allTrades.length}건 체결 내역 조회 완료`);
+  return allTrades;
 }
 
 // ─── Firestore에 동기화 ───
@@ -285,11 +383,18 @@ export const kiwoomSync = functions
         const config = await getKiwoomConfig();
         const token = await getAccessToken(config);
 
+        // 날짜 파라미터 (body에서 받음)
+        const body = req.body || {};
+        const startDate = body.startDate || undefined;
+        const endDate = body.endDate || undefined;
+
         // 잔고 + 체결내역 조회
-        const [holdings, trades] = await Promise.all([
+        const [holdings, todayTrades, historyTrades] = await Promise.all([
           fetchHoldings(config, token),
-          fetchTradeHistory(config, token),
+          fetchTodayTrades(config, token),
+          startDate ? fetchTradeHistory(config, token, startDate, endDate) : Promise.resolve([]),
         ]);
+        const trades = [...historyTrades, ...todayTrades];
 
         // Firestore에 동기화
         const result = await syncToFirestore(holdings, trades);

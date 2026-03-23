@@ -47,6 +47,26 @@
   color: #888;
 }
 
+.dateRow {
+  margin-bottom: 12px;
+}
+
+.dateLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dateInput {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
 .syncBtn {
   width: 100%;
   padding: 14px;

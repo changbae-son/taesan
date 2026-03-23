@@ -39,12 +39,13 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
     setKiwoomStatus('loading');
     setKiwoomMsg('키움 데이터 수신 중...');
     try {
+      const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
       const res = await fetch(
         'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/kiwoomSync',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ startDate: today, endDate: today }),
         }
       );
       const data = await res.json();

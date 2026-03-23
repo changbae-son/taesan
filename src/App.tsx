@@ -18,12 +18,33 @@ export default function App() {
   const { snapshots, addSnapshot } = useSnapshots();
   const { visible, message, showToast } = useToast();
 
-  const [activeTab, setActiveTab] = useState<TabType>('list');
+  const getTabFromHash = (): TabType => {
+    const hash = window.location.hash.replace('#', '') || 'list';
+    const validTabs: TabType[] = ['list', 'detail', 'journal', 'dashboard', 'kiwoom'];
+    return validTabs.includes(hash as TabType) ? (hash as TabType) : 'list';
+  };
+
+  const [activeTab, setActiveTab] = useState<TabType>(getTabFromHash());
   const [selectedStockId, setSelectedStockId] = useState<string | null>(null);
   const [synced, setSynced] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const selectedStock = stocks.find((s) => s.id === selectedStockId) || null;
+
+  // URL 해시 변경 시 탭 동기화 (뒤로가기 지원)
+  useEffect(() => {
+    const handleHashChange = () => {
+      setActiveTab(getTabFromHash());
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  // 탭 변경 시 URL 해시 업데이트
+  const changeTab = (tab: TabType) => {
+    window.location.hash = tab;
+    setActiveTab(tab);
+  };
 
   useEffect(() => {
     setSynced(false);
@@ -33,14 +54,14 @@ export default function App() {
 
   const handleSelectStock = (id: string) => {
     setSelectedStockId(id);
-    setActiveTab('detail');
+    changeTab('detail');
     setMobileMenuOpen(false);
   };
 
   const handleAddStock = async (name: string) => {
     const id = await addStock(name);
     setSelectedStockId(id);
-    setActiveTab('detail');
+    changeTab('detail');
     showToast('종목이 추가되었습니다');
   };
 
@@ -52,7 +73,7 @@ export default function App() {
   const handleDeleteStock = (id: string) => {
     removeStock(id);
     setSelectedStockId(null);
-    setActiveTab('list');
+    changeTab('list');
     showToast('종목이 삭제되었습니다');
   };
 
@@ -81,7 +102,7 @@ export default function App() {
           onSelect={handleSelectStock}
           onAdd={handleAddStock}
           onTabChange={(tab) => {
-            setActiveTab(tab);
+            changeTab(tab);
             setMobileMenuOpen(false);
           }}
           synced={synced}
@@ -95,7 +116,7 @@ export default function App() {
               <button
                 key={tab}
                 className={`tab ${activeTab === tab ? 'tab-active' : ''}`}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => changeTab(tab)}
               >
                 {tab === 'list' && '전체 리스트'}
                 {tab === 'detail' && '종목 상세'}

@@ -26,6 +26,7 @@ export default function KiwoomSettings() {
   const [syncMsg, setSyncMsg] = useState('');
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState(false);
+  const [startDate, setStartDate] = useState('2026-02-01');
 
   // 설정 불러오기
   useEffect(() => {
@@ -62,7 +63,7 @@ export default function KiwoomSettings() {
     try {
       await setDoc(doc(db, 'settings', 'kiwoom'), {
         ...config,
-        baseUrl: 'https://openapi.koreainvestment.com:9443',
+        baseUrl: 'https://api.kiwoom.com',
         updatedAt: Date.now(),
       });
       setSaved(true);
@@ -82,7 +83,10 @@ export default function KiwoomSettings() {
       const res = await fetch(`${FUNCTIONS_BASE}/kiwoomSync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          startDate: startDate.replace(/-/g, ''),
+          endDate: new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+        }),
       });
       const data = await res.json();
 
@@ -121,6 +125,19 @@ export default function KiwoomSettings() {
         <span className={styles.statusDot} style={{ background: configured ? '#4caf50' : '#ccc' }} />
         <span>{configured ? 'API 설정 완료' : 'API 설정 필요'}</span>
         {lastSync && <span className={styles.lastSync}>마지막 동기화: {lastSync}</span>}
+      </div>
+
+      {/* 조회 시작일 */}
+      <div className={styles.dateRow}>
+        <label className={styles.dateLabel}>
+          체결 조회 시작일
+          <input
+            className={styles.dateInput}
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+        </label>
       </div>
 
       {/* 동기화 버튼 */}
