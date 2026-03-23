@@ -8,12 +8,13 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import type { Stock, Snapshot } from '../types';
+import type { Stock, Trade, Snapshot } from '../types';
 import { recalcStock } from '../hooks/useStocks';
 import styles from './StockDetail.module.css';
 
 interface Props {
   stock: Stock;
+  trades: Trade[];
   snapshots: Snapshot[];
   onSave: (stock: Stock) => void;
   onDelete: (id: string) => void;
@@ -22,6 +23,7 @@ interface Props {
 
 export default function StockDetail({
   stock,
+  trades,
   snapshots,
   onSave,
   onDelete,
@@ -101,6 +103,38 @@ export default function StockDetail({
 
   // 다음 매수 차수 인덱스
   const nextBuyIdx = local.buyPlans.findIndex((b) => !b.filled);
+
+  // 매매일지에서 해당 종목의 실제 매수/매도 내역
+  const stockTrades = trades
+    .filter((t) => t.stockName === local.name)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const actualBuys = stockTrades.filter((t) => t.type === 'buy');
+  const actualSells = stockTrades.filter((t) => t.type === 'sell');
+
+  // 매수를 날짜별로 그룹핑
+  const buysByDate: { date: string; qty: number; amt: number }[] = [];
+  const buyDateMap: Record<string, { qty: number; amt: number }> = {};
+  for (const b of actualBuys) {
+    if (!buyDateMap[b.date]) buyDateMap[b.date] = { qty: 0, amt: 0 };
+    buyDateMap[b.date].qty += b.quantity;
+    buyDateMap[b.date].amt += b.price * b.quantity;
+  }
+  Object.keys(buyDateMap).sort().forEach((d) => {
+    buysByDate.push({ date: d, ...buyDateMap[d] });
+  });
+
+  // 매도를 날짜별로 그룹핑
+  const sellsByDate: { date: string; qty: number; amt: number; trades: Trade[] }[] = [];
+  const sellDateMap: Record<string, { qty: number; amt: number; trades: Trade[] }> = {};
+  for (const s of actualSells) {
+    if (!sellDateMap[s.date]) sellDateMap[s.date] = { qty: 0, amt: 0, trades: [] };
+    sellDateMap[s.date].qty += s.quantity;
+    sellDateMap[s.date].amt += s.price * s.quantity;
+    sellDateMap[s.date].trades.push(s);
+  }
+  Object.keys(sellDateMap).sort().forEach((d) => {
+    sellsByDate.push({ date: d, ...sellDateMap[d] });
+  });
 
   return (
     <div className={styles.container}>
@@ -252,46 +286,60 @@ export default function StockDetail({
           <thead>
             <tr>
               <th>차수</th>
-              <th>매수가</th>
+              <th>계획가</th>
+              <th>실제 매수가</th>
               <th>수량</th>
               <th>체결일</th>
               <th>체결</th>
             </tr>
           </thead>
           <tbody>
-            {local.buyPlans.map((bp, i) => (
-              <tr
-                key={i}
-                className={bp.filled ? styles.filledRow : ''}
-                style={
-                  i === nextBuyIdx && !bp.filled
-                    ? { background: '#fffde7' }
-                    : undefined
-                }
-              >
-                <td>
-                  {bp.level}차
-                  {i === nextBuyIdx && !bp.filled && (
-                    <span className={styles.nextChip}>다음 매수</span>
-                  )}
-                </td>
-                <td className={styles.numCell}>
-                  {bp.price.toLocaleString()}
-                </td>
-                <td className={styles.numCell}>{bp.quantity.toLocaleString()}</td>
-                <td className={styles.dateCell}>
-                  {bp.filledDate || '-'}
-                </td>
-                <td>
-                  <button
-                    className={`${styles.fillBtn} ${bp.filled ? styles.fillBtnActive : ''}`}
-                    onClick={() => toggleBuyFilled(i)}
-                  >
-                    {bp.filled ? '체결' : '미체결'}
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {local.buyPlans.map((bp, i) => {
+              const actual = buysByDate[i];
+              const actualPrice = actual ? Math.round(actual.amt / actual.qty) : 0;
+              return (
+                <tr
+                  key={i}
+                  className={bp.filled ? styles.filledRow : ''}
+                  style={
+                    i === nextBuyIdx && !bp.filled
+                      ? { background: '#fffde7' }
+                      : undefined
+                  }
+                >
+                  <td>
+                    {bp.level}차
+                    {i === nextBuyIdx && !bp.filled && (
+                      <span className={styles.nextChip}>다음 매수</span>
+                    )}
+                  </td>
+                  <td className={styles.numCell}>
+                    {bp.price.toLocaleString()}
+                  </td>
+                  <td className={styles.numCell}>
+                    {actual ? (
+                      <span className={styles.actualPrice}>
+                        {actualPrice.toLocaleString()}
+                      </span>
+                    ) : '-'}
+                  </td>
+                  <td className={styles.numCell}>
+                    {actual ? actual.qty.toLocaleString() : bp.quantity.toLocaleString()}
+                  </td>
+                  <td className={styles.dateCell}>
+                    {actual?.date || bp.filledDate || '-'}
+                  </td>
+                  <td>
+                    <button
+                      className={`${styles.fillBtn} ${bp.filled ? styles.fillBtnActive : ''}`}
+                      onClick={() => toggleBuyFilled(i)}
+                    >
+                      {bp.filled ? '체결' : '미체결'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -305,38 +353,67 @@ export default function StockDetail({
           <thead>
             <tr>
               <th>목표</th>
-              <th>매도가</th>
+              <th>목표가</th>
+              <th>실제 매도가</th>
               <th>수량</th>
               <th>체결일</th>
+              <th>실현수익률</th>
               <th>체결</th>
             </tr>
           </thead>
           <tbody>
-            {local.sellPlans.map((sp, i) => (
-              <tr key={i} className={sp.filled ? styles.sellFilledRow : ''}>
-                <td>+{sp.percent}%</td>
-                <td className={styles.numCell}>
-                  {sp.price.toLocaleString()}
-                </td>
-                <td className={styles.numCell}>{sp.quantity.toLocaleString()}</td>
-                <td className={styles.dateCell}>
-                  {sp.filledDate || '-'}
-                </td>
-                <td>
-                  <button
-                    className={`${styles.fillBtn} ${sp.filled ? styles.sellBtnActive : ''}`}
-                    onClick={() => toggleSellFilled(i)}
-                  >
-                    {sp.filled ? '체결' : '미체결'}
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {local.sellPlans.map((sp, i) => {
+              const actual = sellsByDate[i];
+              const actualPrice = actual ? Math.round(actual.amt / actual.qty) : 0;
+              const realProfit = actual && local.avgPrice > 0
+                ? ((actualPrice - local.avgPrice) / local.avgPrice) * 100
+                : null;
+              const metTarget = actual && actualPrice >= sp.price;
+              return (
+                <tr key={i} className={sp.filled || actual ? styles.sellFilledRow : ''}>
+                  <td>+{sp.percent}%</td>
+                  <td className={styles.numCell}>
+                    {sp.price.toLocaleString()}
+                  </td>
+                  <td className={styles.numCell}>
+                    {actual ? (
+                      <span
+                        className={styles.actualPrice}
+                        style={{ color: metTarget ? '#4caf50' : '#ff9800' }}
+                      >
+                        {actualPrice.toLocaleString()}
+                      </span>
+                    ) : '-'}
+                  </td>
+                  <td className={styles.numCell}>
+                    {actual ? actual.qty.toLocaleString() : sp.quantity.toLocaleString()}
+                  </td>
+                  <td className={styles.dateCell}>
+                    {actual?.date || sp.filledDate || '-'}
+                  </td>
+                  <td className={styles.numCell}>
+                    {realProfit !== null ? (
+                      <span style={{ color: realProfit >= 0 ? '#4caf50' : '#f44336', fontWeight: 600 }}>
+                        {realProfit >= 0 ? '+' : ''}{realProfit.toFixed(1)}%
+                      </span>
+                    ) : '-'}
+                  </td>
+                  <td>
+                    <button
+                      className={`${styles.fillBtn} ${sp.filled || actual ? styles.sellBtnActive : ''}`}
+                      onClick={() => toggleSellFilled(i)}
+                    >
+                      {sp.filled || actual ? '체결' : '미체결'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         <div className={styles.sellNote}>
-          누적 매도 횟수: {local.sellCount}회
-          {local.sellCount >= 3 && (
+          누적 매도: {sellsByDate.length}회 ({actualSells.length}건)
+          {sellsByDate.length >= 3 && (
             <span className={styles.chip}>룰B 전환 가능</span>
           )}
         </div>

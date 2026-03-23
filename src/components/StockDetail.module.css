@@ -229,6 +229,11 @@
   white-space: nowrap;
 }
 
+.actualPrice {
+  font-weight: 700;
+  font-size: 13px;
+}
+
 .filledRow {
   background: #e8f5e9 !important;
 }
