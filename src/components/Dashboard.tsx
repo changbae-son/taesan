@@ -76,7 +76,7 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
   // 차트3: 차수별 진입 분포
   const levelCounts = [0, 0, 0, 0, 0];
   stocks.forEach((s) => {
-    const filled = s.buyPlans.filter((b) => b.filled).length;
+    const filled = (s.buyPlans || []).filter((b) => b.filled).length;
     if (filled > 0 && filled <= 5) levelCounts[filled - 1]++;
   });
   const pieData = levelCounts.map((count, i) => ({
@@ -91,7 +91,7 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
   // 태그 통계
   const tagCounts: Record<string, number> = {};
   trades.forEach((t) => {
-    t.tags.forEach((tag) => {
+    (t.tags || []).forEach((tag) => {
       tagCounts[tag] = (tagCounts[tag] || 0) + 1;
     });
   });

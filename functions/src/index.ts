@@ -8,7 +8,7 @@
 import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
 import fetch from "node-fetch";
-import * as cors from "cors";
+import cors = require("cors");
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -34,7 +34,7 @@ async function getKiwoomConfig(): Promise<KiwoomConfig> {
     appSecret: data.appSecret || "",
     accountNo: data.accountNo || "",
     htsId: data.htsId || "",
-    baseUrl: data.baseUrl || "https://openapi.koreainvestment.com:9443",
+    baseUrl: "https://api.kiwoom.com",
   };
 }
 
@@ -49,131 +49,112 @@ async function getAccessToken(config: KiwoomConfig): Promise<string> {
   }
 
   // 새 토큰 발급
-  const res = await fetch(`${config.baseUrl}/oauth2/tokenP`, {
+  const res = await fetch(`${config.baseUrl}/oauth2/token`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({
       grant_type: "client_credentials",
       appkey: config.appKey,
-      appsecret: config.appSecret,
+      secretkey: config.appSecret,
     }),
   });
 
   const data = await res.json() as any;
 
-  if (!data.access_token) {
+  if (!data.token) {
     throw new Error(`토큰 발급 실패: ${JSON.stringify(data)}`);
   }
 
   // 토큰 캐시 저장 (23시간 유효)
   await db.collection("settings").doc("kiwoom_token").set({
-    accessToken: data.access_token,
+    accessToken: data.token,
     expiresAt: Date.now() + 23 * 60 * 60 * 1000,
   });
 
-  return data.access_token;
+  return data.token;
 }
 
-// ─── 잔고 조회 ───
+// ─── 잔고 조회 (kt00005 체결잔고요청) ───
 async function fetchHoldings(
   config: KiwoomConfig,
   token: string
 ): Promise<any[]> {
-  const headers: any = {
-    "Content-Type": "application/json; charset=utf-8",
-    "authorization": `Bearer ${token}`,
-    "appkey": config.appKey,
-    "appsecret": config.appSecret,
-    "tr_id": "TTTC8434R", // 주식 잔고조회
-  };
-
-  const params = new URLSearchParams({
-    CANO: config.accountNo.substring(0, 8),
-    ACNT_PRDT_CD: config.accountNo.substring(8, 10) || "01",
-    AFHR_FLPR_YN: "N",
-    OFL_YN: "",
-    INQR_DVSN: "02",
-    UNPR_DVSN: "01",
-    FUND_STTL_ICLD_YN: "N",
-    FNCG_AMT_AUTO_RDPT_YN: "N",
-    PRCS_DVSN: "01",
-    CTX_AREA_FK100: "",
-    CTX_AREA_NK100: "",
+  const res = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "authorization": `Bearer ${token}`,
+      "api-id": "kt00005",
+    },
+    body: JSON.stringify({
+      dmst_stex_tp: "KRX",
+    }),
   });
 
-  const url = `${config.baseUrl}/uapi/domestic-stock/v1/trading/inquire-balance?${params}`;
-  const res = await fetch(url, {headers});
   const data = await res.json() as any;
 
-  if (data.rt_cd !== "0") {
-    throw new Error(`잔고조회 실패: ${data.msg1}`);
+  // 에러 체크
+  if (data.return_code && data.return_code !== "0") {
+    throw new Error(`잔고조회 실패: ${data.return_msg || JSON.stringify(data)}`);
   }
 
-  return (data.output1 || []).map((item: any) => ({
-    name: item.prdt_name || "",
-    code: item.pdno || "",
-    quantity: parseInt(item.hldg_qty || "0"),
-    avgPrice: parseInt(item.pchs_avg_pric || "0"),
-    currentPrice: parseInt(item.prpr || "0"),
-    profitRate: parseFloat(item.evlu_pfls_rt || "0"),
-    profitAmount: parseInt(item.evlu_pfls_amt || "0"),
-    totalBuyAmount: parseInt(item.pchs_amt || "0"),
-  }));
+  const stockList = data.stk_cntr_remn || [];
+
+  return stockList
+    .filter((item: any) => parseInt(item.cur_qty || "0") > 0)
+    .map((item: any) => ({
+      name: (item.stk_nm || "").trim(),
+      code: (item.stk_cd || "").trim(),
+      quantity: parseInt(item.cur_qty || "0"),
+      avgPrice: parseInt(item.buy_uv || "0"),
+      currentPrice: parseInt(item.cur_prc || "0"),
+      profitRate: parseFloat(item.pl_rt || "0"),
+      profitAmount: parseInt(item.evltv_prft || "0"),
+      totalBuyAmount: parseInt(item.pur_amt || "0"),
+    }));
 }
 
-// ─── 체결 내역 조회 ───
+// ─── 체결 내역 조회 (ka10076 체결요청) ───
 async function fetchTradeHistory(
   config: KiwoomConfig,
-  token: string,
-  startDate: string,
-  endDate: string
+  token: string
 ): Promise<any[]> {
-  const headers: any = {
-    "Content-Type": "application/json; charset=utf-8",
-    "authorization": `Bearer ${token}`,
-    "appkey": config.appKey,
-    "appsecret": config.appSecret,
-    "tr_id": "TTTC8001R", // 주식 일별 주문체결조회
-  };
+  try {
+    const res = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": `Bearer ${token}`,
+        "api-id": "ka10076",
+      },
+      body: JSON.stringify({
+        acctNo: config.accountNo.replace("-", ""),
+      }),
+    });
 
-  const params = new URLSearchParams({
-    CANO: config.accountNo.substring(0, 8),
-    ACNT_PRDT_CD: config.accountNo.substring(8, 10) || "01",
-    INQR_STRT_DT: startDate,
-    INQR_END_DT: endDate,
-    SLL_BUY_DVSN_CD: "00", // 전체
-    INQR_DVSN: "00",
-    PDNO: "",
-    CCLD_DVSN: "01", // 체결분만
-    ORD_GNO_BRNO: "",
-    ODNO: "",
-    INQR_DVSN_3: "00",
-    INQR_DVSN_1: "",
-    CTX_AREA_FK100: "",
-    CTX_AREA_NK100: "",
-  });
+    const data = await res.json() as any;
 
-  const url =
-    `${config.baseUrl}/uapi/domestic-stock/v1/trading/inquire-daily-ccld?${params}`;
-  const res = await fetch(url, {headers});
-  const data = await res.json() as any;
+    if (data.return_code && data.return_code !== "0") {
+      console.log("체결내역 조회 실패 (무시):", data.return_msg);
+      return [];
+    }
 
-  if (data.rt_cd !== "0") {
-    throw new Error(`체결조회 실패: ${data.msg1}`);
-  }
-
-  return (data.output1 || [])
-    .filter((item: any) => parseInt(item.tot_ccld_qty || "0") > 0)
-    .map((item: any) => ({
-      name: item.prdt_name || "",
-      code: item.pdno || "",
-      type: item.sll_buy_dvsn_cd === "01" ? "sell" : "buy",
-      price: parseInt(item.avg_prvs || "0"),
-      quantity: parseInt(item.tot_ccld_qty || "0"),
-      date: item.ord_dt || "",
-      time: item.ord_tmd || "",
+    // 체결 내역이 있으면 파싱
+    const trades = data.output || data.list || [];
+    return Array.isArray(trades) ? trades.map((item: any) => ({
+      name: (item.stk_nm || item.prdt_name || "").trim(),
+      code: (item.stk_cd || item.pdno || "").trim(),
+      type: (item.sll_buy_dvsn || "").includes("매도") ? "sell" : "buy",
+      price: parseInt(item.ccld_prc || item.avg_prc || "0"),
+      quantity: parseInt(item.ccld_qty || item.tot_qty || "0"),
+      date: item.ord_dt || item.ccld_dt || "",
+      time: item.ccld_tm || "",
       orderNo: item.odno || "",
-    }));
+    })) : [];
+  } catch (err) {
+    console.log("체결내역 조회 스킵:", err);
+    return [];
+  }
 }
 
 // ─── Firestore에 동기화 ───
@@ -199,7 +180,7 @@ async function syncToFirestore(
   for (const h of holdings) {
     if (h.name in existingStocks) {
       // 기존 종목 업데이트
-      await db.collection("stocks").document(existingStocks[h.name]).update({
+      await db.collection("stocks").doc(existingStocks[h.name]).update({
         currentPrice: h.currentPrice,
         avgPrice: h.avgPrice,
         totalQuantity: h.quantity,
@@ -297,24 +278,17 @@ async function syncToFirestore(
  */
 export const kiwoomSync = functions
   .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
         const config = await getKiwoomConfig();
         const token = await getAccessToken(config);
 
-        // 날짜 기본값: 오늘
-        const today = new Date()
-          .toISOString()
-          .slice(0, 10)
-          .replace(/-/g, "");
-        const startDate = req.body?.startDate || today;
-        const endDate = req.body?.endDate || today;
-
         // 잔고 + 체결내역 조회
         const [holdings, trades] = await Promise.all([
           fetchHoldings(config, token),
-          fetchTradeHistory(config, token, startDate, endDate),
+          fetchTradeHistory(config, token),
         ]);
 
         // Firestore에 동기화
@@ -345,6 +319,7 @@ export const kiwoomSync = functions
  */
 export const kiwoomSetup = functions
   .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
@@ -365,7 +340,7 @@ export const kiwoomSetup = functions
           appSecret,
           accountNo,
           htsId: htsId || "",
-          baseUrl: "https://openapi.koreainvestment.com:9443",
+          baseUrl: "https://api.kiwoom.com",
           updatedAt: Date.now(),
         });
 
@@ -385,6 +360,7 @@ export const kiwoomSetup = functions
  */
 export const kiwoomStatus = functions
   .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
@@ -407,6 +383,25 @@ export const kiwoomStatus = functions
             }
             : null,
         });
+      } catch (error: any) {
+        res.status(500).json({error: error.message});
+      }
+    });
+  });
+
+/**
+ * Cloud Function의 외부 IP 확인
+ * GET /checkIp
+ */
+export const checkIp = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const ipRes = await fetch("https://api.ipify.org?format=json", {timeout: 30000});
+        const data = await ipRes.json() as any;
+        res.json({ip: data.ip});
       } catch (error: any) {
         res.status(500).json({error: error.message});
       }
