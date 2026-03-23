@@ -159,7 +159,8 @@ async function fetchTodayTrades(
   }
 }
 
-// ─── 기간별 체결 내역 조회 (kt00007 계좌별주문체결내역상세요청) ───
+// ─── 기간별 체결 내역 조회 ───
+// ka10072(일별종목별실현손익) 날짜별 루프 + ka10076(당일체결) 활용
 async function fetchTradeHistory(
   config: KiwoomConfig,
   token: string,
@@ -170,88 +171,149 @@ async function fetchTradeHistory(
   const start = startDate || new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const end = endDate || new Date().toISOString().slice(0, 10).replace(/-/g, "");
 
-  // 날짜 범위를 하루씩 순회 (kt00007은 하루 단위 조회)
+  // 날짜 목록 생성 (주말 제외)
   const dates: string[] = [];
   const startD = new Date(start.slice(0, 4) + "-" + start.slice(4, 6) + "-" + start.slice(6, 8));
   const endD = new Date(end.slice(0, 4) + "-" + end.slice(4, 6) + "-" + end.slice(6, 8));
 
   for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
     const day = d.getDay();
-    if (day === 0 || day === 6) continue; // 주말 제외
-    const yyyymmdd = d.toISOString().slice(0, 10).replace(/-/g, "");
-    dates.push(yyyymmdd);
+    if (day === 0 || day === 6) continue;
+    dates.push(d.toISOString().slice(0, 10).replace(/-/g, ""));
   }
 
   console.log(`체결 내역 조회: ${dates.length}일 (${start} ~ ${end})`);
 
+  // ka10072 (일별종목별실현손익) - 매도 내역 조회 (날짜별)
   for (const dt of dates) {
     try {
-      let nextKey = "";
-      let hasMore = true;
-
-      while (hasMore) {
-        const headers: Record<string, string> = {
+      const res = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+        method: "POST",
+        headers: {
           "Content-Type": "application/json; charset=utf-8",
           "authorization": `Bearer ${token}`,
-          "api-id": "kt00007",
-        };
-        if (nextKey) {
-          headers["cont-yn"] = "Y";
-          headers["next-key"] = nextKey;
+          "api-id": "ka10072",
+        },
+        body: JSON.stringify({
+          strt_dt: dt,
+          end_dt: dt,
+          ord_dt: dt,
+          stk_cd: "",
+          sell_tp: "0",
+          qry_tp: "0",
+          stk_bond_tp: "1",
+          dmst_stex_tp: "KRX",
+        }),
+      });
+      const data = await res.json() as any;
+      const items = data.dt_stk_div_rlzt_pl || [];
+      const valid = items.filter((x: any) => (x.stk_nm || "").trim() !== "");
+
+      if (valid.length > 0) {
+        const formattedDate = `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`;
+        console.log(`[ka10072] ${dt}: ${valid.length}건 매도`);
+        for (const item of valid) {
+          const qty = parseInt(item.cntr_qty || "0");
+          if (qty > 0) {
+            allTrades.push({
+              name: (item.stk_nm || "").trim(),
+              code: (item.stk_cd || "").trim(),
+              type: "sell",
+              price: parseInt(item.cntr_pric || "0"),
+              quantity: qty,
+              date: dt,
+              time: "",
+              orderNo: `sell_${dt}_${item.stk_cd}`,
+            });
+          }
         }
+      }
 
-        const res = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            ord_dt: dt,
-            qry_tp: "4",
-            stk_bond_tp: "1",
-            sell_tp: "0",
-            stk_cd: "",
-            fr_ord_no: "",
-            dmst_stex_tp: "0",
-          }),
-        });
+      await new Promise((r) => setTimeout(r, 250));
+    } catch (err) {
+      console.log(`${dt} ka10072 스킵:`, err);
+    }
+  }
 
-        const data = await res.json() as any;
-        if (data.return_code && data.return_code !== 0 && data.return_code !== "0") {
-          break;
-        }
+  console.log(`매도 내역: ${allTrades.length}건`);
 
-        const trades = data.acnt_ord_cntr_prps_dtl || [];
-        if (Array.isArray(trades)) {
-          for (const item of trades) {
-            const qty = parseInt(item.cntr_qty || "0");
-            if (qty > 0) {
-              allTrades.push({
+  // 매수 내역 조회: 여러 API 시도
+  const buyTrades: any[] = [];
+
+  // ka10076 (체결요청) - 날짜별 시도
+  for (const dt of dates) {
+    try {
+      const res = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "authorization": `Bearer ${token}`,
+          "api-id": "ka10076",
+        },
+        body: JSON.stringify({
+          ord_dt: dt,
+          qry_tp: "0",
+          sell_tp: "0",
+          stex_tp: "1",
+        }),
+      });
+      const data = await res.json() as any;
+
+      // 배열 필드 탐색
+      for (const key of Object.keys(data)) {
+        if (Array.isArray(data[key])) {
+          const items = data[key];
+          const valid = items.filter((x: any) =>
+            (x.stk_nm || "").trim() !== "" && parseInt(x.cntr_qty || "0") > 0
+          );
+          if (valid.length > 0) {
+            const formattedDate = `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`;
+            console.log(`[ka10076] ${dt}: ${valid.length}건 체결 (필드: ${key})`);
+            if (dt === dates[0]) {
+              console.log(`[ka10076] 샘플:`, JSON.stringify(valid[0]).slice(0, 500));
+            }
+            for (const item of valid) {
+              const qty = parseInt(item.cntr_qty || "0");
+              const isSell = (item.trde_tp || item.io_tp_nm || "").includes("매도");
+              buyTrades.push({
                 name: (item.stk_nm || "").trim(),
                 code: (item.stk_cd || "").trim(),
-                type: (item.trde_tp || item.io_tp_nm || "").includes("매도") ? "sell" : "buy",
-                price: parseInt(item.cntr_uv || "0"),
+                type: isSell ? "sell" : "buy",
+                price: parseInt(item.cntr_pric || item.cntr_uv || "0"),
                 quantity: qty,
                 date: dt,
                 time: item.ord_tm || "",
-                orderNo: item.ord_no || "",
+                orderNo: item.ord_no || `${dt}_${item.stk_cd}`,
               });
             }
           }
         }
-
-        // 연속 조회 체크
-        const contYn = res.headers.get("cont-yn") || "";
-        nextKey = res.headers.get("next-key") || "";
-        hasMore = contYn === "Y" && !!nextKey;
       }
 
-      // API 호출 간격 (초당 5회 제한 방지)
+      // 첫 날짜 전체 응답 로그
+      if (dt === dates[0]) {
+        console.log(`[ka10076] ${dt} code:${data.return_code} msg:${data.return_msg} keys:${Object.keys(data)}`);
+        const cntr = data.cntr || [];
+        if (cntr.length > 0) {
+          console.log(`[ka10076] cntr[0]:`, JSON.stringify(cntr[0]).slice(0, 500));
+        }
+      }
+
       await new Promise((r) => setTimeout(r, 250));
     } catch (err) {
-      console.log(`${dt} 체결 조회 스킵:`, err);
+      console.log(`${dt} ka10076 스킵:`, err);
     }
   }
 
-  console.log(`총 ${allTrades.length}건 체결 내역 조회 완료`);
+  console.log(`ka10076 매수+매도: ${buyTrades.length}건`);
+
+  // ka10076에서 가져온 데이터가 있으면 사용 (매수+매도 모두 포함)
+  if (buyTrades.length > 0) {
+    // ka10076이 매수+매도 모두 포함하므로 이걸 메인으로 사용
+    return buyTrades;
+  }
+
+  // ka10072 매도만이라도 반환
   return allTrades;
 }
 
@@ -290,22 +352,32 @@ function mapTradesToPlans(
   const firstBuyQty = firstBuy ? firstBuy.totalQty : (holdings?.quantity || 0);
 
   // 매수 계획 생성 (최대 5차)
+  // 매수 내역이 없으면 보유잔고 기반으로 1차 매수 체결 처리
   const buyPlans = [];
   for (let i = 0; i < 5; i++) {
     const buyDate = buyDates[i];
     const buyData = buyDate ? buyByDate[buyDate] : null;
 
     if (buyData) {
-      const avgPrice = Math.round(buyData.totalAmt / buyData.totalQty);
+      const avg = Math.round(buyData.totalAmt / buyData.totalQty);
       const formattedDate = buyDate.length === 8
         ? `${buyDate.slice(0, 4)}-${buyDate.slice(4, 6)}-${buyDate.slice(6, 8)}`
         : buyDate;
       buyPlans.push({
         level: i + 1,
-        price: avgPrice,
+        price: avg,
         quantity: buyData.totalQty,
         filled: true,
         filledDate: formattedDate,
+      });
+    } else if (i === 0 && buyDates.length === 0 && holdings) {
+      // 매수 내역 없지만 보유 중 → 1차 매수 체결로 설정
+      buyPlans.push({
+        level: 1,
+        price: holdings.avgPrice || 0,
+        quantity: holdings.quantity || 0,
+        filled: true,
+        filledDate: "",
       });
     } else {
       // 미체결 차수: 이전 차수 기준 -10%
@@ -491,7 +563,7 @@ async function syncToFirestore(
  */
 export const kiwoomSync = functions
   .region("asia-northeast3")
-  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 300})
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
