@@ -30,6 +30,7 @@ export default function StockDetail({
   onSnapshot,
 }: Props) {
   const [local, setLocal] = useState<Stock>(stock);
+  const [maSelectIdx, setMaSelectIdx] = useState<number | null>(null);
 
   useEffect(() => {
     setLocal(stock);
@@ -93,6 +94,28 @@ export default function StockDetail({
     update({ maSells: ma });
   };
 
+  // 수익매도 → 이동평균선 매도로 이동 (sellsByDate는 렌더 시점에 참조)
+  const moveToMA = (sellIdx: number, maDay: number, actualData?: { price: number; qty: number; date: string }) => {
+    const sp = local.sellPlans[sellIdx];
+    const price = actualData?.price || sp.price;
+    const qty = actualData?.qty || sp.quantity;
+    const date = actualData?.date || sp.filledDate || '';
+
+    // 해당 이평선 찾아서 업데이트
+    const ma = [...local.maSells];
+    const maIdx = ma.findIndex((m) => m.ma === maDay);
+    if (maIdx >= 0) {
+      ma[maIdx] = { ...ma[maIdx], price, quantity: qty, filled: true, filledDate: date, fromSellPlan: sellIdx + 1 };
+    }
+
+    // 수익매도에서 체결 해제
+    const sells = [...local.sellPlans];
+    sells[sellIdx] = { ...sells[sellIdx], filled: false };
+
+    update({ sellPlans: sells, maSells: ma });
+    setMaSelectIdx(null);
+  };
+
   const profitPercent =
     local.avgPrice > 0
       ? ((local.currentPrice - local.avgPrice) / local.avgPrice) * 100
@@ -103,6 +126,21 @@ export default function StockDetail({
 
   // 다음 매수 차수 인덱스
   const nextBuyIdx = local.buyPlans.findIndex((b) => !b.filled);
+
+  // 현재가 근접 판단 + 긴급도
+  const getNearInfo = (target: number) => {
+    if (!local.currentPrice || !target) return null;
+    const gap = ((local.currentPrice - target) / target) * 100;
+    const absGap = Math.abs(gap);
+    if (absGap > 3) return null;
+    const urgency: 1 | 2 | 3 = absGap <= 1 ? 3 : absGap <= 2 ? 2 : 1;
+    return { gap, absGap, urgency };
+  };
+  const priceGapText = (target: number) => {
+    if (!local.currentPrice || !target) return '';
+    const gap = ((local.currentPrice - target) / target) * 100;
+    return `(${gap >= 0 ? '+' : ''}${gap.toFixed(1)}%)`;
+  };
 
   // 매매일지에서 해당 종목의 실제 매수/매도 내역
   const stockTrades = trades
@@ -135,6 +173,9 @@ export default function StockDetail({
   Object.keys(sellDateMap).sort().forEach((d) => {
     sellsByDate.push({ date: d, ...sellDateMap[d] });
   });
+
+  // 다음 매도 차수 인덱스
+  const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsByDate[i]);
 
   return (
     <div className={styles.container}>
@@ -288,7 +329,8 @@ export default function StockDetail({
               <th>차수</th>
               <th>계획가</th>
               <th>실제 매수가</th>
-              <th>수량</th>
+              <th>계획수량</th>
+              <th>체결수량</th>
               <th>체결일</th>
               <th>체결</th>
             </tr>
@@ -296,13 +338,17 @@ export default function StockDetail({
           <tbody>
             {local.buyPlans.map((bp, i) => {
               const actual = buysByDate[i];
-              const actualPrice = actual ? Math.round(actual.amt / actual.qty) : 0;
+              // 실제 체결 데이터: 매매일지 > filledPrice/filledQuantity > plan 기본값
+              const realPrice = actual ? Math.round(actual.amt / actual.qty) : bp.filledPrice || 0;
+              const realQty = actual ? actual.qty : bp.filledQuantity || 0;
+              const realDate = actual?.date || bp.filledDate || '';
+              const nearInfo = !bp.filled ? getNearInfo(bp.price) : null;
               return (
                 <tr
                   key={i}
-                  className={bp.filled ? styles.filledRow : ''}
+                  className={`${bp.filled ? styles.filledRow : ''} ${nearInfo ? styles.nearbyBuyRow : ''}`}
                   style={
-                    i === nextBuyIdx && !bp.filled
+                    !nearInfo && i === nextBuyIdx && !bp.filled
                       ? { background: '#fffde7' }
                       : undefined
                   }
@@ -312,22 +358,60 @@ export default function StockDetail({
                     {i === nextBuyIdx && !bp.filled && (
                       <span className={styles.nextChip}>다음 매수</span>
                     )}
+                    {nearInfo && (
+                      <span className={`${styles.nearbyBuyChip} ${
+                        nearInfo.urgency === 3 ? styles.chipUrgency3 : nearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
+                      }`}>
+                        매수 {nearInfo.gap >= 0 ? '+' : ''}{nearInfo.gap.toFixed(1)}%
+                      </span>
+                    )}
                   </td>
                   <td className={styles.numCell}>
                     {bp.price.toLocaleString()}
+                    {i === nextBuyIdx && !bp.filled && local.currentPrice > 0 && (
+                      <>
+                        <br />
+                        <span className={`${styles.currentPriceTag} ${
+                          nearInfo?.urgency === 3 ? styles.priceTagUrgentBuy : ''
+                        }`}>
+                          현재 {local.currentPrice.toLocaleString()}
+                        </span>
+                        <span className={styles.priceGap}>{priceGapText(bp.price)}</span>
+                      </>
+                    )}
                   </td>
                   <td className={styles.numCell}>
-                    {actual ? (
+                    {bp.filled && realPrice > 0 ? (
                       <span className={styles.actualPrice}>
-                        {actualPrice.toLocaleString()}
+                        {realPrice.toLocaleString()}
                       </span>
                     ) : '-'}
                   </td>
+                  <td className={`${styles.numCell} ${styles.plannedQty}`}>
+                    {bp.quantity.toLocaleString()}
+                  </td>
                   <td className={styles.numCell}>
-                    {actual ? actual.qty.toLocaleString() : bp.quantity.toLocaleString()}
+                    {bp.filled ? (
+                      <span className={styles.filledQty}>
+                        {(realQty || bp.quantity).toLocaleString()}
+                      </span>
+                    ) : (
+                      <span className={styles.pendingQty}>-</span>
+                    )}
                   </td>
                   <td className={styles.dateCell}>
-                    {actual?.date || bp.filledDate || '-'}
+                    {bp.filled ? (
+                      <input
+                        type="date"
+                        className={styles.dateInput}
+                        value={realDate || ''}
+                        onChange={(e) => {
+                          const plans = [...local.buyPlans];
+                          plans[i] = { ...plans[i], filledDate: e.target.value };
+                          update({ buyPlans: plans });
+                        }}
+                      />
+                    ) : '-'}
                   </td>
                   <td>
                     <button
@@ -355,41 +439,94 @@ export default function StockDetail({
               <th>목표</th>
               <th>목표가</th>
               <th>실제 매도가</th>
-              <th>수량</th>
+              <th>계획수량</th>
+              <th>체결수량</th>
+              <th>잔여수량</th>
               <th>체결일</th>
               <th>실현수익률</th>
               <th>체결</th>
             </tr>
           </thead>
           <tbody>
-            {local.sellPlans.map((sp, i) => {
-              const actual = sellsByDate[i];
-              const actualPrice = actual ? Math.round(actual.amt / actual.qty) : 0;
-              const realProfit = actual && local.avgPrice > 0
-                ? ((actualPrice - local.avgPrice) / local.avgPrice) * 100
-                : null;
-              const metTarget = actual && actualPrice >= sp.price;
-              return (
-                <tr key={i} className={sp.filled || actual ? styles.sellFilledRow : ''}>
-                  <td>+{sp.percent}%</td>
-                  <td className={styles.numCell}>
-                    {sp.price.toLocaleString()}
-                  </td>
-                  <td className={styles.numCell}>
-                    {actual ? (
-                      <span
-                        className={styles.actualPrice}
-                        style={{ color: metTarget ? '#4caf50' : '#ff9800' }}
-                      >
-                        {actualPrice.toLocaleString()}
+            {(() => {
+              // 잔여수량 계산: 총 매수 수량에서 매도 누적 차감
+              const totalBought = local.buyPlans.reduce((sum, bp) => {
+                if (!bp.filled) return sum;
+                return sum + (bp.filledQuantity || bp.quantity);
+              }, 0);
+              // MA매도 차감
+              const maSold = local.maSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
+              let remaining = totalBought - maSold;
+
+              return local.sellPlans.map((sp, i) => {
+                const actual = sellsByDate[i];
+                const realPrice = actual ? Math.round(actual.amt / actual.qty) : sp.filledPrice || 0;
+                const realQty = actual ? actual.qty : sp.filledQuantity || 0;
+                const realDate = actual?.date || sp.filledDate || '';
+                const realProfit = (sp.filled || actual) && local.avgPrice > 0 && realPrice > 0
+                  ? ((realPrice - local.avgPrice) / local.avgPrice) * 100
+                  : null;
+                const metTarget = (sp.filled || actual) && realPrice >= sp.price;
+                const sellNearInfo = !sp.filled && !actual ? getNearInfo(sp.price) : null;
+
+                // 이번 매도로 차감
+                const soldThisRound = (sp.filled || actual) ? (realQty || sp.quantity) : 0;
+                remaining -= soldThisRound;
+                const remainingAfter = Math.max(0, remaining);
+
+                return (
+                  <tr key={i} className={`${sp.filled || actual ? styles.sellFilledRow : ''} ${sellNearInfo ? styles.nearbySellRow : ''}`}>
+                    <td>
+                      +{sp.percent}%
+                      {sellNearInfo && (
+                        <span className={`${styles.nearbySellChip} ${
+                          sellNearInfo.urgency === 3 ? styles.chipUrgency3 : sellNearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
+                        }`}>
+                          매도 {sellNearInfo.gap >= 0 ? '+' : ''}{sellNearInfo.gap.toFixed(1)}%
+                        </span>
+                      )}
+                    </td>
+                    <td className={styles.numCell}>
+                      {sp.price.toLocaleString()}
+                      {i === nextSellIdx && !sp.filled && !actual && local.currentPrice > 0 && (
+                        <>
+                          <br />
+                          <span className={`${styles.currentPriceTag} ${
+                            sellNearInfo?.urgency === 3 ? styles.priceTagUrgentSell : ''
+                          }`}>
+                            현재 {local.currentPrice.toLocaleString()}
+                          </span>
+                          <span className={styles.priceGap}>{priceGapText(sp.price)}</span>
+                        </>
+                      )}
+                    </td>
+                    <td className={styles.numCell}>
+                      {(sp.filled || actual) && realPrice > 0 ? (
+                        <span
+                          className={styles.actualPrice}
+                          style={{ color: metTarget ? '#4caf50' : '#ff9800' }}
+                        >
+                          {realPrice.toLocaleString()}
+                        </span>
+                      ) : '-'}
+                    </td>
+                    <td className={`${styles.numCell} ${styles.plannedQty}`}>
+                      {sp.quantity.toLocaleString()}
+                    </td>
+                    <td className={styles.numCell}>
+                      {(sp.filled || actual) ? (
+                        <span className={styles.filledQty}>{(realQty || sp.quantity).toLocaleString()}</span>
+                      ) : (
+                        <span className={styles.pendingQty}>-</span>
+                      )}
+                    </td>
+                    <td className={styles.numCell}>
+                      <span className={remainingAfter <= 0 ? styles.zeroQty : styles.remainQty}>
+                        {(sp.filled || actual) ? remainingAfter.toLocaleString() : (remaining + soldThisRound > 0 ? (remaining + soldThisRound).toLocaleString() : '-')}
                       </span>
-                    ) : '-'}
-                  </td>
-                  <td className={styles.numCell}>
-                    {actual ? actual.qty.toLocaleString() : sp.quantity.toLocaleString()}
-                  </td>
+                    </td>
                   <td className={styles.dateCell}>
-                    {actual?.date || sp.filledDate || '-'}
+                    {(sp.filled || actual) ? (realDate || '-') : '-'}
                   </td>
                   <td className={styles.numCell}>
                     {realProfit !== null ? (
@@ -405,10 +542,44 @@ export default function StockDetail({
                     >
                       {sp.filled || actual ? '체결' : '미체결'}
                     </button>
+                    {(sp.filled || actual) && maSelectIdx !== i && (
+                      <button
+                        className={styles.maTransferBtn}
+                        onClick={() => setMaSelectIdx(i)}
+                        title="이동평균선 매도로 이동"
+                      >
+                        MA매도
+                      </button>
+                    )}
+                    {maSelectIdx === i && (
+                      <div className={styles.maSelectPopup}>
+                        <span className={styles.maSelectLabel}>이평선 선택:</span>
+                        {[20, 60, 120].map((d) => (
+                          <button
+                            key={d}
+                            className={styles.maSelectBtn}
+                            onClick={() => moveToMA(i, d, actual ? {
+                              price: Math.round(actual.amt / actual.qty),
+                              qty: actual.qty,
+                              date: actual.date,
+                            } : undefined)}
+                          >
+                            {d}일
+                          </button>
+                        ))}
+                        <button
+                          className={styles.maSelectCancel}
+                          onClick={() => setMaSelectIdx(null)}
+                        >
+                          취소
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
-              );
-            })}
+                );
+              });
+            })()}
           </tbody>
         </table>
         <div className={styles.sellNote}>
@@ -443,9 +614,22 @@ export default function StockDetail({
                 local.avgPrice > 0
                   ? ((ms.price - local.avgPrice) / local.avgPrice) * 100
                   : 0;
+              const maNearInfo = !ms.filled && ms.price > 0 ? getNearInfo(ms.price) : null;
               return (
-                <tr key={i} className={ms.filled ? styles.maFilledRow : ''}>
-                  <td>{ms.ma}일선</td>
+                <tr key={i} className={`${ms.filled ? styles.maFilledRow : ''} ${maNearInfo ? styles.nearbySellRow : ''}`}>
+                  <td>
+                    {ms.ma}일선
+                    {maNearInfo && (
+                      <span className={`${styles.nearbySellChip} ${
+                        maNearInfo.urgency === 3 ? styles.chipUrgency3 : maNearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
+                      }`}>
+                        {maNearInfo.gap >= 0 ? '+' : ''}{maNearInfo.gap.toFixed(1)}%
+                      </span>
+                    )}
+                    {ms.fromSellPlan && (
+                      <span className={styles.maFromBadge}>+{local.sellPlans[ms.fromSellPlan - 1]?.percent}%에서 이동</span>
+                    )}
+                  </td>
                   <td>
                     <input
                       type="number"

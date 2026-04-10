@@ -108,12 +108,246 @@
   white-space: nowrap;
 }
 
+.signalBadge {
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #b71c1c;
+  color: #fff;
+  font-weight: 700;
+  animation: signalPulse 1s infinite;
+  box-shadow: 0 0 6px rgba(183, 28, 28, 0.6);
+}
+
+@keyframes signalPulse {
+  0%, 100% { background: #b71c1c; box-shadow: 0 0 6px rgba(183, 28, 28, 0.6); }
+  50% { background: #d50000; box-shadow: 0 0 12px rgba(213, 0, 0, 0.8); }
+}
+
+.waitingBadge {
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: #fff3e0;
+  color: #e65100;
+  font-weight: 600;
+  border: 1px solid #ffcc80;
+}
+
+@keyframes sidebarPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 .badge {
   font-size: 11px;
   padding: 2px 6px;
   border-radius: 4px;
   background: #f0f0f0;
   color: #666;
+}
+
+.nearbyItem {
+  animation: sidebarPulse 1.5s ease-in-out infinite;
+}
+
+.nearbyBuy {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  color: #fff;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.nearbySell {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  color: #fff;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ±3% - 연한색, 느린 깜빡임 */
+.urgency1 {
+  animation: nearbyChipBlink 1.2s ease-in-out infinite;
+}
+.urgency1.nearbyBuy { background: rgba(76, 175, 80, 0.6); }
+.urgency1.nearbySell { background: rgba(244, 67, 54, 0.6); }
+
+/* ±2% - 중간 */
+.urgency2 {
+  animation: nearbyChipBlink 0.7s ease-in-out infinite;
+}
+.urgency2.nearbyBuy { background: #4caf50; }
+.urgency2.nearbySell { background: #f44336; }
+
+/* ±1% - 진한색, 빠른 깜빡임 */
+.urgency3 {
+  animation: nearbyChipBlink 0.35s ease-in-out infinite;
+  font-size: 10px;
+  padding: 2px 6px;
+  box-shadow: 0 0 6px rgba(244, 67, 54, 0.4);
+}
+.urgency3.nearbyBuy {
+  background: #2e7d32;
+  box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+}
+.urgency3.nearbySell {
+  background: #c62828;
+  box-shadow: 0 0 6px rgba(244, 67, 54, 0.5);
+}
+
+@keyframes sidebarPulse {
+  0%, 100% { background: transparent; }
+  50% { background: rgba(244, 67, 54, 0.06); }
+}
+
+@keyframes nearbyChipBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+
+/* 관심종목 매수 근접 알림 */
+.watchAlert {
+  margin: 8px 16px 0;
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.watchAlertTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #e65100;
+  cursor: pointer;
+  background: #fff3e0;
+}
+
+.watchAlertTitle:hover {
+  background: #ffe0b2;
+}
+
+.watchAlertCount {
+  background: #ff6d00;
+  color: #fff;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.watchAlertItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  border-top: 1px solid #ffe082;
+}
+
+.watchAlertItem:hover {
+  background: #fff8e1;
+}
+
+.watchApproaching {
+  color: #e65100;
+}
+
+.watchReady {
+  color: #c62828;
+  font-weight: 600;
+  animation: sidebarPulse 1.5s infinite;
+}
+
+.watchName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watchDrop {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.watchReadyBadge {
+  background: #f44336;
+  color: #fff;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 700;
+  animation: nearbyChipBlink 0.5s infinite;
+}
+
+.syncStatus {
+  margin: 8px 16px 0;
+  padding: 8px 10px;
+  background: #f8f9fa;
+  border: 1px solid #e8e8e8;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.syncRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: #666;
+}
+
+.syncIcon {
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+}
+
+.syncLabel {
+  font-weight: 600;
+  color: #444;
+  width: 28px;
+}
+
+.syncTime {
+  font-family: monospace;
+  color: #1a73e8;
+  font-weight: 600;
+}
+
+.syncDetail {
+  color: #888;
+  margin-left: auto;
+}
+
+.completedBtn {
+  margin: 8px 16px 0;
+  padding: 8px;
+  background: #f5f5f5;
+  color: #666;
+  border: 1px dashed #ccc;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  width: calc(100% - 32px);
+}
+
+.completedBtn:hover {
+  background: #e8f0fe;
+  color: #1a73e8;
+  border-color: #1a73e8;
 }
 
 .kiwoomBtn {

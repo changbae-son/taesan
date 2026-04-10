@@ -1,0 +1,351 @@
+.container {
+  padding: 24px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #333;
+  margin: 0;
+}
+
+.count {
+  background: #e3f2fd;
+  color: #1565c0;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 12px;
+  margin-left: 8px;
+}
+
+.refreshBtn {
+  padding: 6px 14px;
+  background: #1565c0;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.refreshBtn:hover {
+  background: #0d47a1;
+}
+
+.refreshBtn:disabled {
+  background: #bbb;
+  cursor: not-allowed;
+}
+
+.refreshMsg {
+  padding: 6px 16px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #1565c0;
+  background: #e3f2fd;
+  border-radius: 6px;
+  text-align: center;
+}
+
+/* 추가 폼 */
+.addForm {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.addForm input {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  outline: none;
+}
+
+.addForm input:focus {
+  border-color: #1976d2;
+}
+
+.nameWrap {
+  position: relative;
+  flex: 1;
+  min-width: 100px;
+}
+
+.nameWrap .nameInput {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.searchSpinner {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+}
+
+.dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  z-index: 100;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.dropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.dropdownItem:hover {
+  background: #e8f0fe;
+}
+
+.dropdownItem:last-child {
+  border-bottom: none;
+}
+
+.dropdownName {
+  flex: 1;
+  font-weight: 600;
+  color: #333;
+}
+
+.dropdownCode {
+  font-size: 12px;
+  color: #1976d2;
+  font-family: monospace;
+}
+
+.dropdownMarket {
+  font-size: 10px;
+  color: #999;
+  padding: 1px 4px;
+  background: #f5f5f5;
+  border-radius: 3px;
+}
+
+.addForm input.codeInput {
+  width: 100px;
+}
+
+.addForm input.priceInput {
+  width: 120px;
+}
+
+.addBtn {
+  padding: 8px 20px;
+  background: #1976d2;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.addBtn:hover {
+  background: #1565c0;
+}
+
+/* 요약 */
+.summary {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.summaryItem {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.summaryWatching { background: #f0f0f0; color: #666; }
+.summaryApproaching { background: #fff3e0; color: #e65100; }
+.summaryReady { background: #ffebee; color: #c62828; }
+
+/* 카드 그리드 */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  border-left: 4px solid #ddd;
+  transition: box-shadow 0.2s;
+}
+
+.card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+}
+
+.cardWatching { border-left-color: #bbb; }
+.cardApproaching { border-left-color: #ff9800; }
+.cardReady { border-left-color: #f44336; animation: cardPulse 2s infinite; }
+.cardBought { border-left-color: #4a90d9; opacity: 0.7; }
+
+@keyframes cardPulse {
+  0%, 100% { box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  50% { box-shadow: 0 2px 12px rgba(244,67,54,0.3); }
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.stockName {
+  font-size: 16px;
+  font-weight: 700;
+  color: #333;
+}
+
+.stockCode {
+  font-size: 12px;
+  color: #999;
+  margin-left: 6px;
+}
+
+.statusBadge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-weight: 700;
+}
+
+.badgeWatching { background: #f0f0f0; color: #888; }
+.badgeApproaching { background: #fff3e0; color: #e65100; }
+.badgeReady { background: #f44336; color: #fff; }
+.badgeBought { background: #e8f0fe; color: #4a90d9; }
+
+/* 가격 정보 */
+.priceRow {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.priceLabel {
+  color: #888;
+}
+
+.priceValue {
+  font-weight: 600;
+  color: #333;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 하락률 바 */
+.dropBar {
+  margin: 12px 0;
+  position: relative;
+  height: 24px;
+  background: #f0f0f0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.dropFill {
+  height: 100%;
+  border-radius: 12px;
+  transition: width 0.5s ease;
+}
+
+.dropFillNormal { background: linear-gradient(90deg, #81c784, #ff9800); }
+.dropFillClose { background: linear-gradient(90deg, #ff9800, #f44336); }
+.dropFillReady { background: linear-gradient(90deg, #f44336, #b71c1c); }
+
+.dropText {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px;
+  font-weight: 700;
+  color: #333;
+}
+
+/* 목표가 */
+.targetRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid #f0f0f0;
+  margin-top: 8px;
+}
+
+.targetLabel {
+  font-size: 12px;
+  color: #888;
+}
+
+.targetPrice {
+  font-size: 15px;
+  font-weight: 700;
+  color: #c62828;
+}
+
+/* 삭제 */
+.deleteBtn {
+  margin-top: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  color: #999;
+  cursor: pointer;
+}
+
+.deleteBtn:hover {
+  background: #ffebee;
+  color: #c62828;
+  border-color: #ef9a9a;
+}
+
+.empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: #999;
+  font-size: 15px;
+}

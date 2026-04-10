@@ -186,6 +186,35 @@
   flex-wrap: wrap;
 }
 
+.buySignalAlert {
+  margin-top: 8px;
+  padding: 6px 12px;
+  background: #c62828;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  animation: pulse 1.5s infinite;
+}
+
+.buyWaitingAlert {
+  margin-top: 8px;
+  padding: 6px 12px;
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffcc80;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
 .nextBuy {
   font-size: 12px;
   padding: 4px 10px;

@@ -38,7 +38,12 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
       )}
 
       <div className={styles.grid}>
-        {stocks.map((stock) => {
+        {stocks.filter((stock) => {
+          // 매매완료 종목은 매매완료 탭에서 표시
+          const hasFilled = (stock.buyPlans || []).some((b) => b.filled);
+          if ((stock.totalQuantity || 0) === 0 && hasFilled) return false;
+          return true;
+        }).map((stock) => {
           const status = getStatus(stock);
           const profit = getProfitPercent(stock);
           const buyFilled = (stock.buyPlans || []).filter((b) => b.filled).length;
@@ -156,6 +161,15 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                   </span>
                 </div>
               </div>
+
+              {/* 매수신호 표시 */}
+              {stock.buySignal && (
+                <div className={stock.buySignal === 'signal' ? styles.buySignalAlert : styles.buyWaitingAlert}>
+                  {stock.buySignal === 'signal' ? '🔴 매수신호!' : '⏳ 매수대기'}
+                  {nextBuy && ` ${nextBuy.level}차 ${nextBuy.price.toLocaleString()}원`}
+                  {stock.buySignalOpen ? ` (시가 ${stock.buySignalOpen.toLocaleString()})` : ''}
+                </div>
+              )}
 
               {/* 다음 매수/매도 */}
               {(nextBuy || nextSell) && (

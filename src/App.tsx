@@ -5,7 +5,10 @@ import StockDetail from './components/StockDetail';
 import TradeJournal from './components/TradeJournal';
 import Dashboard from './components/Dashboard';
 import KiwoomSettings from './components/KiwoomSettings';
+import CompletedStocks from './components/CompletedStocks';
+import Watchlist from './components/Watchlist';
 import { useStocks } from './hooks/useStocks';
+import { useWatchlist } from './hooks/useWatchlist';
 import { useTrades } from './hooks/useTrades';
 import { useSnapshots } from './hooks/useSnapshots';
 import { useToast } from './hooks/useToast';
@@ -17,10 +20,11 @@ export default function App() {
   const { trades, addTrade, updateTrade, removeTrade } = useTrades();
   const { snapshots, addSnapshot } = useSnapshots();
   const { visible, message, showToast } = useToast();
+  const { items: watchItems, addItem: addWatchItem, removeItem: removeWatchItem } = useWatchlist();
 
   const getTabFromHash = (): TabType => {
     const hash = window.location.hash.replace('#', '') || 'list';
-    const validTabs: TabType[] = ['list', 'detail', 'journal', 'dashboard', 'kiwoom'];
+    const validTabs: TabType[] = ['list', 'detail', 'journal', 'dashboard', 'completed', 'watchlist', 'kiwoom'];
     return validTabs.includes(hash as TabType) ? (hash as TabType) : 'list';
   };
 
@@ -106,12 +110,13 @@ export default function App() {
             setMobileMenuOpen(false);
           }}
           synced={synced}
+          watchItems={watchItems}
         />
       </div>
 
       <div className="main">
         <div className="tabs">
-          {(['list', 'detail', 'journal', 'dashboard', 'kiwoom'] as TabType[]).map(
+          {(['list', 'detail', 'journal', 'dashboard', 'completed', 'watchlist', 'kiwoom'] as TabType[]).map(
             (tab) => (
               <button
                 key={tab}
@@ -122,6 +127,8 @@ export default function App() {
                 {tab === 'detail' && '종목 상세'}
                 {tab === 'journal' && '매매 일지'}
                 {tab === 'dashboard' && '통계 대시보드'}
+                {tab === 'completed' && '매매완료'}
+                {tab === 'watchlist' && '관심종목'}
                 {tab === 'kiwoom' && '키움 연동'}
               </button>
             )
@@ -161,6 +168,20 @@ export default function App() {
               stocks={stocks}
               trades={trades}
               snapshots={snapshots}
+            />
+          )}
+          {activeTab === 'completed' && (
+            <CompletedStocks
+              stocks={stocks}
+              trades={trades}
+              onDelete={handleDeleteStock}
+            />
+          )}
+          {activeTab === 'watchlist' && (
+            <Watchlist
+              items={watchItems}
+              onAdd={addWatchItem}
+              onRemove={removeWatchItem}
             />
           )}
           {activeTab === 'kiwoom' && <KiwoomSettings />}

@@ -229,9 +229,170 @@
   white-space: nowrap;
 }
 
+.dateInput {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 12px;
+  color: #555;
+  background: transparent;
+  width: 120px;
+}
+
+.dateInput:focus {
+  border-color: #4a90d9;
+  outline: none;
+}
+
 .actualPrice {
   font-weight: 700;
   font-size: 13px;
+}
+
+/* 현재가 깜빡임 */
+.currentPriceTag {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #1565c0;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  animation: priceBlink 2s ease-in-out infinite;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes priceBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* 근접 알림 행 */
+.nearbyRow {
+  position: relative;
+  animation: nearbyPulse 1.5s ease-in-out infinite;
+}
+
+.nearbyBuyRow {
+  composes: nearbyRow;
+  background: linear-gradient(90deg, rgba(76, 175, 80, 0.08), rgba(76, 175, 80, 0.18)) !important;
+  border-left: 3px solid #4caf50;
+}
+
+.nearbySellRow {
+  composes: nearbyRow;
+  background: linear-gradient(90deg, rgba(244, 67, 54, 0.08), rgba(244, 67, 54, 0.18)) !important;
+  border-left: 3px solid #f44336;
+}
+
+@keyframes nearbyPulse {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.06); }
+}
+
+.nearbyChip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  animation: chipPulse 0.6s ease-in-out infinite;
+  white-space: nowrap;
+}
+
+.nearbyBuyChip {
+  composes: nearbyChip;
+  background: #4caf50;
+  color: #fff;
+}
+
+.nearbySellChip {
+  composes: nearbyChip;
+  background: #f44336;
+  color: #fff;
+}
+
+/* 긴급도별 칩 스타일 */
+.chipUrgency1 {
+  animation: chipPulse 1.2s ease-in-out infinite;
+  opacity: 0.8;
+}
+
+.chipUrgency2 {
+  animation: chipPulse 0.7s ease-in-out infinite;
+}
+
+.chipUrgency3 {
+  animation: chipPulse 0.35s ease-in-out infinite;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.nearbyBuyChip.chipUrgency3 {
+  background: #2e7d32;
+  box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+}
+
+.nearbySellChip.chipUrgency3 {
+  box-shadow: 0 0 6px rgba(244, 67, 54, 0.5);
+}
+
+@keyframes chipPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.12); opacity: 0.2; }
+}
+
+/* 현재가 태그 - 1% 이내 긴급 */
+.priceTagUrgent {
+  animation: priceUrgentBlink 0.4s ease-in-out infinite;
+}
+
+.priceTagUrgentBuy {
+  background: #2e7d32 !important;
+  animation: priceUrgentBlink 0.4s ease-in-out infinite;
+  box-shadow: 0 0 8px rgba(46, 125, 50, 0.4);
+}
+
+.priceTagUrgentSell {
+  background: #c62828 !important;
+  animation: priceUrgentBlink 0.4s ease-in-out infinite;
+  box-shadow: 0 0 8px rgba(198, 40, 40, 0.4);
+}
+
+@keyframes priceUrgentBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* 수량 표시 */
+.plannedQty {
+  color: #888;
+}
+
+.filledQty {
+  font-weight: 700;
+  color: #333;
+}
+
+.pendingQty {
+  color: #ccc;
+}
+
+.remainQty {
+  color: #1565c0;
+  font-weight: 600;
+}
+
+.zeroQty {
+  color: #f44336;
+  font-weight: 700;
+}
+
+/* 현재가 위치 표시 */
+.priceGap {
+  font-size: 10px;
+  color: #888;
+  margin-left: 4px;
 }
 
 .filledRow {
@@ -312,6 +473,80 @@
 .maInput:focus {
   border-color: #ff9800;
   outline: none;
+}
+
+/* MA매도 이동 버튼 */
+.maTransferBtn {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 3px 8px;
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ff9800;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.maTransferBtn:hover {
+  background: #ffe0b2;
+}
+
+.maSelectPopup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: #fff8e1;
+  border: 1px solid #ffcc02;
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+
+.maSelectLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: #555;
+  white-space: nowrap;
+}
+
+.maSelectBtn {
+  padding: 3px 10px;
+  background: #ff9800;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.maSelectBtn:hover {
+  background: #f57c00;
+}
+
+.maSelectCancel {
+  padding: 3px 8px;
+  background: #eee;
+  color: #666;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.maFromBadge {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #fff3e0;
+  color: #e65100;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 4px;
 }
 
 @media (max-width: 768px) {

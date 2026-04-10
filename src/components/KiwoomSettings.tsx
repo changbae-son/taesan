@@ -92,8 +92,9 @@ export default function KiwoomSettings() {
 
       if (data.success) {
         setSyncStatus('success');
+        const soldMsg = data.soldOutStocks?.length > 0 ? ` | 전량매도: ${data.soldOutStocks.join(', ')}` : '';
         setSyncMsg(
-          `동기화 완료! 종목 ${data.syncedStocks}개, 체결 ${data.syncedTrades}건 (${data.syncTime?.slice(11, 19) || ''})`
+          `동기화 완료! 종목 ${data.syncedStocks}개, 체결 ${data.syncedTrades}건${soldMsg} (${data.syncTime?.slice(11, 19) || ''})`
         );
         setLastSync(new Date().toLocaleString('ko-KR'));
       } else {
