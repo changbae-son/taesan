@@ -74,14 +74,89 @@
   padding: 4px 8px;
 }
 
-.item {
+/* ───── 섹션 헤더 ───── */
+.sectionHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 8px;
+  gap: 5px;
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.sectionIcon {
+  font-size: 10px;
+}
+
+.sectionTitle {
+  flex-shrink: 0;
+}
+
+.sectionCount {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+  color: #444;
+  min-width: 18px;
+  text-align: center;
+}
+
+.sectionToggle {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: #999;
+}
+
+.clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+  border-radius: 4px;
+}
+.clickable:hover {
+  background: #f5f5f5;
+}
+
+.sectionAction {
+  color: #c62828;
+  border-top: 2px solid #ffcdd2;
+  margin-top: 2px;
+}
+.sectionAction .sectionCount {
+  background: #c62828;
+  color: #fff;
+}
+
+.sectionNear {
+  color: #ef6c00;
+  border-top: 2px solid #ffe0b2;
+  margin-top: 2px;
+}
+.sectionNear .sectionCount {
+  background: #ef6c00;
+  color: #fff;
+}
+
+.sectionIdle {
+  color: #888;
+  border-top: 1px solid #eee;
+  margin-top: 2px;
+}
+.sectionIdle .sectionCount {
+  background: #e8e8e8;
+  color: #666;
+}
+
+/* ───── 카드 공통 ───── */
+.item {
   border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s;
+  margin: 2px 0;
 }
 
 .item:hover {
@@ -101,42 +176,118 @@
 
 .stockName {
   flex: 1;
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
+  color: #222;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.signalBadge {
+.stockCode {
   font-size: 10px;
-  padding: 2px 5px;
-  border-radius: 4px;
-  background: #b71c1c;
-  color: #fff;
+  font-weight: 400;
+  color: #999;
+  font-family: monospace;
+  margin-left: 4px;
+}
+
+/* ───── 보유 대기 (컴팩트 1줄) ───── */
+.itemCompact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+}
+.itemCompact .stockName {
+  font-size: 13px;
+  font-weight: 500;
+  color: #444;
+}
+
+/* ───── 지금 실행 / 근접 감시 (확장 2줄) ───── */
+.itemExpanded {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 9px;
+  border-left: 3px solid transparent;
+}
+
+.itemHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.itemInfo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 14px; /* dot 너비 맞춤 */
+}
+
+/* 카테고리별 좌측 컬러 바 */
+.itemActionBuy {
+  border-left-color: #d32f2f;
+  background: rgba(211, 47, 47, 0.04);
+}
+.itemActionSell {
+  border-left-color: #1565c0;
+  background: rgba(21, 101, 192, 0.04);
+}
+.itemNearBuy {
+  border-left-color: #ef9a9a;
+}
+.itemNearSell {
+  border-left-color: #90caf9;
+}
+
+/* ───── 기본 액션 뱃지 (단일) ───── */
+.primaryBadge {
+  font-size: 10px;
   font-weight: 700;
-  animation: signalPulse 1s infinite;
-  box-shadow: 0 0 6px rgba(183, 28, 28, 0.6);
-}
-
-@keyframes signalPulse {
-  0%, 100% { background: #b71c1c; box-shadow: 0 0 6px rgba(183, 28, 28, 0.6); }
-  50% { background: #d50000; box-shadow: 0 0 12px rgba(213, 0, 0, 0.8); }
-}
-
-.waitingBadge {
-  font-size: 10px;
-  padding: 2px 5px;
+  padding: 2px 6px;
   border-radius: 4px;
-  background: #fff3e0;
-  color: #e65100;
-  font-weight: 600;
-  border: 1px solid #ffcc80;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
 }
 
-@keyframes sidebarPulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
+.primaryBuyNow {
+  background: #d32f2f;
+  color: #fff;
+  animation: primaryPulse 0.9s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(211, 47, 47, 0.5);
+}
+.primaryBuyNear {
+  background: #ffebee;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+}
+.primarySellNow {
+  background: #1565c0;
+  color: #fff;
+  animation: primaryPulse 0.9s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(21, 101, 192, 0.5);
+}
+.primarySellNear {
+  background: #e3f2fd;
+  color: #0d47a1;
+  border: 1px solid #90caf9;
+}
+
+@keyframes primaryPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+
+.manualTag {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #ff9800;
+  color: #fff;
 }
 
 .badge {
@@ -145,73 +296,111 @@
   border-radius: 4px;
   background: #f0f0f0;
   color: #666;
+  flex-shrink: 0;
 }
 
-.nearbyItem {
-  animation: sidebarPulse 1.5s ease-in-out infinite;
+/* ───── 진행 도트 (매수 차수 체결 상태) ───── */
+.progressDots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.pdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e0e0e0;
+}
+.pdotFilled {
+  background: #d32f2f;
 }
 
-.nearbyBuy {
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 8px;
-  color: #fff;
-  font-weight: 700;
-  white-space: nowrap;
+.progressDotsSmall {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.pdotSm {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #e0e0e0;
+}
+.pdotSmFilled {
+  background: #d32f2f;
+}
+
+/* ───── 다음 액션 상세 텍스트 ───── */
+.nextActionText {
+  flex: 1;
+  font-size: 11px;
+  color: #555;
   font-variant-numeric: tabular-nums;
-}
-
-.nearbySell {
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 8px;
-  color: #fff;
-  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  font-variant-numeric: tabular-nums;
 }
 
-/* ±3% - 연한색, 느린 깜빡임 */
-.urgency1 {
-  animation: nearbyChipBlink 1.2s ease-in-out infinite;
+.levelText {
+  color: #333;
+  font-weight: 700;
 }
-.urgency1.nearbyBuy { background: rgba(76, 175, 80, 0.6); }
-.urgency1.nearbySell { background: rgba(244, 67, 54, 0.6); }
 
-/* ±2% - 중간 */
-.urgency2 {
-  animation: nearbyChipBlink 0.7s ease-in-out infinite;
+.priceBuy {
+  color: #d32f2f;
+  font-weight: 700;
 }
-.urgency2.nearbyBuy { background: #4caf50; }
-.urgency2.nearbySell { background: #f44336; }
+.priceSell {
+  color: #1565c0;
+  font-weight: 700;
+}
 
-/* ±1% - 진한색, 빠른 깜빡임 */
-.urgency3 {
-  animation: nearbyChipBlink 0.35s ease-in-out infinite;
+.qtyText {
+  color: #888;
+  margin-left: 3px;
   font-size: 10px;
-  padding: 2px 6px;
-  box-shadow: 0 0 6px rgba(244, 67, 54, 0.4);
-}
-.urgency3.nearbyBuy {
-  background: #2e7d32;
-  box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
-}
-.urgency3.nearbySell {
-  background: #c62828;
-  box-shadow: 0 0 6px rgba(244, 67, 54, 0.5);
 }
 
-@keyframes sidebarPulse {
-  0%, 100% { background: transparent; }
-  50% { background: rgba(244, 67, 54, 0.06); }
+/* ───── 괴리율 뱃지 ───── */
+.gapBadge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.gapUrgent {
+  background: #ffcdd2;
+  color: #b71c1c;
+  animation: gapBlink 0.8s ease-in-out infinite;
+}
+.gapClose {
+  background: #fff3e0;
+  color: #e65100;
+}
+.gapFar {
+  background: #f0f0f0;
+  color: #666;
 }
 
-@keyframes nearbyChipBlink {
+@keyframes gapBlink {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.2; }
+  50% { opacity: 0.55; }
 }
 
-/* 관심종목 매수 근접 알림 */
+.emptyHint {
+  padding: 20px 12px;
+  font-size: 12px;
+  color: #bbb;
+  font-style: italic;
+  text-align: center;
+}
+
+/* ───── 관심종목 알림 ───── */
 .watchAlert {
   margin: 8px 16px 0;
   background: #fff8e1;
@@ -288,9 +477,32 @@
   padding: 1px 5px;
   border-radius: 4px;
   font-weight: 700;
-  animation: nearbyChipBlink 0.5s infinite;
+  animation: gapBlink 0.5s infinite;
 }
 
+.watchSummary {
+  display: flex;
+  gap: 8px;
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.watchSummary:hover { opacity: 0.8; }
+
+.summaryApproaching {
+  color: #e65100;
+  font-weight: 600;
+}
+.summaryWatching {
+  color: #888;
+}
+
+@keyframes sidebarPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* ───── 동기화 상태 ───── */
 .syncStatus {
   margin: 8px 16px 0;
   padding: 8px 10px;

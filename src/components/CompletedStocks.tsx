@@ -150,7 +150,10 @@ export default function CompletedStocks({ stocks, trades, onDelete }: Props) {
           return (
             <div key={stock.id} className={styles.card}>
               <div className={styles.cardHeader}>
-                <h3 className={styles.stockName}>{stock.name}</h3>
+                <h3 className={styles.stockName}>
+                  {stock.name}
+                  {stock.code && <span className={styles.stockCode}>({stock.code})</span>}
+                </h3>
                 <span className={`${styles.profitBadge} ${isProfit ? styles.profitBadgeGreen : styles.profitBadgeRed}`}>
                   {isProfit ? '+' : ''}{st.profitPercent.toFixed(1)}%
                 </span>

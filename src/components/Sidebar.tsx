@@ -31,34 +31,223 @@ function getStatus(stock: Stock): string {
   return '보유';
 }
 
-interface NearbyInfo {
+interface PrimaryAction {
   type: 'buy' | 'sell';
-  gap: number;       // 괴리율 (%)
-  absGap: number;    // 절대값
-  urgency: 1 | 2 | 3; // 1=±3%, 2=±2%, 3=±1%
+  urgency: 'now' | 'near';
+  level: number;
+  price: number;
+  quantity: number;
+  gap: number; // 현재가 대비 목표가 괴리율 ((현재가 - 목표가) / 목표가 * 100)
+  isManualSell?: boolean;
+  reason: 'signal' | 'waiting' | 'reached' | 'nearby';
 }
 
-function getNearby(stock: Stock): NearbyInfo[] {
+// 태산 매매 규칙: 실행 우선순위에 따라 대표 액션 1개 반환
+// 우선순위: (1) 매도 도달 > (2) 매수신호 > (3) 매수 도달 > (4) 매도 근접 > (5) 매수 근접 > (6) 매수대기
+function getPrimaryAction(stock: Stock): PrimaryAction | null {
   const cp = stock.currentPrice || 0;
-  if (cp === 0) return [];
+  if (cp === 0) return null;
 
-  const result: NearbyInfo[] = [];
-  const nextBuy = (stock.buyPlans || []).find((b) => !b.filled);
-  const nextSell = (stock.sellPlans || []).find((s) => !s.filled);
+  const buyPlans = stock.buyPlans || [];
+  const sellPlans = stock.sellPlans || [];
 
-  const check = (target: number, type: 'buy' | 'sell') => {
-    if (!target) return;
-    const gap = ((cp - target) / target) * 100;
-    const absGap = Math.abs(gap);
-    if (absGap <= 3) {
-      const urgency: 1 | 2 | 3 = absGap <= 1 ? 3 : absGap <= 2 ? 2 : 1;
-      result.push({ type, gap, absGap, urgency });
-    }
-  };
+  const nextBuyIdx = buyPlans.findIndex((b) => !b.filled);
+  const nextSellIdx = sellPlans.findIndex((s) => !s.filled);
+  const nextBuy = nextBuyIdx >= 0 ? buyPlans[nextBuyIdx] : null;
+  const nextSell = nextSellIdx >= 0 ? sellPlans[nextSellIdx] : null;
 
-  if (nextBuy) check(nextBuy.price, 'buy');
-  if (nextSell) check(nextSell.price, 'sell');
-  return result;
+  const buyGap = nextBuy && nextBuy.price > 0 ? ((cp - nextBuy.price) / nextBuy.price) * 100 : null;
+  const sellGap = nextSell && nextSell.price > 0 ? ((cp - nextSell.price) / nextSell.price) * 100 : null;
+
+  // 1. 매도 도달: 현금화 최우선
+  if (nextSell && sellGap !== null && cp >= nextSell.price) {
+    return {
+      type: 'sell',
+      urgency: 'now',
+      level: nextSellIdx + 1,
+      price: nextSell.price,
+      quantity: nextSell.quantity,
+      gap: sellGap,
+      isManualSell: nextSell.percent >= 25,
+      reason: 'reached',
+    };
+  }
+
+  // 2. 매수신호 (태산 매매법 당일 매수 조건 충족)
+  if (stock.buySignal === 'signal' && nextBuy && buyGap !== null) {
+    return {
+      type: 'buy',
+      urgency: 'now',
+      level: nextBuyIdx + 1,
+      price: nextBuy.price,
+      quantity: nextBuy.quantity,
+      gap: buyGap,
+      reason: 'signal',
+    };
+  }
+
+  // 3. 매수 도달 (목표가 터치)
+  if (nextBuy && buyGap !== null && cp <= nextBuy.price) {
+    return {
+      type: 'buy',
+      urgency: 'now',
+      level: nextBuyIdx + 1,
+      price: nextBuy.price,
+      quantity: nextBuy.quantity,
+      gap: buyGap,
+      reason: 'reached',
+    };
+  }
+
+  // 4. 매도 근접 (±3% 이내)
+  if (nextSell && sellGap !== null && Math.abs(sellGap) <= 3) {
+    return {
+      type: 'sell',
+      urgency: 'near',
+      level: nextSellIdx + 1,
+      price: nextSell.price,
+      quantity: nextSell.quantity,
+      gap: sellGap,
+      isManualSell: nextSell.percent >= 25,
+      reason: 'nearby',
+    };
+  }
+
+  // 5. 매수 근접 (±3% 이내)
+  if (nextBuy && buyGap !== null && Math.abs(buyGap) <= 3) {
+    return {
+      type: 'buy',
+      urgency: 'near',
+      level: nextBuyIdx + 1,
+      price: nextBuy.price,
+      quantity: nextBuy.quantity,
+      gap: buyGap,
+      reason: 'nearby',
+    };
+  }
+
+  // 6. 매수대기 (저점 터치 후 양봉 대기)
+  if (stock.buySignal === 'waiting' && nextBuy && buyGap !== null) {
+    return {
+      type: 'buy',
+      urgency: 'near',
+      level: nextBuyIdx + 1,
+      price: nextBuy.price,
+      quantity: nextBuy.quantity,
+      gap: buyGap,
+      reason: 'waiting',
+    };
+  }
+
+  return null;
+}
+
+function fmt(n: number): string {
+  return Math.round(n).toLocaleString('ko-KR');
+}
+
+function ProgressDots({ stock, small = false }: { stock: Stock; small?: boolean }) {
+  const plans = (stock.buyPlans || []).slice(0, 5);
+  if (plans.length === 0) return null;
+  return (
+    <span className={small ? styles.progressDotsSmall : styles.progressDots}>
+      {plans.map((p, i) => (
+        <span
+          key={i}
+          className={`${small ? styles.pdotSm : styles.pdot} ${p.filled ? (small ? styles.pdotSmFilled : styles.pdotFilled) : ''}`}
+        />
+      ))}
+    </span>
+  );
+}
+
+interface CardProps {
+  stock: Stock;
+  action: PrimaryAction | null;
+  selected: boolean;
+  onClick: () => void;
+  compact: boolean;
+}
+
+function StockCard({ stock, action, selected, onClick, compact }: CardProps) {
+  // 보유 대기 (idle): 1줄 컴팩트
+  if (compact || !action) {
+    return (
+      <div
+        className={`${styles.item} ${styles.itemCompact} ${selected ? styles.selected : ''}`}
+        onClick={onClick}
+      >
+        <span className={styles.dot} style={{ background: getDotColor(stock) }} />
+        <span className={styles.stockName}>
+          {stock.name}
+          {stock.code && <span className={styles.stockCode}>{stock.code}</span>}
+        </span>
+        <ProgressDots stock={stock} small />
+        <span className={styles.badge}>{getStatus(stock)}</span>
+      </div>
+    );
+  }
+
+  // 지금 실행 / 근접 감시: 2줄 확장
+  const itemClass =
+    action.urgency === 'now'
+      ? action.type === 'buy'
+        ? styles.itemActionBuy
+        : styles.itemActionSell
+      : action.type === 'buy'
+      ? styles.itemNearBuy
+      : styles.itemNearSell;
+
+  const absGap = Math.abs(action.gap);
+  const gapClass =
+    absGap <= 1 ? styles.gapUrgent : absGap <= 3 ? styles.gapClose : styles.gapFar;
+
+  const badgeClass =
+    action.type === 'buy'
+      ? `${styles.primaryBadge} ${action.urgency === 'now' ? styles.primaryBuyNow : styles.primaryBuyNear}`
+      : `${styles.primaryBadge} ${action.urgency === 'now' ? styles.primarySellNow : styles.primarySellNear}`;
+
+  const badgeLabel =
+    action.type === 'buy'
+      ? action.urgency === 'now'
+        ? action.reason === 'signal'
+          ? '매수!'
+          : '매수'
+        : '매수근접'
+      : action.urgency === 'now'
+      ? '매도!'
+      : '매도근접';
+
+  return (
+    <div
+      className={`${styles.item} ${styles.itemExpanded} ${itemClass} ${selected ? styles.selected : ''}`}
+      onClick={onClick}
+    >
+      <div className={styles.itemHeader}>
+        <span className={styles.dot} style={{ background: getDotColor(stock) }} />
+        <span className={styles.stockName}>
+          {stock.name}
+          {stock.code && <span className={styles.stockCode}>{stock.code}</span>}
+        </span>
+        <span className={badgeClass}>{badgeLabel}</span>
+        {action.isManualSell && <span className={styles.manualTag}>수동</span>}
+      </div>
+      <div className={styles.itemInfo}>
+        <ProgressDots stock={stock} />
+        <span className={styles.nextActionText}>
+          <b className={styles.levelText}>{action.level}차</b>{' '}
+          <span className={action.type === 'buy' ? styles.priceBuy : styles.priceSell}>
+            {fmt(action.price)}원
+          </span>
+          <span className={styles.qtyText}>× {action.quantity}주</span>
+        </span>
+        <span className={`${styles.gapBadge} ${gapClass}`}>
+          {action.gap >= 0 ? '+' : ''}
+          {action.gap.toFixed(1)}%
+        </span>
+      </div>
+    </div>
+  );
 }
 
 interface SyncInfo {
@@ -82,6 +271,7 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
   const [search, setSearch] = useState('');
   const [newName, setNewName] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+  const [showIdle, setShowIdle] = useState(false);
   const [kiwoomStatus, setKiwoomStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [kiwoomMsg, setKiwoomMsg] = useState('');
   const [autoSync, setAutoSync] = useState<SyncInfo | null>(null);
@@ -129,15 +319,38 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
     setTimeout(() => { setKiwoomStatus('idle'); setKiwoomMsg(''); }, 5000);
   };
 
-  // 매매완료 종목 필터링 (보유수량 0 + 매수 체결 이력 있음)
+  // 이름 없는 빈 종목 + 매매완료 종목 필터링
   const activeStocks = stocks.filter(
-    (s) => (s.totalQuantity || 0) > 0 || !(s.buyPlans || []).some((bp) => bp.filled)
+    (s) => (s.name && s.name.trim()) && ((s.totalQuantity || 0) > 0 || !(s.buyPlans || []).some((bp) => bp.filled))
   );
   const completedCount = stocks.length - activeStocks.length;
 
   const filtered = activeStocks.filter((s) =>
     (s.name || '').toLowerCase().includes(search.toLowerCase())
   );
+
+  // 실행 우선순위 분류
+  type Entry = { stock: Stock; action: PrimaryAction | null };
+  const actionList: Entry[] = [];
+  const nearList: Entry[] = [];
+  const idleList: Entry[] = [];
+  filtered.forEach((s) => {
+    const act = getPrimaryAction(s);
+    const entry = { stock: s, action: act };
+    if (!act) idleList.push(entry);
+    else if (act.urgency === 'now') actionList.push(entry);
+    else nearList.push(entry);
+  });
+
+  // 실행/근접 내부 정렬: 매도 우선(현금화), 그다음 괴리 작은 순
+  const sortEntries = (a: Entry, b: Entry) => {
+    const aA = a.action!;
+    const bA = b.action!;
+    if (aA.type !== bA.type) return aA.type === 'sell' ? -1 : 1;
+    return Math.abs(aA.gap) - Math.abs(bA.gap);
+  };
+  actionList.sort(sortEntries);
+  nearList.sort(sortEntries);
 
   const totalStocks = activeStocks.length;
   const profitStocks = activeStocks.filter(
@@ -151,6 +364,20 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
       setShowAdd(false);
     }
   };
+
+  const renderCard = (entry: Entry, compact: boolean) => (
+    <StockCard
+      key={entry.stock.id}
+      stock={entry.stock}
+      action={entry.action}
+      selected={selectedId === entry.stock.id}
+      onClick={() => {
+        onSelect(entry.stock.id);
+        onTabChange('detail');
+      }}
+      compact={compact}
+    />
+  );
 
   return (
     <div className={styles.sidebar}>
@@ -170,13 +397,13 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
         </div>
         <div className={styles.statItem}>
           <span className={styles.statLabel}>수익</span>
-          <span className={styles.statValue} style={{ color: '#4caf50' }}>
+          <span className={styles.statValue} style={{ color: '#d32f2f' }}>
             {profitStocks}
           </span>
         </div>
         <div className={styles.statItem}>
           <span className={styles.statLabel}>손실</span>
-          <span className={styles.statValue} style={{ color: '#f44336' }}>
+          <span className={styles.statValue} style={{ color: '#1565c0' }}>
             {totalStocks - profitStocks}
           </span>
         </div>
@@ -190,71 +417,89 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
       />
 
       <div className={styles.list}>
-        {filtered.map((s) => {
-          const nearbyList = getNearby(s);
-          return (
-            <div
-              key={s.id}
-              className={`${styles.item} ${selectedId === s.id ? styles.selected : ''} ${nearbyList.length > 0 ? styles.nearbyItem : ''}`}
-              onClick={() => {
-                onSelect(s.id);
-                onTabChange('detail');
-              }}
-            >
-              <span
-                className={styles.dot}
-                style={{ background: getDotColor(s) }}
-              />
-              <span className={styles.stockName}>{s.name}</span>
-              {s.buySignal === 'signal' && (
-                <span className={styles.signalBadge}>매수신호</span>
-              )}
-              {s.buySignal === 'waiting' && (
-                <span className={styles.waitingBadge}>대기</span>
-              )}
-              {nearbyList.map((n, i) => (
-                <span
-                  key={i}
-                  className={`${n.type === 'buy' ? styles.nearbyBuy : styles.nearbySell} ${
-                    n.urgency === 3 ? styles.urgency3 : n.urgency === 2 ? styles.urgency2 : styles.urgency1
-                  }`}
-                >
-                  {n.type === 'buy' ? '매수' : '매도'} {n.gap >= 0 ? '+' : ''}{n.gap.toFixed(1)}%
-                </span>
-              ))}
-              <span className={styles.badge}>{getStatus(s)}</span>
+        {actionList.length > 0 && (
+          <>
+            <div className={`${styles.sectionHeader} ${styles.sectionAction}`}>
+              <span className={styles.sectionIcon}>🔴</span>
+              <span className={styles.sectionTitle}>지금 실행</span>
+              <span className={styles.sectionCount}>{actionList.length}</span>
             </div>
-          );
-        })}
+            {actionList.map((e) => renderCard(e, false))}
+          </>
+        )}
+
+        {nearList.length > 0 && (
+          <>
+            <div className={`${styles.sectionHeader} ${styles.sectionNear}`}>
+              <span className={styles.sectionIcon}>🟡</span>
+              <span className={styles.sectionTitle}>근접 감시</span>
+              <span className={styles.sectionCount}>{nearList.length}</span>
+            </div>
+            {nearList.map((e) => renderCard(e, false))}
+          </>
+        )}
+
+        {idleList.length > 0 && (
+          <>
+            <div
+              className={`${styles.sectionHeader} ${styles.sectionIdle} ${styles.clickable}`}
+              onClick={() => setShowIdle((v) => !v)}
+            >
+              <span className={styles.sectionIcon}>⚪</span>
+              <span className={styles.sectionTitle}>보유 대기</span>
+              <span className={styles.sectionCount}>{idleList.length}</span>
+              <span className={styles.sectionToggle}>{showIdle ? '접기 ▲' : '펼치기 ▼'}</span>
+            </div>
+            {showIdle && idleList.map((e) => renderCard(e, true))}
+          </>
+        )}
+
+        {filtered.length === 0 && (
+          <div className={styles.emptyHint}>
+            {search ? '검색 결과 없음' : '종목 없음'}
+          </div>
+        )}
       </div>
 
-      {/* 관심종목 매수 근접 알림 */}
+      {/* 관심종목 알림: 매수준비만 개별 표시, 나머지는 요약 */}
       {(() => {
-        const nearWatch = watchItems.filter((w) => w.status === 'approaching' || w.status === 'ready');
-        if (nearWatch.length === 0) return null;
+        const readyItems = watchItems.filter((w) => w.status === 'ready');
+        const approachingCount = watchItems.filter((w) => w.status === 'approaching').length;
+        const watchingCount = watchItems.filter((w) => w.status === 'watching').length;
+        if (readyItems.length === 0 && approachingCount === 0 && watchItems.length === 0) return null;
         return (
           <div className={styles.watchAlert}>
             <div
               className={styles.watchAlertTitle}
               onClick={() => onTabChange('watchlist')}
             >
-              관심종목 알림
-              <span className={styles.watchAlertCount}>{nearWatch.length}</span>
+              관심종목
+              {readyItems.length > 0 && <span className={styles.watchAlertCount}>{readyItems.length}</span>}
             </div>
-            {nearWatch.map((w) => {
+            {readyItems.map((w) => {
               const drop = w.peakPrice > 0 ? ((w.currentPrice - w.peakPrice) / w.peakPrice * 100) : 0;
               return (
                 <div
                   key={w.id}
-                  className={`${styles.watchAlertItem} ${w.status === 'ready' ? styles.watchReady : styles.watchApproaching}`}
+                  className={`${styles.watchAlertItem} ${styles.watchReady}`}
                   onClick={() => onTabChange('watchlist')}
                 >
-                  <span className={styles.watchName}>{w.name}</span>
+                  <span className={styles.watchName}>
+                    {w.name}
+                    {w.code && <span className={styles.stockCode}>{w.code}</span>}
+                  </span>
                   <span className={styles.watchDrop}>{drop.toFixed(1)}%</span>
-                  {w.status === 'ready' && <span className={styles.watchReadyBadge}>매수!</span>}
+                  <span className={styles.watchReadyBadge}>매수!</span>
                 </div>
               );
             })}
+            <div
+              className={styles.watchSummary}
+              onClick={() => onTabChange('watchlist')}
+            >
+              {approachingCount > 0 && <span className={styles.summaryApproaching}>접근중 {approachingCount}</span>}
+              {watchingCount > 0 && <span className={styles.summaryWatching}>감시중 {watchingCount}</span>}
+            </div>
           </div>
         );
       })()}

@@ -84,6 +84,14 @@
   margin: 0;
 }
 
+.stockCode {
+  font-size: 11px;
+  font-weight: 500;
+  color: #888;
+  font-family: monospace;
+  margin-left: 5px;
+}
+
 .profitBadge {
   padding: 4px 12px;
   border-radius: 16px;

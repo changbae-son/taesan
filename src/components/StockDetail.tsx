@@ -31,6 +31,7 @@ export default function StockDetail({
 }: Props) {
   const [local, setLocal] = useState<Stock>(stock);
   const [maSelectIdx, setMaSelectIdx] = useState<number | null>(null);
+  const [showBasicInfo, setShowBasicInfo] = useState(false);
 
   useEffect(() => {
     setLocal(stock);
@@ -121,6 +122,11 @@ export default function StockDetail({
       ? ((local.currentPrice - local.avgPrice) / local.avgPrice) * 100
       : 0;
 
+  const profitAmount =
+    local.avgPrice > 0 && local.totalQuantity > 0
+      ? (local.currentPrice - local.avgPrice) * local.totalQuantity
+      : 0;
+
   const filledBuys = local.buyPlans.filter((b) => b.filled).length;
   const stockSnapshots = snapshots.filter((s) => s.stockId === local.id);
 
@@ -161,6 +167,15 @@ export default function StockDetail({
     buysByDate.push({ date: d, ...buyDateMap[d] });
   });
 
+  // 실제 평균단가 (체결 기반) - 계획가 기반(local.avgPrice)과 비교용
+  const actualTotalQty = buysByDate.reduce((sum, b) => sum + b.qty, 0);
+  const actualTotalAmt = buysByDate.reduce((sum, b) => sum + b.amt, 0);
+  const actualAvgPrice = actualTotalQty > 0 ? Math.round(actualTotalAmt / actualTotalQty) : 0;
+  const avgPriceDiffers = actualAvgPrice > 0 && Math.abs(actualAvgPrice - local.avgPrice) / (local.avgPrice || 1) > 0.01;
+  const actualProfitPercent = actualAvgPrice > 0
+    ? ((local.currentPrice - actualAvgPrice) / actualAvgPrice) * 100
+    : 0;
+
   // 매도를 날짜별로 그룹핑
   const sellsByDate: { date: string; qty: number; amt: number; trades: Trade[] }[] = [];
   const sellDateMap: Record<string, { qty: number; amt: number; trades: Trade[] }> = {};
@@ -177,11 +192,33 @@ export default function StockDetail({
   // 다음 매도 차수 인덱스
   const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsByDate[i]);
 
+  // 1차 매수 참고 정보 (헤더 배지용)
+  const firstBuyPlan = local.buyPlans[0];
+  const firstBuyActual = buysByDate[0];
+  const firstBuyRefQty = firstBuyActual?.qty || firstBuyPlan?.filledQuantity || firstBuyPlan?.quantity || 0;
+  const firstBuyRefPrice = firstBuyActual
+    ? Math.round(firstBuyActual.amt / firstBuyActual.qty)
+    : (firstBuyPlan?.filledPrice || firstBuyPlan?.price || 0);
+  const firstBuyRefFilled = !!firstBuyPlan?.filled || !!firstBuyActual;
+
+  // 1차 매도 참고 정보 (첫 번째 체결된 매도)
+  const firstFilledSellIdx = local.sellPlans.findIndex((s, i) => s.filled || !!sellsByDate[i]);
+  const firstSellPlan = firstFilledSellIdx >= 0 ? local.sellPlans[firstFilledSellIdx] : null;
+  const firstSellActual = firstFilledSellIdx >= 0 ? sellsByDate[firstFilledSellIdx] : null;
+  const firstSellRefQty = firstSellActual?.qty || firstSellPlan?.filledQuantity || firstSellPlan?.quantity || 0;
+  const firstSellRefPrice = firstSellActual
+    ? Math.round(firstSellActual.amt / firstSellActual.qty)
+    : (firstSellPlan?.filledPrice || firstSellPlan?.price || 0);
+  const firstSellRefPercent = firstSellPlan?.percent || 0;
+
   return (
     <div className={styles.container}>
       {/* 헤더 */}
       <div className={styles.header}>
-        <h2 className={styles.title}>{local.name}</h2>
+        <h2 className={styles.title}>
+          {local.name}
+          {local.code && <span className={styles.codeLabel}>({local.code})</span>}
+        </h2>
         <span
           className={styles.badge}
           style={{
@@ -221,8 +258,118 @@ export default function StockDetail({
       {local.rule === 'B' && (
         <div className={styles.alertBlue}>
           룰B 적용 중: 저점 대비 -10%에서 양봉 매수
+          {local.bottomPrice && local.bottomPrice > 0 && (
+            <>
+              <br />
+              추적 저점: <strong>{local.bottomPrice.toLocaleString()}원</strong>
+              {' → '}다음 매수가: <strong>{Math.round(local.bottomPrice * 0.9).toLocaleString()}원</strong>
+            </>
+          )}
         </div>
       )}
+      {local.totalQuantity > 0 && actualBuys.length === 0 && (
+        <div className={styles.alertOrange}>
+          ⚠️ <strong>매수 기록 불완전</strong> — Kiwoom API에서 과거 매수 내역을 조회할 수 없습니다.
+          <br />
+          다음 매수 차수 실행 전 <strong>HTS에서 현재 진입 차수를 반드시 확인</strong>하세요.
+        </div>
+      )}
+
+      {/* 다음 액션 배너 (매매 판단 최우선) */}
+      {(() => {
+        const nextBuy = local.buyPlans.find((b) => !b.filled);
+        const nextSellForBanner = local.sellPlans.find((s, i) => !s.filled && !sellsByDate[i]);
+        const buyGap = nextBuy && local.currentPrice > 0
+          ? ((local.currentPrice - nextBuy.price) / nextBuy.price) * 100
+          : null;
+        const sellGap = nextSellForBanner && local.currentPrice > 0
+          ? ((local.currentPrice - nextSellForBanner.price) / nextSellForBanner.price) * 100
+          : null;
+        const buyUrgent = buyGap !== null && buyGap >= 0 && buyGap <= 3;
+        const sellUrgent = sellGap !== null && sellGap >= -3 && sellGap <= 0;
+
+        if (!nextBuy && !nextSellForBanner) return null;
+
+        return (
+          <div className={styles.actionBanner}>
+            {nextBuy && (
+              <div className={`${styles.bannerBlock} ${styles.bannerBuy} ${buyUrgent ? styles.bannerUrgent : ''}`}>
+                <div className={styles.bannerHeader}>
+                  <span className={styles.bannerIcon}>🎯</span>
+                  <span className={styles.bannerTitle}>다음 매수</span>
+                  <span className={styles.bannerLevel}>{nextBuy.level}차</span>
+                  {firstBuyRefFilled && firstBuyRefQty > 0 && firstBuyRefPrice > 0 && nextBuy.level > 1 && (
+                    <span className={styles.bannerHistory}>
+                      1차 <b>{firstBuyRefQty.toLocaleString()}주</b> @ <b>{firstBuyRefPrice.toLocaleString()}원</b> ✓
+                    </span>
+                  )}
+                  <span className={styles.bannerQtyInline}>
+                    {nextBuy.level}차수량 <b>{nextBuy.quantity.toLocaleString()}주</b>
+                  </span>
+                  {buyGap !== null && (
+                    <span className={`${styles.bannerGap} ${
+                      Math.abs(buyGap) <= 3 ? styles.bannerGapUrgent
+                      : Math.abs(buyGap) <= 5 ? styles.bannerGapClose
+                      : styles.bannerGapFar
+                    }`}>
+                      {buyGap >= 0 ? '+' : ''}{buyGap.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+                <div className={styles.bannerMainRow}>
+                  <span className={styles.bannerPrice}>
+                    {nextBuy.price.toLocaleString()}
+                    <span className={styles.bannerUnit}>원</span>
+                  </span>
+                  <span className={styles.bannerNowPrice}>
+                    현재 <b>{local.currentPrice.toLocaleString()}</b>
+                    <span className={styles.bannerNowUnit}>원</span>
+                  </span>
+                </div>
+              </div>
+            )}
+            {nextSellForBanner && (
+              <div className={`${styles.bannerBlock} ${styles.bannerSell} ${sellUrgent ? styles.bannerUrgent : ''}`}>
+                <div className={styles.bannerHeader}>
+                  <span className={styles.bannerIcon}>💰</span>
+                  <span className={styles.bannerTitle}>다음 매도</span>
+                  <span className={styles.bannerLevel}>+{nextSellForBanner.percent}%</span>
+                  {nextSellForBanner.percent >= 25 && (
+                    <span className={styles.bannerManual}>수동</span>
+                  )}
+                  {firstSellPlan && firstSellRefQty > 0 && firstSellRefPrice > 0 && firstSellPlan.percent !== nextSellForBanner.percent && (
+                    <span className={styles.bannerHistory}>
+                      +{firstSellRefPercent}% <b>{firstSellRefQty.toLocaleString()}주</b> @ <b>{firstSellRefPrice.toLocaleString()}원</b> ✓
+                    </span>
+                  )}
+                  <span className={styles.bannerQtyInline}>
+                    이번 <b>{nextSellForBanner.quantity.toLocaleString()}주</b> (20%)
+                  </span>
+                  {sellGap !== null && (
+                    <span className={`${styles.bannerGap} ${
+                      Math.abs(sellGap) <= 3 ? styles.bannerGapUrgent
+                      : Math.abs(sellGap) <= 5 ? styles.bannerGapClose
+                      : styles.bannerGapFar
+                    }`}>
+                      {sellGap >= 0 ? '+' : ''}{sellGap.toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+                <div className={styles.bannerMainRow}>
+                  <span className={styles.bannerPrice}>
+                    {nextSellForBanner.price.toLocaleString()}
+                    <span className={styles.bannerUnit}>원</span>
+                  </span>
+                  <span className={styles.bannerNowPrice}>
+                    현재 <b>{local.currentPrice.toLocaleString()}</b>
+                    <span className={styles.bannerNowUnit}>원</span>
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* 룰 토글 */}
       <div className={styles.ruleToggle}>
@@ -244,54 +391,24 @@ export default function StockDetail({
         )}
       </div>
 
-      {/* 기본 입력 */}
-      <div className={styles.card}>
-        <h3 className={styles.cardTitle}>기본 정보</h3>
-        <div className={styles.inputGrid}>
-          <label>
-            1차 매수가
-            <input
-              type="number"
-              value={local.firstBuyPrice || ''}
-              onChange={(e) =>
-                updateField('firstBuyPrice', Number(e.target.value))
-              }
-            />
-          </label>
-          <label>
-            1차 수량
-            <input
-              type="number"
-              value={local.firstBuyQuantity || ''}
-              onChange={(e) =>
-                updateField('firstBuyQuantity', Number(e.target.value))
-              }
-            />
-          </label>
-          <label>
-            현재가
-            <input
-              type="number"
-              value={local.currentPrice || ''}
-              onChange={(e) =>
-                updateField('currentPrice', Number(e.target.value))
-              }
-            />
-          </label>
-          <label>
-            평균단가
-            <input type="text" value={local.avgPrice.toLocaleString()} readOnly />
-          </label>
-        </div>
-      </div>
-
-      {/* 요약바 */}
+      {/* 통합 요약바 (평균단가 계획/실제 2줄 + 손익 금액) */}
       <div className={styles.summary}>
         <div className={styles.summaryItem}>
           <span className={styles.summaryLabel}>평균단가</span>
-          <span className={styles.summaryValue} style={{ color: '#ff9800' }}>
-            {local.avgPrice.toLocaleString()}
-          </span>
+          {avgPriceDiffers ? (
+            <>
+              <span className={styles.summaryValueSmall} style={{ color: '#888' }}>
+                계획 {local.avgPrice.toLocaleString()}
+              </span>
+              <span className={styles.summaryValue} style={{ color: '#d32f2f' }}>
+                실제 {actualAvgPrice.toLocaleString()}
+              </span>
+            </>
+          ) : (
+            <span className={styles.summaryValue} style={{ color: '#ff9800' }}>
+              {(actualAvgPrice || local.avgPrice).toLocaleString()}
+            </span>
+          )}
         </div>
         <div className={styles.summaryItem}>
           <span className={styles.summaryLabel}>보유수량</span>
@@ -303,10 +420,21 @@ export default function StockDetail({
           <span className={styles.summaryLabel}>평가손익</span>
           <span
             className={styles.summaryValue}
-            style={{ color: profitPercent >= 0 ? '#4caf50' : '#f44336' }}
+            style={{ color: profitPercent >= 0 ? '#d32f2f' : '#1565c0' }}
           >
-            {profitPercent.toFixed(2)}%
+            {profitPercent >= 0 ? '+' : ''}{profitPercent.toFixed(2)}%
           </span>
+          {profitAmount !== 0 && (
+            <span className={styles.summarySubValue}
+              style={{ color: profitAmount >= 0 ? '#d32f2f' : '#1565c0' }}>
+              {profitAmount >= 0 ? '+' : ''}{Math.round(profitAmount).toLocaleString()}원
+            </span>
+          )}
+          {avgPriceDiffers && (
+            <span className={styles.summarySubValue} style={{ color: '#888', fontSize: '10px' }}>
+              실제 {actualProfitPercent >= 0 ? '+' : ''}{actualProfitPercent.toFixed(1)}%
+            </span>
+          )}
         </div>
         <div className={styles.summaryItem}>
           <span className={styles.summaryLabel}>진입차수</span>
@@ -318,9 +446,89 @@ export default function StockDetail({
         </div>
       </div>
 
+      {/* 이동평균선 표시 */}
+      {local.currentPrice > 0 && (local.ma20 || local.ma60 || local.ma120) && (
+        <div className={styles.maBar}>
+          {([
+            { label: 'MA20', val: local.ma20 },
+            { label: 'MA60', val: local.ma60 },
+            { label: 'MA120', val: local.ma120 },
+          ] as { label: string; val?: number }[])
+            .filter((m) => (m.val ?? 0) > 0)
+            .map((m) => {
+              const gap = (((local.currentPrice - (m.val ?? 0)) / (m.val ?? 1)) * 100);
+              const isNear = Math.abs(gap) <= 4;
+              const isAbove = gap >= 0;
+              return (
+                <div
+                  key={m.label}
+                  className={`${styles.maChip} ${isNear ? (isAbove ? styles.maChipNearAbove : styles.maChipNearBelow) : ''}`}
+                >
+                  <span className={styles.maChipLabel}>{m.label}</span>
+                  <span className={styles.maChipPrice}>{(m.val ?? 0).toLocaleString()}</span>
+                  <span
+                    className={styles.maChipGap}
+                    style={{ color: isAbove ? '#c62828' : '#1565c0' }}
+                  >
+                    {isAbove ? '+' : ''}{gap.toFixed(1)}%
+                  </span>
+                </div>
+              );
+            })}
+          {local.maCalcDate && (
+            <span className={styles.maCalcDate}>{local.maCalcDate} 기준</span>
+          )}
+        </div>
+      )}
+
+      {/* 기본 정보 (접이식) */}
+      <div className={styles.card}>
+        <div className={styles.collapseHeader} onClick={() => setShowBasicInfo(!showBasicInfo)}>
+          <span className={styles.collapseArrow}>{showBasicInfo ? '▼' : '▶'}</span>
+          <h3 className={styles.cardTitleInline}>기본 정보 수정</h3>
+          <span className={styles.collapseHint}>
+            {showBasicInfo ? '' : '1차 매수가 · 1차 수량 · 현재가'}
+          </span>
+        </div>
+        {showBasicInfo && (
+          <div className={styles.inputGrid} style={{ marginTop: 12 }}>
+            <label>
+              1차 매수가
+              <input
+                type="number"
+                value={local.firstBuyPrice || ''}
+                onChange={(e) =>
+                  updateField('firstBuyPrice', Number(e.target.value))
+                }
+              />
+            </label>
+            <label>
+              1차 수량
+              <input
+                type="number"
+                value={local.firstBuyQuantity || ''}
+                onChange={(e) =>
+                  updateField('firstBuyQuantity', Number(e.target.value))
+                }
+              />
+            </label>
+            <label>
+              현재가
+              <input
+                type="number"
+                value={local.currentPrice || ''}
+                onChange={(e) =>
+                  updateField('currentPrice', Number(e.target.value))
+                }
+              />
+            </label>
+          </div>
+        )}
+      </div>
+
       {/* 매수 계획 */}
       <div className={styles.card}>
-        <h3 className={styles.cardTitle} style={{ color: '#4caf50' }}>
+        <h3 className={styles.cardTitle} style={{ color: '#d32f2f' }}>
           매수 계획
         </h3>
         <table className={styles.planTable}>
@@ -329,8 +537,7 @@ export default function StockDetail({
               <th>차수</th>
               <th>계획가</th>
               <th>실제 매수가</th>
-              <th>계획수량</th>
-              <th>체결수량</th>
+              <th>매수수량</th>
               <th>체결일</th>
               <th>체결</th>
             </tr>
@@ -367,7 +574,9 @@ export default function StockDetail({
                     )}
                   </td>
                   <td className={styles.numCell}>
-                    {bp.price.toLocaleString()}
+                    <span className={i === nextBuyIdx && !bp.filled ? styles.nextBuyPrice : ''}>
+                      {bp.price.toLocaleString()}
+                    </span>
                     {i === nextBuyIdx && !bp.filled && local.currentPrice > 0 && (
                       <>
                         <br />
@@ -387,16 +596,15 @@ export default function StockDetail({
                       </span>
                     ) : '-'}
                   </td>
-                  <td className={`${styles.numCell} ${styles.plannedQty}`}>
-                    {bp.quantity.toLocaleString()}
-                  </td>
                   <td className={styles.numCell}>
                     {bp.filled ? (
                       <span className={styles.filledQty}>
                         {(realQty || bp.quantity).toLocaleString()}
                       </span>
                     ) : (
-                      <span className={styles.pendingQty}>-</span>
+                      <span className={styles.plannedQty}>
+                        {bp.quantity.toLocaleString()}
+                      </span>
                     )}
                   </td>
                   <td className={styles.dateCell}>
@@ -430,7 +638,7 @@ export default function StockDetail({
 
       {/* 수익 매도 계획 */}
       <div className={styles.card}>
-        <h3 className={styles.cardTitle} style={{ color: '#f44336' }}>
+        <h3 className={styles.cardTitle} style={{ color: '#1565c0' }}>
           수익 매도 계획 (20%씩 분할)
         </h3>
         <table className={styles.planTable}>
@@ -439,8 +647,7 @@ export default function StockDetail({
               <th>목표</th>
               <th>목표가</th>
               <th>실제 매도가</th>
-              <th>계획수량</th>
-              <th>체결수량</th>
+              <th>매도수량</th>
               <th>잔여수량</th>
               <th>체결일</th>
               <th>실현수익률</th>
@@ -478,6 +685,9 @@ export default function StockDetail({
                   <tr key={i} className={`${sp.filled || actual ? styles.sellFilledRow : ''} ${sellNearInfo ? styles.nearbySellRow : ''}`}>
                     <td>
                       +{sp.percent}%
+                      {sp.percent >= 25 && (
+                        <span className={styles.manualSellBadge} title="키움 자동매매 미설정 차수 (수동 매도)">수동</span>
+                      )}
                       {sellNearInfo && (
                         <span className={`${styles.nearbySellChip} ${
                           sellNearInfo.urgency === 3 ? styles.chipUrgency3 : sellNearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
@@ -487,7 +697,9 @@ export default function StockDetail({
                       )}
                     </td>
                     <td className={styles.numCell}>
-                      {sp.price.toLocaleString()}
+                      <span className={i === nextSellIdx && !sp.filled && !actual ? styles.nextSellPrice : ''}>
+                        {sp.price.toLocaleString()}
+                      </span>
                       {i === nextSellIdx && !sp.filled && !actual && local.currentPrice > 0 && (
                         <>
                           <br />
@@ -504,20 +716,19 @@ export default function StockDetail({
                       {(sp.filled || actual) && realPrice > 0 ? (
                         <span
                           className={styles.actualPrice}
-                          style={{ color: metTarget ? '#4caf50' : '#ff9800' }}
+                          style={{ color: metTarget ? '#1565c0' : '#ff9800' }}
+                          title={metTarget ? '목표 달성' : '목표 미달 매도'}
                         >
+                          {!metTarget && <span className={styles.undershotIcon}>⚠️</span>}
                           {realPrice.toLocaleString()}
                         </span>
                       ) : '-'}
-                    </td>
-                    <td className={`${styles.numCell} ${styles.plannedQty}`}>
-                      {sp.quantity.toLocaleString()}
                     </td>
                     <td className={styles.numCell}>
                       {(sp.filled || actual) ? (
                         <span className={styles.filledQty}>{(realQty || sp.quantity).toLocaleString()}</span>
                       ) : (
-                        <span className={styles.pendingQty}>-</span>
+                        <span className={styles.plannedQty}>{sp.quantity.toLocaleString()}</span>
                       )}
                     </td>
                     <td className={styles.numCell}>

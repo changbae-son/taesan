@@ -18,6 +18,18 @@ functions/node_modules
 .env
 *.key
 
+# 디버그/검증용 임시 JSON 파일 (커밋 불필요)
+inspect_*.json
+*_verify*.json
+*_result.json
+*_dry*.json
+*_exec*.json
+purge*.json
+sync*.json
+verify*.json
+pre_*.json
+post_*.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -9,12 +9,6 @@
   color: #333;
 }
 
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 12px;
-}
-
 .emptyCard {
   text-align: center;
   padding: 60px 20px;
@@ -25,214 +19,492 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-/* 카드 */
-.card {
+/* 대시보드 */
+.dashboard {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.dashItem {
+  flex: 1;
+  min-width: 80px;
   background: #fff;
   border-radius: 10px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-  padding: 16px;
-  cursor: pointer;
-  transition: box-shadow 0.15s, transform 0.15s;
-}
-
-.card:hover {
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  transform: translateY(-1px);
-}
-
-/* 헤더 */
-.cardHeader {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 14px;
-}
-
-.stockName {
-  font-size: 16px;
-  font-weight: 700;
-  color: #222;
-}
-
-.headerRight {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.statusBadge {
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.ruleBadge {
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  background: #e8f0fe;
-  color: #4a90d9;
-}
-
-/* 진행 상태 */
-.progressSection {
-  display: flex;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.progressItem {
-  flex: 1;
-}
-
-.progressLabel {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  color: #666;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.progressCount {
-  font-size: 12px;
-  font-weight: 700;
-  color: #444;
-}
-
-.progressBar {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.dots {
-  display: flex;
-  gap: 5px;
-}
-
-.dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #e0e0e0;
-  transition: background 0.2s;
-}
-
-.dotFilled {
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-}
-
-.dotSellFilled {
-  background: #f44336;
-  box-shadow: 0 1px 3px rgba(244, 67, 54, 0.3);
-}
-
-.bar {
-  height: 4px;
-  background: #f0f0f0;
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.barFill {
-  height: 100%;
-  border-radius: 2px;
-  transition: width 0.3s ease;
-}
-
-/* 수치 */
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  padding: 10px 0;
-  border-top: 1px solid #f0f0f0;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.metricItem {
+  padding: 12px 14px;
   text-align: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
-.metricLabel {
+.dashSignal {
+  border: 2px solid #c62828;
+  background: #fff8f8;
+}
+
+.dashWaiting {
+  border: 2px solid #e65100;
+  background: #fffcf5;
+}
+
+.dashNum {
   display: block;
-  font-size: 11px;
-  color: #999;
-  margin-bottom: 2px;
-}
-
-.metricValue {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 800;
   color: #333;
   font-variant-numeric: tabular-nums;
 }
 
-.profitValue {
-  font-size: 16px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+.dashLabel {
+  font-size: 11px;
+  color: #888;
+  margin-top: 2px;
 }
 
-/* 다음 매수/매도 */
-.nextActions {
+/* 그룹 */
+.groups {
   display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.group {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.07);
+  overflow: hidden;
+}
+
+.groupHeader {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  margin-top: 10px;
-  flex-wrap: wrap;
+  padding: 12px 16px;
+  cursor: pointer;
+  border-left: 4px solid;
+  user-select: none;
+  background: #fafafa;
 }
 
-.buySignalAlert {
-  margin-top: 8px;
-  padding: 6px 12px;
-  background: #c62828;
-  color: #fff;
-  border-radius: 8px;
-  font-size: 13px;
+.groupHeader:hover {
+  background: #f5f5f5;
+}
+
+.groupArrow {
+  font-size: 10px;
+  color: #aaa;
+  width: 14px;
+  flex-shrink: 0;
+}
+
+.groupIcon {
+  font-size: 15px;
+}
+
+.groupLabel {
+  font-size: 14px;
   font-weight: 700;
-  text-align: center;
-  animation: pulse 1.5s infinite;
 }
 
-.buyWaitingAlert {
-  margin-top: 8px;
-  padding: 6px 12px;
-  background: #fff3e0;
-  color: #e65100;
-  border: 1px solid #ffcc80;
-  border-radius: 8px;
-  font-size: 13px;
+.groupCount {
+  font-size: 12px;
+  color: #888;
+  margin-left: auto;
+  background: #eee;
+  padding: 2px 10px;
+  border-radius: 10px;
   font-weight: 600;
-  text-align: center;
+}
+
+/* 카드 그리드 */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+  padding: 10px 12px 14px;
+}
+
+/* 카드 공통 */
+.card,
+.cardSignal,
+.cardWaiting {
+  background: #fff;
+  border-radius: 10px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+  border: 1px solid #eee;
+}
+
+.card:hover,
+.cardSignal:hover,
+.cardWaiting:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.cardSignal {
+  border-left: 4px solid #c62828;
+  background: linear-gradient(135deg, #fff5f5 0%, #fff 60%);
+  animation: signalPulse 2.5s ease-in-out infinite;
+}
+
+.cardWaiting {
+  border-left: 4px solid #e65100;
+  background: linear-gradient(135deg, #fffbf0 0%, #fff 60%);
+}
+
+@keyframes signalPulse {
+  0%, 100% { box-shadow: 0 1px 4px rgba(198, 40, 40, 0.08); }
+  50% { box-shadow: 0 2px 12px rgba(198, 40, 40, 0.18); }
+}
+
+/* 카드 1줄: 종목명 + 상태 */
+.cardRow1 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 8px;
+}
+
+.stockName {
+  font-size: 15px;
+  font-weight: 700;
+  color: #222;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.stockCode {
+  font-size: 11px;
+  color: #aaa;
+  font-family: monospace;
+  margin-left: 5px;
+  font-weight: 400;
+}
+
+.badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.signalBadge {
+  font-size: 10px;
+  font-weight: 800;
+  color: #fff;
+  background: #c62828;
+  padding: 2px 7px;
+  border-radius: 4px;
+  animation: pulse 1.2s infinite;
+  white-space: nowrap;
+}
+
+.waitingBadge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #e65100;
+  background: #fff3e0;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+  50% { opacity: 0.6; }
 }
 
-.nextBuy {
-  font-size: 12px;
-  padding: 4px 10px;
-  background: #e8f5e9;
-  color: #2e7d32;
-  border-radius: 12px;
+.progressText {
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+}
+
+/* 진행도 점 */
+.progressDots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: #666;
+}
+
+.progressLabel {
   font-weight: 600;
+  color: #888;
+  font-size: 11px;
+}
+
+.dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e0e0e0;
+  display: inline-block;
+}
+
+.dotFilledBuy {
+  background: #c62828;
+}
+
+.dotFilledSell {
+  background: #2e7d32;
+}
+
+.progressNum {
+  font-size: 10px;
+  color: #aaa;
+  font-variant-numeric: tabular-nums;
+  margin-left: 2px;
+}
+
+.progressDivider {
+  color: #ccc;
+  margin: 0 4px;
+}
+
+.firstQty {
+  font-size: 11px;
+  color: #999;
+  font-weight: 500;
+}
+
+/* 카드 2줄: 핵심 수치 */
+.cardRow2 {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.metric {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 4px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.metricLabel {
+  font-size: 10px;
+  color: #999;
+  margin-bottom: 3px;
+}
+
+.metricMain {
+  font-size: 15px;
+  font-weight: 800;
+  color: #222;
   font-variant-numeric: tabular-nums;
 }
 
-.nextSell {
+.metricVal {
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 양봉/음봉 */
+.candleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #f8f9fa;
+  border-radius: 6px;
+}
+
+.candleLabel {
   font-size: 12px;
-  padding: 4px 10px;
-  background: #fdecea;
+  font-weight: 800;
+  flex-shrink: 0;
+  width: 32px;
+  text-align: center;
+}
+
+.candleLabelYang {
   color: #c62828;
-  border-radius: 12px;
-  font-weight: 600;
+}
+
+.candleLabelUm {
+  color: #1565c0;
+}
+
+.candleLabelDoji {
+  color: #888;
+}
+
+.candleBar {
+  flex: 1;
+  height: 10px;
+  background: #e8e8e8;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.candleBarFill {
+  height: 100%;
+  border-radius: 5px;
+  min-width: 2px;
+  transition: width 0.3s;
+}
+
+.candleBarYang {
+  background: linear-gradient(90deg, #ef5350, #c62828);
+}
+
+.candleBarUm {
+  background: linear-gradient(90deg, #42a5f5, #1565c0);
+}
+
+.candleBarDoji {
+  background: #bbb;
+}
+
+.candleRate {
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  min-width: 48px;
+  text-align: right;
+  color: #888;
+}
+
+.candleRateYang {
+  color: #c62828;
+}
+
+.candleRateUm {
+  color: #1565c0;
+}
+
+/* 매매 액션 블록 (메인 강조) */
+.actionRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.actionBlock {
+  background: #f8f9fa;
+  border-radius: 7px;
+  padding: 7px 10px;
+  border-left: 3px solid transparent;
+}
+
+.actionBlock:first-child {
+  border-left-color: #c62828;
+  background: linear-gradient(90deg, #fff5f5 0%, #f8f9fa 60%);
+}
+
+.actionBlock:last-child {
+  border-left-color: #2e7d32;
+  background: linear-gradient(90deg, #f1f8f1 0%, #f8f9fa 60%);
+}
+
+.actionBlockManual {
+  border-left-color: #ff6f00 !important;
+  background: linear-gradient(90deg, #fff3e0 0%, #f8f9fa 60%) !important;
+}
+
+.actionHeader {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 2px;
+  flex-wrap: wrap;
+}
+
+.actionLabel {
+  font-size: 10px;
+  font-weight: 700;
+  color: #888;
+}
+
+.actionLevel {
+  font-size: 10px;
+  font-weight: 700;
+  color: #555;
+  background: #fff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid #ddd;
+}
+
+.manualBadge {
+  font-size: 9px;
+  font-weight: 800;
+  color: #fff;
+  background: #ff6f00;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.gapBadge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
+}
+
+.gapBadgeUrgent {
+  background: #c62828;
+  color: #fff;
+  animation: pulseBadge 1.2s infinite;
+}
+
+.gapBadgeClose {
+  background: #ffecb3;
+  color: #e65100;
+}
+
+.gapBadgeFar {
+  background: #e8e8e8;
+  color: #666;
+}
+
+@keyframes pulseBadge {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.actionPrice {
+  font-size: 17px;
+  font-weight: 800;
+  color: #c62828;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
+}
+
+.actionPriceSell {
+  font-size: 17px;
+  font-weight: 800;
+  color: #2e7d32;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.3px;
 }
 
 /* 모바일 */
@@ -241,13 +513,50 @@
     padding: 12px;
   }
 
-  .grid {
-    grid-template-columns: 1fr;
-    gap: 10px;
+  .dashboard {
+    gap: 6px;
   }
 
-  .metrics {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 6px;
+  .dashItem {
+    padding: 8px 8px;
+    min-width: 70px;
+  }
+
+  .dashNum {
+    font-size: 18px;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 8px 10px 12px;
+  }
+
+  .card,
+  .cardSignal,
+  .cardWaiting {
+    padding: 12px 14px;
+  }
+
+  .stockName {
+    font-size: 14px;
+  }
+
+  .metricMain {
+    font-size: 14px;
+  }
+
+  .metricVal {
+    font-size: 12px;
+  }
+
+  .actionRow {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .actionPrice,
+  .actionPriceSell {
+    font-size: 16px;
   }
 }

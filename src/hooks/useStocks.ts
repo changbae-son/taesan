@@ -50,18 +50,24 @@ export function recalcStock(stock: Stock): Stock {
   const s = { ...stock };
   const { firstBuyPrice, firstBuyQuantity } = s;
 
-  // 매수 계획 자동 계산 (체결된 항목의 실제 데이터는 보존)
+  // 매수 계획 자동 계산 (실제 체결가 기준 - 태산매매법)
+  // 2차 이후 매수가 = 이전 차수 실제 매수가 × 0.9
   if (firstBuyPrice > 0 && firstBuyQuantity > 0) {
     s.buyPlans = s.buyPlans.map((bp, i) => {
-      const planPrice = i === 0
-        ? firstBuyPrice
-        : (s.buyPlans[i - 1].price || firstBuyPrice * Math.pow(0.9, i));
-      const calcPrice = i === 0 ? firstBuyPrice : Math.round(planPrice * 0.9);
+      let calcPrice: number;
+      if (i === 0) {
+        calcPrice = firstBuyPrice;
+      } else {
+        // 이전 차수의 실제 체결가 우선, 없으면 계획가 사용
+        const prevPlan = s.buyPlans[i - 1];
+        const prevActualPrice = prevPlan.filledPrice || prevPlan.price || firstBuyPrice * Math.pow(0.9, i - 1);
+        calcPrice = Math.round(prevActualPrice * 0.9);
+      }
 
       return {
         ...bp,
-        price: bp.price || calcPrice,
-        quantity: firstBuyQuantity, // 계획수량은 항상 1차 수량 기준
+        price: bp.filled ? bp.price : calcPrice, // 체결된 항목은 가격 보존
+        quantity: firstBuyQuantity,
         filledDate: bp.filledDate,
         filledQuantity: bp.filledQuantity,
         filledPrice: bp.filledPrice,

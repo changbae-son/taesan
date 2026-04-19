@@ -1,103 +1,99 @@
 .container {
-  padding: 24px;
+  padding: 20px;
 }
 
+/* ─── 헤더 ─── */
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px;
 }
 
 .title {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
   color: #333;
   margin: 0;
 }
 
-.count {
-  background: #e3f2fd;
-  color: #1565c0;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 2px 10px;
-  border-radius: 12px;
-  margin-left: 8px;
+.headerActions {
+  display: flex;
+  gap: 8px;
 }
 
-.refreshBtn {
-  padding: 6px 14px;
-  background: #1565c0;
-  color: #fff;
-  border: none;
+.addToggleBtn {
+  padding: 5px 12px;
+  background: #fff;
+  color: #1976d2;
+  border: 1px solid #1976d2;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 
-.refreshBtn:hover {
-  background: #0d47a1;
+.addToggleBtn:hover {
+  background: #e3f2fd;
 }
 
-.refreshBtn:disabled {
-  background: #bbb;
-  cursor: not-allowed;
+.refreshBtn {
+  padding: 5px 12px;
+  background: #1565c0;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
+
+.refreshBtn:hover { background: #0d47a1; }
+.refreshBtn:disabled { background: #bbb; cursor: not-allowed; }
 
 .refreshMsg {
-  padding: 6px 16px;
-  margin-bottom: 12px;
-  font-size: 12px;
+  padding: 5px 12px;
+  margin-bottom: 10px;
+  font-size: 11px;
   color: #1565c0;
   background: #e3f2fd;
   border-radius: 6px;
   text-align: center;
 }
 
-/* 추가 폼 */
+/* ─── 추가 폼 ─── */
 .addForm {
   display: flex;
-  gap: 8px;
-  padding: 16px;
+  gap: 6px;
+  padding: 12px;
   background: #f8f9fa;
-  border-radius: 12px;
-  margin-bottom: 20px;
+  border-radius: 8px;
+  margin-bottom: 16px;
   flex-wrap: wrap;
 }
 
 .addForm input {
-  padding: 8px 12px;
+  padding: 6px 10px;
   border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: 6px;
+  font-size: 13px;
   outline: none;
 }
 
-.addForm input:focus {
-  border-color: #1976d2;
-}
+.addForm input:focus { border-color: #1976d2; }
 
 .nameWrap {
   position: relative;
   flex: 1;
-  min-width: 100px;
+  min-width: 120px;
 }
 
 .nameWrap .nameInput {
   width: 100%;
   box-sizing: border-box;
-}
-
-.searchSpinner {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 12px;
+  ime-mode: active;
 }
 
 .dropdown {
@@ -111,241 +107,363 @@
   border-radius: 0 0 8px 8px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   z-index: 100;
-  max-height: 240px;
+  max-height: 200px;
   overflow-y: auto;
 }
 
 .dropdownItem {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 6px;
+  padding: 6px 10px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   border-bottom: 1px solid #f0f0f0;
 }
 
-.dropdownItem:hover {
-  background: #e8f0fe;
-}
+.dropdownItem:hover { background: #e8f0fe; }
+.dropdownHighlight { background: #e8f0fe; }
+.dropdownItem:last-child { border-bottom: none; }
 
-.dropdownItem:last-child {
-  border-bottom: none;
-}
+.dropdownName { flex: 1; font-weight: 600; color: #333; }
+.dropdownCode { font-size: 11px; color: #1976d2; font-family: monospace; }
+.dropdownMarket { font-size: 9px; color: #999; padding: 1px 3px; background: #f5f5f5; border-radius: 3px; }
 
-.dropdownName {
-  flex: 1;
-  font-weight: 600;
-  color: #333;
-}
-
-.dropdownCode {
-  font-size: 12px;
-  color: #1976d2;
-  font-family: monospace;
-}
-
-.dropdownMarket {
-  font-size: 10px;
-  color: #999;
-  padding: 1px 4px;
-  background: #f5f5f5;
+.dropdownDup { opacity: 0.5; }
+.dropdownDup .dropdownName { color: #999; }
+.dupBadge {
+  font-size: 9px;
+  color: #fff;
+  background: #e65100;
+  padding: 1px 5px;
   border-radius: 3px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.addForm input.codeInput {
-  width: 100px;
+.dupWarning {
+  width: 100%;
+  padding: 6px 10px;
+  background: #fff3e0;
+  color: #e65100;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid #ffe0b2;
+  margin-top: 2px;
 }
 
-.addForm input.priceInput {
-  width: 120px;
-}
+.addForm input.codeInput { width: 90px; }
+.addForm input.priceInput { width: 110px; }
 
 .addBtn {
-  padding: 8px 20px;
+  padding: 6px 16px;
   background: #1976d2;
   color: #fff;
   border: none;
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: 6px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
 
-.addBtn:hover {
-  background: #1565c0;
-}
+.addBtn:hover { background: #1565c0; }
 
-/* 요약 */
-.summary {
+/* ─── 상단 대시보드 ─── */
+.dashboard {
   display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
 }
 
-.summaryItem {
-  padding: 8px 16px;
+.dashItem {
+  flex: 1;
+  text-align: center;
+  padding: 10px 8px;
   border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
+  border: 1px solid #e0e0e0;
 }
 
-.summaryWatching { background: #f0f0f0; color: #666; }
-.summaryApproaching { background: #fff3e0; color: #e65100; }
-.summaryReady { background: #ffebee; color: #c62828; }
-
-/* 카드 그리드 */
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 16px;
+.dashNum {
+  display: block;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.2;
 }
 
-.card {
-  background: #fff;
-  border-radius: 12px;
-  padding: 16px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-  border-left: 4px solid #ddd;
-  transition: box-shadow 0.2s;
-}
-
-.card:hover {
-  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
-}
-
-.cardWatching { border-left-color: #bbb; }
-.cardApproaching { border-left-color: #ff9800; }
-.cardReady { border-left-color: #f44336; animation: cardPulse 2s infinite; }
-.cardBought { border-left-color: #4a90d9; opacity: 0.7; }
-
-@keyframes cardPulse {
-  0%, 100% { box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
-  50% { box-shadow: 0 2px 12px rgba(244,67,54,0.3); }
-}
-
-.cardHeader {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.stockName {
-  font-size: 16px;
-  font-weight: 700;
-  color: #333;
-}
-
-.stockCode {
-  font-size: 12px;
-  color: #999;
-  margin-left: 6px;
-}
-
-.statusBadge {
+.dashLabel {
   font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  font-weight: 700;
-}
-
-.badgeWatching { background: #f0f0f0; color: #888; }
-.badgeApproaching { background: #fff3e0; color: #e65100; }
-.badgeReady { background: #f44336; color: #fff; }
-.badgeBought { background: #e8f0fe; color: #4a90d9; }
-
-/* 가격 정보 */
-.priceRow {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  font-size: 13px;
-}
-
-.priceLabel {
   color: #888;
 }
 
-.priceValue {
+.dashTotal { background: #f5f5f5; }
+.dashTotal .dashNum { color: #333; }
+
+.dashReady { background: #ffebee; border-color: #ef9a9a; }
+.dashReady .dashNum { color: #c62828; }
+
+.dashApproaching { background: #fff3e0; border-color: #ffcc80; }
+.dashApproaching .dashNum { color: #e65100; }
+
+.dashWatching { background: #fafafa; }
+.dashWatching .dashNum { color: #999; }
+
+/* ─── 그룹 (접기/펼치기) ─── */
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #e8e8e8;
+}
+
+.groupHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #fafafa;
+  cursor: pointer;
+  user-select: none;
+  border-left: 4px solid #ccc;
+}
+
+.groupHeader:hover { background: #f0f0f0; }
+
+.groupArrow {
+  font-size: 11px;
+  color: #999;
+  width: 12px;
+  font-family: monospace;
+}
+
+.groupLabel {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.groupCount {
+  font-size: 12px;
+  color: #999;
+  margin-left: auto;
+  background: #eee;
+  padding: 1px 8px;
+  border-radius: 8px;
+}
+
+/* ─── 테이블 ─── */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table thead {
+  background: #f8f9fa;
+}
+
+.table th {
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  border-bottom: 1px solid #e8e8e8;
+  white-space: nowrap;
+}
+
+.thName { min-width: 120px; }
+.thNum { text-align: right !important; min-width: 70px; }
+.thBar { min-width: 80px; }
+.thAction { width: 30px; }
+
+.table td {
+  padding: 8px 8px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;
+}
+
+.table tbody tr:hover { background: #f8f9fa; }
+
+.rowReady {
+  background: #fff5f5 !important;
+  animation: rowPulse 2s infinite;
+}
+
+.rowApproaching {
+  background: #fffbf0 !important;
+}
+
+@keyframes rowPulse {
+  0%, 100% { background: #fff5f5; }
+  50% { background: #ffebee; }
+}
+
+.tdName { }
+
+.tName {
   font-weight: 600;
   color: #333;
+  display: block;
+  line-height: 1.2;
+}
+
+.tCode {
+  font-size: 10px;
+  color: #aaa;
+  font-family: monospace;
+}
+
+/* 봉 컬럼 */
+.thCandle {
+  width: 130px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.tdCandle {
+  padding: 4px 4px;
+}
+
+.candleWrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.candleLabel {
+  font-size: 13px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.candleLabelYang {
+  color: #c62828;
+  background: #ffebee;
+}
+
+.candleLabelUm {
+  color: #1565c0;
+  background: #e3f2fd;
+}
+
+.candleLabelDoji {
+  color: #666;
+  background: #f5f5f5;
+}
+
+.candleRate {
+  font-size: 12px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: #444;
 }
 
-/* 하락률 바 */
-.dropBar {
-  margin: 12px 0;
-  position: relative;
-  height: 24px;
+.candleBar {
+  flex: 1;
+  height: 10px;
   background: #f0f0f0;
-  border-radius: 12px;
+  border-radius: 5px;
   overflow: hidden;
+  min-width: 20px;
 }
 
-.dropFill {
+.candleBarFill {
   height: 100%;
-  border-radius: 12px;
+  border-radius: 4px;
+  min-width: 2px;
+  transition: width 0.3s ease;
+}
+
+.candleBarYang {
+  background: linear-gradient(90deg, #ef9a9a, #c62828);
+}
+
+.candleBarUm {
+  background: linear-gradient(90deg, #90caf9, #1565c0);
+}
+
+.candleBarDoji {
+  background: #bbb;
+}
+
+.tdNum {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #444;
+  white-space: nowrap;
+}
+
+.tdBar {
+  padding: 8px 4px;
+}
+
+.miniBar {
+  height: 6px;
+  background: #eee;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 2px;
+}
+
+.miniFill {
+  height: 100%;
+  border-radius: 3px;
   transition: width 0.5s ease;
 }
 
-.dropFillNormal { background: linear-gradient(90deg, #81c784, #ff9800); }
-.dropFillClose { background: linear-gradient(90deg, #ff9800, #f44336); }
-.dropFillReady { background: linear-gradient(90deg, #f44336, #b71c1c); }
-
-.dropText {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 11px;
-  font-weight: 700;
-  color: #333;
-}
-
-/* 목표가 */
-.targetRow {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-  border-top: 1px solid #f0f0f0;
-  margin-top: 8px;
-}
-
-.targetLabel {
-  font-size: 12px;
-  color: #888;
-}
-
-.targetPrice {
-  font-size: 15px;
-  font-weight: 700;
-  color: #c62828;
-}
-
-/* 삭제 */
-.deleteBtn {
-  margin-top: 8px;
-  padding: 4px 12px;
-  font-size: 12px;
-  background: none;
-  border: 1px solid #ddd;
-  border-radius: 6px;
+.miniText {
+  font-size: 10px;
   color: #999;
-  cursor: pointer;
+  text-align: center;
+  display: block;
 }
 
-.deleteBtn:hover {
+.tdAction {
+  text-align: center;
+}
+
+.delBtn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: none;
+  color: #ccc;
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.delBtn:hover {
   background: #ffebee;
   color: #c62828;
-  border-color: #ef9a9a;
 }
 
+/* ─── 빈 상태 ─── */
 .empty {
   text-align: center;
-  padding: 60px 20px;
+  padding: 50px 20px;
   color: #999;
-  font-size: 15px;
+  font-size: 14px;
+}
+
+/* ─── 반응형 ─── */
+@media (max-width: 768px) {
+  .container { padding: 12px; }
+  .dashboard { flex-wrap: wrap; }
+  .dashItem { min-width: 70px; }
+  .table { font-size: 12px; }
+  .thNum, .tdNum { min-width: 55px; }
+  .thBar { display: none; }
+  .tdBar { display: none; }
 }

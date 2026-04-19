@@ -30,6 +30,7 @@ export interface MASell {
 export interface Stock {
   id: string;
   name: string;
+  code?: string; // 종목코드 (키움 stk_cd)
   rule: 'A' | 'B'; // A: 매수가 대비 -10%, B: 저점 대비 -10%
   firstBuyPrice: number;
   firstBuyQuantity: number;
@@ -43,6 +44,21 @@ export interface Stock {
   buySignal?: 'signal' | 'waiting' | null; // 매수신호 상태
   buySignalAt?: number; // 매수신호 체크 시간
   buySignalOpen?: number; // 당일 시가
+  buySignalSent?: boolean; // 해당 차수 첫 양봉 알림 발송 여부
+  buySignalLevel?: number; // 알림 발송한 매수 차수
+  sellSignalSent?: boolean; // 수동 매도 차수(25%+) 알림 발송 여부
+  sellSignalLevel?: number; // 알림 발송한 매도 차수
+  sellSignalAt?: number; // 수동 매도 알림 시간
+  // Rule B: 저점 추적 (rule='B'일 때 자동 업데이트)
+  bottomPrice?: number;  // 마지막 매수 이후 최저가 (Rule B 다음 매수가 = bottomPrice × 0.9)
+  // 이동평균선 (15:20~15:30 일 1회 계산)
+  ma20?: number;
+  ma60?: number;
+  ma120?: number;
+  maCalcDate?: string;     // 마지막 계산일 (YYYY-MM-DD)
+  maAlertDate?: string;    // 마지막 MA 근접 알림 발송일
+  maCandles?: number;      // 계산에 사용된 봉 수
+  profitAlertDate?: string; // 마지막 23%+ 수익 알림 발송일
   createdAt: number;
   updatedAt: number;
 }

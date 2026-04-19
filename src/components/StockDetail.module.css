@@ -16,6 +16,14 @@
   margin: 0;
 }
 
+.codeLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: #888;
+  font-family: monospace;
+  margin-left: 8px;
+}
+
 .badge {
   padding: 4px 10px;
   border-radius: 4px;
@@ -197,6 +205,61 @@
   font-weight: 700;
 }
 
+/* 이동평균선 바 */
+.maBar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.maChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.maChipNearAbove {
+  border-color: #ef9a9a;
+  background: #fff3e0;
+}
+
+.maChipNearBelow {
+  border-color: #90caf9;
+  background: #e3f2fd;
+}
+
+.maChipLabel {
+  font-weight: 700;
+  color: #555;
+  font-size: 11px;
+}
+
+.maChipPrice {
+  color: #333;
+}
+
+.maChipGap {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.maCalcDate {
+  margin-left: auto;
+  font-size: 10px;
+  color: #aaa;
+}
+
 /* 테이블 */
 .planTable {
   width: 100%;
@@ -275,14 +338,14 @@
 
 .nearbyBuyRow {
   composes: nearbyRow;
-  background: linear-gradient(90deg, rgba(76, 175, 80, 0.08), rgba(76, 175, 80, 0.18)) !important;
-  border-left: 3px solid #4caf50;
+  background: linear-gradient(90deg, rgba(211, 47, 47, 0.08), rgba(211, 47, 47, 0.18)) !important;
+  border-left: 3px solid #d32f2f;
 }
 
 .nearbySellRow {
   composes: nearbyRow;
-  background: linear-gradient(90deg, rgba(244, 67, 54, 0.08), rgba(244, 67, 54, 0.18)) !important;
-  border-left: 3px solid #f44336;
+  background: linear-gradient(90deg, rgba(21, 101, 192, 0.08), rgba(21, 101, 192, 0.18)) !important;
+  border-left: 3px solid #1565c0;
 }
 
 @keyframes nearbyPulse {
@@ -302,13 +365,13 @@
 
 .nearbyBuyChip {
   composes: nearbyChip;
-  background: #4caf50;
+  background: #d32f2f;
   color: #fff;
 }
 
 .nearbySellChip {
   composes: nearbyChip;
-  background: #f44336;
+  background: #1565c0;
   color: #fff;
 }
 
@@ -329,12 +392,12 @@
 }
 
 .nearbyBuyChip.chipUrgency3 {
-  background: #2e7d32;
-  box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+  background: #b71c1c;
+  box-shadow: 0 0 6px rgba(211, 47, 47, 0.5);
 }
 
 .nearbySellChip.chipUrgency3 {
-  box-shadow: 0 0 6px rgba(244, 67, 54, 0.5);
+  box-shadow: 0 0 6px rgba(21, 101, 192, 0.5);
 }
 
 @keyframes chipPulse {
@@ -348,15 +411,15 @@
 }
 
 .priceTagUrgentBuy {
-  background: #2e7d32 !important;
+  background: #b71c1c !important;
   animation: priceUrgentBlink 0.4s ease-in-out infinite;
-  box-shadow: 0 0 8px rgba(46, 125, 50, 0.4);
+  box-shadow: 0 0 8px rgba(211, 47, 47, 0.4);
 }
 
 .priceTagUrgentSell {
-  background: #c62828 !important;
+  background: #0d47a1 !important;
   animation: priceUrgentBlink 0.4s ease-in-out infinite;
-  box-shadow: 0 0 8px rgba(198, 40, 40, 0.4);
+  box-shadow: 0 0 8px rgba(21, 101, 192, 0.4);
 }
 
 @keyframes priceUrgentBlink {
@@ -396,11 +459,11 @@
 }
 
 .filledRow {
-  background: #e8f5e9 !important;
+  background: #fde8e8 !important;
 }
 
 .sellFilledRow {
-  background: #fdecea !important;
+  background: #e3f2fd !important;
 }
 
 .maFilledRow {
@@ -417,15 +480,15 @@
 }
 
 .fillBtnActive {
-  background: #4caf50;
+  background: #d32f2f;
   color: #fff;
-  border-color: #4caf50;
+  border-color: #d32f2f;
 }
 
 .sellBtnActive {
-  background: #f44336;
+  background: #1565c0;
   color: #fff;
-  border-color: #f44336;
+  border-color: #1565c0;
 }
 
 .maBtnActive {
@@ -549,6 +612,317 @@
   margin-left: 4px;
 }
 
+/* 다음 액션 배너 */
+.actionBanner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.bannerBlock {
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  border-left: 4px solid transparent;
+}
+
+.bannerBuy {
+  border-left-color: #d32f2f;
+  background: linear-gradient(135deg, #fff5f5 0%, #fff 70%);
+}
+
+.bannerSell {
+  border-left-color: #1565c0;
+  background: linear-gradient(135deg, #f0f7ff 0%, #fff 70%);
+}
+
+.bannerUrgent {
+  animation: bannerPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes bannerPulse {
+  0%, 100% { box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08); }
+  50% { box-shadow: 0 4px 16px rgba(211, 47, 47, 0.25); }
+}
+
+.bannerHeader {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.bannerIcon {
+  font-size: 16px;
+}
+
+.bannerTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: #555;
+}
+
+.bannerLevel {
+  font-size: 12px;
+  font-weight: 700;
+  background: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+}
+
+.bannerManual {
+  font-size: 10px;
+  font-weight: 800;
+  color: #fff;
+  background: #ff6f00;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.bannerGap {
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.bannerGapUrgent {
+  background: #d32f2f;
+  color: #fff;
+  animation: bannerGapPulse 1s infinite;
+}
+
+.bannerGapClose {
+  background: #ffecb3;
+  color: #e65100;
+}
+
+.bannerGapFar {
+  background: #e8e8e8;
+  color: #666;
+}
+
+@keyframes bannerGapPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* 1차 체결 참고 배지 (이력) */
+.bannerHistory {
+  font-size: 11px;
+  color: #666;
+  font-weight: 500;
+  padding: 2px 7px;
+  background: #fff;
+  border: 1px dashed #bbb;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.bannerHistory b {
+  font-weight: 800;
+  color: #333;
+  font-variant-numeric: tabular-nums;
+}
+
+.bannerBuy .bannerHistory {
+  border-color: #e57373;
+  color: #b71c1c;
+}
+
+.bannerBuy .bannerHistory b {
+  color: #c62828;
+}
+
+.bannerSell .bannerHistory {
+  border-color: #64b5f6;
+  color: #0d47a1;
+}
+
+.bannerSell .bannerHistory b {
+  color: #1565c0;
+}
+
+/* 헤더에 인라인 수량 표기 */
+.bannerQtyInline {
+  font-size: 12px;
+  color: #555;
+  font-weight: 500;
+  padding: 2px 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.bannerQtyInline b {
+  font-weight: 800;
+  color: #222;
+  font-variant-numeric: tabular-nums;
+}
+
+.bannerBuy .bannerQtyInline {
+  background: #ffebee;
+  color: #b71c1c;
+}
+
+.bannerBuy .bannerQtyInline b {
+  color: #c62828;
+}
+
+.bannerSell .bannerQtyInline {
+  background: #e3f2fd;
+  color: #0d47a1;
+}
+
+.bannerSell .bannerQtyInline b {
+  color: #1565c0;
+}
+
+/* 가격 메인 줄 — 목표가(좌) / 현재가(우) */
+.bannerMainRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.bannerPrice {
+  font-size: 28px;
+  font-weight: 800;
+  color: #222;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.bannerBuy .bannerPrice {
+  color: #d32f2f;
+}
+
+.bannerSell .bannerPrice {
+  color: #1565c0;
+}
+
+.bannerUnit {
+  font-size: 14px;
+  font-weight: 600;
+  color: #888;
+  margin-left: 3px;
+}
+
+.bannerNowPrice {
+  font-size: 13px;
+  color: #555;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.bannerNowPrice b {
+  font-size: 17px;
+  font-weight: 700;
+  color: #222;
+  margin-left: 3px;
+}
+
+.bannerNowUnit {
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  margin-left: 2px;
+}
+
+/* 접이식 기본정보 */
+.collapseHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.collapseHeader:hover {
+  opacity: 0.85;
+}
+
+.collapseArrow {
+  font-size: 11px;
+  color: #888;
+  width: 14px;
+}
+
+.cardTitleInline {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0;
+  color: #555;
+}
+
+.collapseHint {
+  font-size: 11px;
+  color: #aaa;
+  margin-left: auto;
+}
+
+/* 요약바 값/서브값 */
+.summaryValueSmall {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.summarySubValue {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+/* 다음 매수/매도 가격 강조 */
+.nextBuyPrice {
+  font-size: 17px;
+  font-weight: 800;
+  color: #d32f2f;
+  letter-spacing: -0.3px;
+}
+
+.nextSellPrice {
+  font-size: 17px;
+  font-weight: 800;
+  color: #1565c0;
+  letter-spacing: -0.3px;
+}
+
+/* 25%+ 수동 매도 배지 */
+.manualSellBadge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 7px;
+  background: #ff6f00;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
+/* 목표 미달 경고 아이콘 */
+.undershotIcon {
+  margin-right: 3px;
+  font-size: 11px;
+}
+
 @media (max-width: 768px) {
   .container {
     padding: 12px;
@@ -564,5 +938,15 @@
   }
   .maInput {
     width: 70px;
+  }
+  .actionBanner {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .bannerPrice {
+    font-size: 24px;
+  }
+  .bannerNowPrice b {
+    font-size: 15px;
   }
 }
