@@ -38,6 +38,9 @@ export default function StockDetail({
     prices: number[];
     quantities: number[];
     currentPrice: number;
+    filledDates: (string | undefined)[];
+    filledPrices: (number | undefined)[];
+    filledQtys: (number | undefined)[];
   } | null>(null);
 
   const openBasicEdit = () => {
@@ -45,6 +48,9 @@ export default function StockDetail({
       prices: local.buyPlans.map((bp) => bp.price || 0),
       quantities: local.buyPlans.map((bp) => bp.quantity || local.firstBuyQuantity || 0),
       currentPrice: local.currentPrice || 0,
+      filledDates: local.buyPlans.map((bp) => bp.filledDate),
+      filledPrices: local.buyPlans.map((bp) => bp.filledPrice),
+      filledQtys: local.buyPlans.map((bp) => bp.filledQuantity),
     });
     setShowBasicInfo(true);
   };
@@ -71,6 +77,27 @@ export default function StockDetail({
     setEditDraft({ ...editDraft, quantities });
   };
 
+  const handleDraftFillDate = (idx: number, val: string) => {
+    if (!editDraft) return;
+    const filledDates = [...editDraft.filledDates];
+    filledDates[idx] = val || undefined;
+    setEditDraft({ ...editDraft, filledDates });
+  };
+
+  const handleDraftFillPrice = (idx: number, val: number) => {
+    if (!editDraft) return;
+    const filledPrices = [...editDraft.filledPrices];
+    filledPrices[idx] = val > 0 ? val : undefined;
+    setEditDraft({ ...editDraft, filledPrices });
+  };
+
+  const handleDraftFillQty = (idx: number, val: number) => {
+    if (!editDraft) return;
+    const filledQtys = [...editDraft.filledQtys];
+    filledQtys[idx] = val > 0 ? val : undefined;
+    setEditDraft({ ...editDraft, filledQtys });
+  };
+
   const confirmBasicEdit = () => {
     if (!editDraft) return;
     // recalcStock으로 평단/매도계획 재계산 (가격 cascade 제외)
@@ -80,11 +107,17 @@ export default function StockDetail({
       firstBuyQuantity: editDraft.quantities[0],
       currentPrice: editDraft.currentPrice,
     });
-    // 수동 입력한 가격/수량으로 override (체결 항목 가격은 보존)
+    // 수동 입력한 가격/수량/체결정보로 override
     const finalBuyPlans = base.buyPlans.map((bp, i) => ({
       ...bp,
       price: editDraft.prices[i] > 0 ? editDraft.prices[i] : bp.price,
       quantity: editDraft.quantities[i] > 0 ? editDraft.quantities[i] : bp.quantity,
+      // 체결 차수만 체결 정보 저장
+      ...(bp.filled && {
+        filledDate: editDraft.filledDates[i],
+        filledPrice: editDraft.filledPrices[i],
+        filledQuantity: editDraft.filledQtys[i],
+      }),
     }));
     const final: Stock = { ...base, buyPlans: finalBuyPlans, updatedAt: Date.now() };
     setLocal(final);
@@ -581,43 +614,84 @@ export default function StockDetail({
               <thead>
                 <tr>
                   <th>차수</th>
-                  <th>매수가</th>
-                  <th>수량</th>
+                  <th>계획가</th>
+                  <th>계획수량</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {local.buyPlans.map((bp, i) => (
-                  <tr key={i} className={bp.filled ? styles.editFilledRow : ''}>
-                    <td className={styles.editLevelCell}>
-                      <span className={styles.editLevelBadge}>{bp.level}차</span>
-                      {bp.filled && <span className={styles.editFilledBadge}>체결</span>}
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        className={styles.editDraftInput}
-                        value={editDraft.prices[i] || ''}
-                        placeholder="매수가"
-                        readOnly={bp.filled}
-                        onChange={(e) => handleDraftPrice(i, Number(e.target.value))}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        className={styles.editDraftInput}
-                        value={editDraft.quantities[i] || ''}
-                        placeholder="수량"
-                        onChange={(e) => handleDraftQty(i, Number(e.target.value))}
-                      />
-                    </td>
-                    <td className={styles.editPricePreview}>
-                      {!bp.filled && editDraft.prices[i] > 0 && (
-                        <span>{editDraft.prices[i].toLocaleString()}원</span>
-                      )}
-                    </td>
-                  </tr>
+                  <>
+                    {/* 메인 행: 계획가 / 계획수량 */}
+                    <tr key={`main-${i}`} className={bp.filled ? styles.editFilledRow : ''}>
+                      <td className={styles.editLevelCell}>
+                        <span className={styles.editLevelBadge}>{bp.level}차</span>
+                        {bp.filled && <span className={styles.editFilledBadge}>체결</span>}
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          className={styles.editDraftInput}
+                          value={editDraft.prices[i] || ''}
+                          placeholder="계획가"
+                          readOnly={bp.filled}
+                          onChange={(e) => handleDraftPrice(i, Number(e.target.value))}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="number"
+                          className={styles.editDraftInput}
+                          value={editDraft.quantities[i] || ''}
+                          placeholder="수량"
+                          onChange={(e) => handleDraftQty(i, Number(e.target.value))}
+                        />
+                      </td>
+                      <td className={styles.editPricePreview}>
+                        {!bp.filled && editDraft.prices[i] > 0 && (
+                          <span>{editDraft.prices[i].toLocaleString()}원</span>
+                        )}
+                      </td>
+                    </tr>
+                    {/* 서브 행: 체결 차수만 — 체결일 / 체결가 / 체결수량 */}
+                    {bp.filled && (
+                      <tr key={`fill-${i}`} className={styles.editFillDataRow}>
+                        <td colSpan={4}>
+                          <div className={styles.editFillDataInner}>
+                            <div className={styles.editFillDataField}>
+                              <label>체결일</label>
+                              <input
+                                type="date"
+                                className={styles.editDraftInput}
+                                value={editDraft.filledDates[i] || ''}
+                                onChange={(e) => handleDraftFillDate(i, e.target.value)}
+                              />
+                            </div>
+                            <div className={styles.editFillDataField}>
+                              <label>체결가</label>
+                              <input
+                                type="number"
+                                className={styles.editDraftInput}
+                                value={editDraft.filledPrices[i] || ''}
+                                placeholder="실제 체결가"
+                                onChange={(e) => handleDraftFillPrice(i, Number(e.target.value))}
+                              />
+                            </div>
+                            <div className={styles.editFillDataField}>
+                              <label>체결수량</label>
+                              <input
+                                type="number"
+                                className={styles.editDraftInput}
+                                value={editDraft.filledQtys[i] || ''}
+                                placeholder="실제 수량"
+                                onChange={(e) => handleDraftFillQty(i, Number(e.target.value))}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
                 ))}
               </tbody>
             </table>
@@ -636,7 +710,7 @@ export default function StockDetail({
 
             {/* 안내 메시지 */}
             <p className={styles.editHint}>
-              💡 1차 매수가 변경 시 미체결 차수가 자동 계산됩니다. 개별 수정도 가능합니다.
+              💡 체결 차수: 체결일·체결가·체결수량 입력 시 매수 기록 불완전 경고가 사라집니다.
             </p>
 
             {/* 버튼 */}

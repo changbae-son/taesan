@@ -204,6 +204,37 @@
   opacity: 0.75;
 }
 
+/* 체결 정보 서브행 */
+.editFillDataRow td {
+  padding: 0 0 10px 0;
+  background: #f0f4ff;
+  border-bottom: 2px solid #c5cae9;
+}
+
+.editFillDataInner {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #f0f4ff;
+  border-radius: 0 0 8px 8px;
+  flex-wrap: wrap;
+}
+
+.editFillDataField {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 90px;
+}
+
+.editFillDataField label {
+  font-size: 10px;
+  color: #5c6bc0;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
 .editLevelCell {
   white-space: nowrap;
   width: 70px;
