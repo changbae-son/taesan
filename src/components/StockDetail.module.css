@@ -175,6 +175,150 @@
   font-weight: 600;
 }
 
+/* ── 기본 정보 수정 (draft 편집 폼) ── */
+.editDraftTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.editDraftTable th {
+  background: #f8f9fa;
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 11px;
+  color: #888;
+  font-weight: 600;
+  border-bottom: 2px solid #e9e9e9;
+}
+
+.editDraftTable td {
+  padding: 6px 6px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;
+}
+
+.editFilledRow {
+  background: #fafafa;
+  opacity: 0.75;
+}
+
+.editLevelCell {
+  white-space: nowrap;
+  width: 70px;
+}
+
+.editLevelBadge {
+  font-weight: 700;
+  font-size: 13px;
+  color: #333;
+  margin-right: 4px;
+}
+
+.editFilledBadge {
+  display: inline-block;
+  font-size: 10px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-weight: 600;
+}
+
+.editDraftInput {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+
+.editDraftInput:focus {
+  border-color: #4a90d9;
+  background: #f0f7ff;
+}
+
+.editDraftInput[readonly] {
+  background: #f5f5f5;
+  color: #aaa;
+  cursor: not-allowed;
+}
+
+.editPricePreview {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+  padding-left: 4px;
+  width: 80px;
+}
+
+.editCurrentRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.editCurrentLabel {
+  font-size: 12px;
+  font-weight: 700;
+  color: #555;
+  white-space: nowrap;
+  width: 44px;
+}
+
+.editHint {
+  font-size: 11px;
+  color: #888;
+  margin: 8px 0 10px;
+  padding: 6px 10px;
+  background: #fffde7;
+  border-radius: 6px;
+  border-left: 3px solid #fdd835;
+}
+
+.editActionRow {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.editConfirmBtn {
+  padding: 8px 20px;
+  background: #1565c0;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.editConfirmBtn:hover {
+  background: #0d47a1;
+}
+
+.editCancelBtn {
+  padding: 8px 16px;
+  background: #fff;
+  color: #888;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.editCancelBtn:hover {
+  background: #f5f5f5;
+}
+
 /* 요약바 */
 .summary {
   display: flex;
@@ -260,7 +404,170 @@
   color: #aaa;
 }
 
-/* 테이블 */
+/* ── 매수/매도 나란히 배치 ── */
+.plansRow {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.planCard {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0 !important;
+}
+
+@media (max-width: 700px) {
+  .plansRow {
+    flex-direction: column;
+  }
+  .planCard {
+    margin-bottom: 0 !important;
+  }
+}
+
+/* ── 계획 카드 헤더 (제목 + 요약 통계) ── */
+.planCardHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.planStatsBuy {
+  font-size: 11px;
+  font-weight: 600;
+  color: #c62828;
+  background: #fdecea;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.planStatsSell {
+  font-size: 11px;
+  font-weight: 600;
+  color: #1565c0;
+  background: #e3f2fd;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+/* 컴팩트 테이블 */
+.planTableCompact {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.planTableCompact td {
+  padding: 7px 6px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;
+}
+
+/* 1열(차수+날짜): 고정 너비 */
+.planTableCompact td:first-child {
+  width: 78px;
+}
+
+/* 마지막 열(버튼): 고정 너비 */
+.planTableCompact td:last-child {
+  width: 62px;
+  text-align: right;
+}
+
+/* 셀 내 작은 라벨 */
+.colLabel {
+  display: block;
+  font-size: 10px;
+  color: #666;
+  font-weight: 700;
+  margin-bottom: 3px;
+  line-height: 1;
+}
+
+/* 차수/목표% 셀 */
+.levelCell {
+  vertical-align: middle;
+  padding: 7px 4px !important;
+}
+
+.levelBadge {
+  font-weight: 700;
+  font-size: 13px;
+  color: #222;
+}
+
+/* 날짜 (차수 셀 하단) */
+.dateUnder {
+  font-size: 10px;
+  color: #888;
+  margin-top: 4px;
+  line-height: 1.2;
+}
+
+.dateInputCompact {
+  border: none;
+  background: transparent;
+  font-size: 10px;
+  color: #888;
+  padding: 0;
+  width: 78px;
+  cursor: pointer;
+}
+
+.dateInputCompact:focus {
+  outline: 1px solid #4a90d9;
+  border-radius: 3px;
+}
+
+/* 계획가 / 목표가 */
+.planPrice {
+  display: block;
+  font-weight: 700;
+  font-size: 13px;
+  color: #222;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 수량 하단 누적/잔여 */
+.cumulativeQty {
+  display: block;
+  font-size: 10px;
+  color: #888;
+  margin-top: 3px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 실제가 하단 수익률 */
+.profitUnder {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 3px;
+}
+
+/* 대시 표시 */
+.dashText {
+  color: #bbb;
+  font-size: 13px;
+}
+
+/* 버튼 셀 */
+.btnCell {
+  white-space: nowrap;
+  vertical-align: middle;
+  padding: 6px 4px !important;
+  text-align: right;
+}
+
+/* 기존 테이블 (이동평균선 매도 등에서 여전히 사용) */
 .planTable {
   width: 100%;
   border-collapse: collapse;
@@ -429,12 +736,15 @@
 
 /* 수량 표시 */
 .plannedQty {
-  color: #888;
+  font-weight: 600;
+  font-size: 13px;
+  color: #555;
 }
 
 .filledQty {
   font-weight: 700;
-  color: #333;
+  font-size: 13px;
+  color: #222;
 }
 
 .pendingQty {

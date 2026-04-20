@@ -33,6 +33,66 @@ export default function StockDetail({
   const [maSelectIdx, setMaSelectIdx] = useState<number | null>(null);
   const [showBasicInfo, setShowBasicInfo] = useState(false);
 
+  // ── 기본 정보 수정 draft ──
+  const [editDraft, setEditDraft] = useState<{
+    prices: number[];
+    quantities: number[];
+    currentPrice: number;
+  } | null>(null);
+
+  const openBasicEdit = () => {
+    setEditDraft({
+      prices: local.buyPlans.map((bp) => bp.price || 0),
+      quantities: local.buyPlans.map((bp) => bp.quantity || local.firstBuyQuantity || 0),
+      currentPrice: local.currentPrice || 0,
+    });
+    setShowBasicInfo(true);
+  };
+
+  const handleDraftPrice = (idx: number, val: number) => {
+    if (!editDraft) return;
+    const prices = [...editDraft.prices];
+    prices[idx] = val;
+    // 1차 가격 변경 시 미체결 하위 차수 자동 cascade
+    if (idx === 0 && val > 0) {
+      for (let j = 1; j < 5; j++) {
+        if (!local.buyPlans[j].filled) {
+          prices[j] = Math.round(prices[j - 1] * 0.9);
+        }
+      }
+    }
+    setEditDraft({ ...editDraft, prices });
+  };
+
+  const handleDraftQty = (idx: number, val: number) => {
+    if (!editDraft) return;
+    const quantities = [...editDraft.quantities];
+    quantities[idx] = val;
+    setEditDraft({ ...editDraft, quantities });
+  };
+
+  const confirmBasicEdit = () => {
+    if (!editDraft) return;
+    // recalcStock으로 평단/매도계획 재계산 (가격 cascade 제외)
+    const base = recalcStock({
+      ...local,
+      firstBuyPrice: editDraft.prices[0],
+      firstBuyQuantity: editDraft.quantities[0],
+      currentPrice: editDraft.currentPrice,
+    });
+    // 수동 입력한 가격/수량으로 override (체결 항목 가격은 보존)
+    const finalBuyPlans = base.buyPlans.map((bp, i) => ({
+      ...bp,
+      price: editDraft.prices[i] > 0 ? editDraft.prices[i] : bp.price,
+      quantity: editDraft.quantities[i] > 0 ? editDraft.quantities[i] : bp.quantity,
+    }));
+    const final: Stock = { ...base, buyPlans: finalBuyPlans, updatedAt: Date.now() };
+    setLocal(final);
+    onSave(final);
+    setEditDraft(null);
+    setShowBasicInfo(false);
+  };
+
   useEffect(() => {
     setLocal(stock);
   }, [stock]);
@@ -483,323 +543,370 @@ export default function StockDetail({
 
       {/* 기본 정보 (접이식) */}
       <div className={styles.card}>
-        <div className={styles.collapseHeader} onClick={() => setShowBasicInfo(!showBasicInfo)}>
+        <div
+          className={styles.collapseHeader}
+          onClick={() => {
+            if (!showBasicInfo) openBasicEdit();
+            else { setShowBasicInfo(false); setEditDraft(null); }
+          }}
+        >
           <span className={styles.collapseArrow}>{showBasicInfo ? '▼' : '▶'}</span>
           <h3 className={styles.cardTitleInline}>기본 정보 수정</h3>
           <span className={styles.collapseHint}>
-            {showBasicInfo ? '' : '1차 매수가 · 1차 수량 · 현재가'}
+            {showBasicInfo ? '' : '매수가 · 수량 · 현재가 (차수별 수정)'}
           </span>
         </div>
-        {showBasicInfo && (
-          <div className={styles.inputGrid} style={{ marginTop: 12 }}>
-            <label>
-              1차 매수가
+
+        {showBasicInfo && editDraft && (
+          <div style={{ marginTop: 12 }}>
+            {/* 차수별 매수가/수량 테이블 */}
+            <table className={styles.editDraftTable}>
+              <thead>
+                <tr>
+                  <th>차수</th>
+                  <th>매수가</th>
+                  <th>수량</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {local.buyPlans.map((bp, i) => (
+                  <tr key={i} className={bp.filled ? styles.editFilledRow : ''}>
+                    <td className={styles.editLevelCell}>
+                      <span className={styles.editLevelBadge}>{bp.level}차</span>
+                      {bp.filled && <span className={styles.editFilledBadge}>체결</span>}
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        className={styles.editDraftInput}
+                        value={editDraft.prices[i] || ''}
+                        placeholder="매수가"
+                        readOnly={bp.filled}
+                        onChange={(e) => handleDraftPrice(i, Number(e.target.value))}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="number"
+                        className={styles.editDraftInput}
+                        value={editDraft.quantities[i] || ''}
+                        placeholder="수량"
+                        onChange={(e) => handleDraftQty(i, Number(e.target.value))}
+                      />
+                    </td>
+                    <td className={styles.editPricePreview}>
+                      {!bp.filled && editDraft.prices[i] > 0 && (
+                        <span>{editDraft.prices[i].toLocaleString()}원</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* 현재가 */}
+            <div className={styles.editCurrentRow}>
+              <label className={styles.editCurrentLabel}>현재가</label>
               <input
                 type="number"
-                value={local.firstBuyPrice || ''}
-                onChange={(e) =>
-                  updateField('firstBuyPrice', Number(e.target.value))
-                }
+                className={styles.editDraftInput}
+                value={editDraft.currentPrice || ''}
+                placeholder="현재가"
+                onChange={(e) => setEditDraft({ ...editDraft, currentPrice: Number(e.target.value) })}
               />
-            </label>
-            <label>
-              1차 수량
-              <input
-                type="number"
-                value={local.firstBuyQuantity || ''}
-                onChange={(e) =>
-                  updateField('firstBuyQuantity', Number(e.target.value))
-                }
-              />
-            </label>
-            <label>
-              현재가
-              <input
-                type="number"
-                value={local.currentPrice || ''}
-                onChange={(e) =>
-                  updateField('currentPrice', Number(e.target.value))
-                }
-              />
-            </label>
+            </div>
+
+            {/* 안내 메시지 */}
+            <p className={styles.editHint}>
+              💡 1차 매수가 변경 시 미체결 차수가 자동 계산됩니다. 개별 수정도 가능합니다.
+            </p>
+
+            {/* 버튼 */}
+            <div className={styles.editActionRow}>
+              <button className={styles.editConfirmBtn} onClick={confirmBasicEdit}>
+                수정 완료
+              </button>
+              <button
+                className={styles.editCancelBtn}
+                onClick={() => { setEditDraft(null); setShowBasicInfo(false); }}
+              >
+                취소
+              </button>
+            </div>
           </div>
         )}
       </div>
 
-      {/* 매수 계획 */}
-      <div className={styles.card}>
-        <h3 className={styles.cardTitle} style={{ color: '#d32f2f' }}>
-          매수 계획
-        </h3>
-        <table className={styles.planTable}>
-          <thead>
-            <tr>
-              <th>차수</th>
-              <th>계획가</th>
-              <th>실제 매수가</th>
-              <th>매수수량</th>
-              <th>체결일</th>
-              <th>체결</th>
-            </tr>
-          </thead>
-          <tbody>
-            {local.buyPlans.map((bp, i) => {
-              const actual = buysByDate[i];
-              // 실제 체결 데이터: 매매일지 > filledPrice/filledQuantity > plan 기본값
-              const realPrice = actual ? Math.round(actual.amt / actual.qty) : bp.filledPrice || 0;
-              const realQty = actual ? actual.qty : bp.filledQuantity || 0;
-              const realDate = actual?.date || bp.filledDate || '';
-              const nearInfo = !bp.filled ? getNearInfo(bp.price) : null;
-              return (
-                <tr
-                  key={i}
-                  className={`${bp.filled ? styles.filledRow : ''} ${nearInfo ? styles.nearbyBuyRow : ''}`}
-                  style={
-                    !nearInfo && i === nextBuyIdx && !bp.filled
-                      ? { background: '#fffde7' }
-                      : undefined
-                  }
-                >
-                  <td>
-                    {bp.level}차
-                    {i === nextBuyIdx && !bp.filled && (
-                      <span className={styles.nextChip}>다음 매수</span>
-                    )}
-                    {nearInfo && (
-                      <span className={`${styles.nearbyBuyChip} ${
-                        nearInfo.urgency === 3 ? styles.chipUrgency3 : nearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
-                      }`}>
-                        매수 {nearInfo.gap >= 0 ? '+' : ''}{nearInfo.gap.toFixed(1)}%
-                      </span>
-                    )}
-                  </td>
-                  <td className={styles.numCell}>
-                    <span className={i === nextBuyIdx && !bp.filled ? styles.nextBuyPrice : ''}>
-                      {bp.price.toLocaleString()}
-                    </span>
-                    {i === nextBuyIdx && !bp.filled && local.currentPrice > 0 && (
-                      <>
-                        <br />
-                        <span className={`${styles.currentPriceTag} ${
-                          nearInfo?.urgency === 3 ? styles.priceTagUrgentBuy : ''
-                        }`}>
-                          현재 {local.currentPrice.toLocaleString()}
-                        </span>
-                        <span className={styles.priceGap}>{priceGapText(bp.price)}</span>
-                      </>
-                    )}
-                  </td>
-                  <td className={styles.numCell}>
-                    {bp.filled && realPrice > 0 ? (
-                      <span className={styles.actualPrice}>
-                        {realPrice.toLocaleString()}
-                      </span>
-                    ) : '-'}
-                  </td>
-                  <td className={styles.numCell}>
-                    {bp.filled ? (
-                      <span className={styles.filledQty}>
-                        {(realQty || bp.quantity).toLocaleString()}
-                      </span>
-                    ) : (
-                      <span className={styles.plannedQty}>
-                        {bp.quantity.toLocaleString()}
-                      </span>
-                    )}
-                  </td>
-                  <td className={styles.dateCell}>
-                    {bp.filled ? (
-                      <input
-                        type="date"
-                        className={styles.dateInput}
-                        value={realDate || ''}
-                        onChange={(e) => {
-                          const plans = [...local.buyPlans];
-                          plans[i] = { ...plans[i], filledDate: e.target.value };
-                          update({ buyPlans: plans });
-                        }}
-                      />
-                    ) : '-'}
-                  </td>
-                  <td>
-                    <button
-                      className={`${styles.fillBtn} ${bp.filled ? styles.fillBtnActive : ''}`}
-                      onClick={() => toggleBuyFilled(i)}
-                    >
-                      {bp.filled ? '체결' : '미체결'}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {/* 매수 / 수익매도 계획 — 나란히 */}
+      <div className={styles.plansRow}>
 
-      {/* 수익 매도 계획 */}
-      <div className={styles.card}>
-        <h3 className={styles.cardTitle} style={{ color: '#1565c0' }}>
-          수익 매도 계획 (20%씩 분할)
-        </h3>
-        <table className={styles.planTable}>
-          <thead>
-            <tr>
-              <th>목표</th>
-              <th>목표가</th>
-              <th>실제 매도가</th>
-              <th>매도수량</th>
-              <th>잔여수량</th>
-              <th>체결일</th>
-              <th>실현수익률</th>
-              <th>체결</th>
-            </tr>
-          </thead>
-          <tbody>
+        {/* 매수 계획 */}
+        <div className={`${styles.card} ${styles.planCard}`}>
+          <div className={styles.planCardHeader}>
+            <h3 className={styles.cardTitle} style={{ color: '#d32f2f', margin: 0 }}>매수 계획</h3>
             {(() => {
-              // 잔여수량 계산: 총 매수 수량에서 매도 누적 차감
-              const totalBought = local.buyPlans.reduce((sum, bp) => {
-                if (!bp.filled) return sum;
-                return sum + (bp.filledQuantity || bp.quantity);
-              }, 0);
-              // MA매도 차감
-              const maSold = local.maSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
-              let remaining = totalBought - maSold;
-
-              return local.sellPlans.map((sp, i) => {
-                const actual = sellsByDate[i];
-                const realPrice = actual ? Math.round(actual.amt / actual.qty) : sp.filledPrice || 0;
-                const realQty = actual ? actual.qty : sp.filledQuantity || 0;
-                const realDate = actual?.date || sp.filledDate || '';
-                const realProfit = (sp.filled || actual) && local.avgPrice > 0 && realPrice > 0
-                  ? ((realPrice - local.avgPrice) / local.avgPrice) * 100
-                  : null;
-                const metTarget = (sp.filled || actual) && realPrice >= sp.price;
-                const sellNearInfo = !sp.filled && !actual ? getNearInfo(sp.price) : null;
-
-                // 이번 매도로 차감
-                const soldThisRound = (sp.filled || actual) ? (realQty || sp.quantity) : 0;
-                remaining -= soldThisRound;
-                const remainingAfter = Math.max(0, remaining);
-
-                return (
-                  <tr key={i} className={`${sp.filled || actual ? styles.sellFilledRow : ''} ${sellNearInfo ? styles.nearbySellRow : ''}`}>
-                    <td>
-                      +{sp.percent}%
-                      {sp.percent >= 25 && (
-                        <span className={styles.manualSellBadge} title="키움 자동매매 미설정 차수 (수동 매도)">수동</span>
-                      )}
-                      {sellNearInfo && (
-                        <span className={`${styles.nearbySellChip} ${
-                          sellNearInfo.urgency === 3 ? styles.chipUrgency3 : sellNearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
-                        }`}>
-                          매도 {sellNearInfo.gap >= 0 ? '+' : ''}{sellNearInfo.gap.toFixed(1)}%
-                        </span>
-                      )}
-                    </td>
-                    <td className={styles.numCell}>
-                      <span className={i === nextSellIdx && !sp.filled && !actual ? styles.nextSellPrice : ''}>
-                        {sp.price.toLocaleString()}
-                      </span>
-                      {i === nextSellIdx && !sp.filled && !actual && local.currentPrice > 0 && (
-                        <>
-                          <br />
-                          <span className={`${styles.currentPriceTag} ${
-                            sellNearInfo?.urgency === 3 ? styles.priceTagUrgentSell : ''
-                          }`}>
-                            현재 {local.currentPrice.toLocaleString()}
-                          </span>
-                          <span className={styles.priceGap}>{priceGapText(sp.price)}</span>
-                        </>
-                      )}
-                    </td>
-                    <td className={styles.numCell}>
-                      {(sp.filled || actual) && realPrice > 0 ? (
-                        <span
-                          className={styles.actualPrice}
-                          style={{ color: metTarget ? '#1565c0' : '#ff9800' }}
-                          title={metTarget ? '목표 달성' : '목표 미달 매도'}
-                        >
-                          {!metTarget && <span className={styles.undershotIcon}>⚠️</span>}
-                          {realPrice.toLocaleString()}
-                        </span>
-                      ) : '-'}
-                    </td>
-                    <td className={styles.numCell}>
-                      {(sp.filled || actual) ? (
-                        <span className={styles.filledQty}>{(realQty || sp.quantity).toLocaleString()}</span>
-                      ) : (
-                        <span className={styles.plannedQty}>{sp.quantity.toLocaleString()}</span>
-                      )}
-                    </td>
-                    <td className={styles.numCell}>
-                      <span className={remainingAfter <= 0 ? styles.zeroQty : styles.remainQty}>
-                        {(sp.filled || actual) ? remainingAfter.toLocaleString() : (remaining + soldThisRound > 0 ? (remaining + soldThisRound).toLocaleString() : '-')}
-                      </span>
-                    </td>
-                  <td className={styles.dateCell}>
-                    {(sp.filled || actual) ? (realDate || '-') : '-'}
-                  </td>
-                  <td className={styles.numCell}>
-                    {realProfit !== null ? (
-                      <span style={{ color: realProfit >= 0 ? '#4caf50' : '#f44336', fontWeight: 600 }}>
-                        {realProfit >= 0 ? '+' : ''}{realProfit.toFixed(1)}%
-                      </span>
-                    ) : '-'}
-                  </td>
-                  <td>
-                    <button
-                      className={`${styles.fillBtn} ${sp.filled || actual ? styles.sellBtnActive : ''}`}
-                      onClick={() => toggleSellFilled(i)}
-                    >
-                      {sp.filled || actual ? '체결' : '미체결'}
-                    </button>
-                    {(sp.filled || actual) && maSelectIdx !== i && (
-                      <button
-                        className={styles.maTransferBtn}
-                        onClick={() => setMaSelectIdx(i)}
-                        title="이동평균선 매도로 이동"
-                      >
-                        MA매도
-                      </button>
-                    )}
-                    {maSelectIdx === i && (
-                      <div className={styles.maSelectPopup}>
-                        <span className={styles.maSelectLabel}>이평선 선택:</span>
-                        {[20, 60, 120].map((d) => (
-                          <button
-                            key={d}
-                            className={styles.maSelectBtn}
-                            onClick={() => moveToMA(i, d, actual ? {
-                              price: Math.round(actual.amt / actual.qty),
-                              qty: actual.qty,
-                              date: actual.date,
-                            } : undefined)}
-                          >
-                            {d}일
-                          </button>
-                        ))}
-                        <button
-                          className={styles.maSelectCancel}
-                          onClick={() => setMaSelectIdx(null)}
-                        >
-                          취소
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-                );
+              let cnt = 0, qty = 0, amt = 0;
+              local.buyPlans.forEach((bp, i) => {
+                if (!bp.filled) return;
+                const act = buysByDate[i];
+                const q = act ? act.qty : (bp.filledQuantity || bp.quantity);
+                const p = act ? Math.round(act.amt / act.qty) : (bp.filledPrice || bp.price);
+                cnt++; qty += q; amt += q * p;
               });
+              if (cnt === 0) return null;
+              return (
+                <span className={styles.planStatsBuy}>
+                  {cnt}차 · {qty.toLocaleString()}주 · {Math.round(amt / 10000).toLocaleString()}만원 투입
+                </span>
+              );
             })()}
-          </tbody>
-        </table>
-        <div className={styles.sellNote}>
-          누적 매도: {sellsByDate.length}회 ({actualSells.length}건)
-          {sellsByDate.length >= 3 && (
-            <span className={styles.chip}>룰B 전환 가능</span>
-          )}
+          </div>
+          <table className={styles.planTableCompact}>
+            <tbody>
+              {(() => {
+                let cumQty = 0;
+                return local.buyPlans.map((bp, i) => {
+                  const actual = buysByDate[i];
+                  const realPrice = actual ? Math.round(actual.amt / actual.qty) : bp.filledPrice || 0;
+                  const realQty = actual ? actual.qty : bp.filledQuantity || 0;
+                  const realDate = actual?.date || bp.filledDate || '';
+                  const nearInfo = !bp.filled ? getNearInfo(bp.price) : null;
+                  const thisQty = bp.filled ? (realQty || bp.quantity) : bp.quantity;
+                  cumQty += thisQty;
+                  return (
+                    <tr
+                      key={i}
+                      className={`${bp.filled ? styles.filledRow : ''} ${nearInfo ? styles.nearbyBuyRow : ''}`}
+                      style={!nearInfo && i === nextBuyIdx && !bp.filled ? { background: '#fffde7' } : undefined}
+                    >
+                      {/* 차수 + 날짜 */}
+                      <td className={styles.levelCell}>
+                        <span className={styles.levelBadge}>{bp.level}차</span>
+                        {i === nextBuyIdx && !bp.filled && (
+                          <span className={styles.nextChip}>다음</span>
+                        )}
+                        {nearInfo && (
+                          <span className={`${styles.nearbyBuyChip} ${
+                            nearInfo.urgency === 3 ? styles.chipUrgency3 : nearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
+                          }`}>
+                            {nearInfo.gap >= 0 ? '+' : ''}{nearInfo.gap.toFixed(1)}%
+                          </span>
+                        )}
+                        {bp.filled && realDate && (
+                          <div className={styles.dateUnder}>
+                            <input
+                              type="date"
+                              className={styles.dateInputCompact}
+                              value={realDate}
+                              onChange={(e) => {
+                                const plans = [...local.buyPlans];
+                                plans[i] = { ...plans[i], filledDate: e.target.value };
+                                update({ buyPlans: plans });
+                              }}
+                            />
+                          </div>
+                        )}
+                        {!bp.filled && !realDate && <div className={styles.dateUnder} style={{ color: '#ccc' }}>-</div>}
+                      </td>
+                      {/* 계획가 */}
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>계획가</span>
+                        <span className={i === nextBuyIdx && !bp.filled ? styles.nextBuyPrice : styles.planPrice}>
+                          {bp.price.toLocaleString()}
+                        </span>
+                        {i === nextBuyIdx && !bp.filled && local.currentPrice > 0 && (
+                          <span className={`${styles.currentPriceTag} ${nearInfo?.urgency === 3 ? styles.priceTagUrgentBuy : ''}`}>
+                            현재 {local.currentPrice.toLocaleString()}
+                            <span className={styles.priceGap}>{priceGapText(bp.price)}</span>
+                          </span>
+                        )}
+                      </td>
+                      {/* 실제가 */}
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>실제가</span>
+                        {bp.filled && realPrice > 0
+                          ? <span className={styles.actualPrice}>{realPrice.toLocaleString()}</span>
+                          : <span className={styles.dashText}>-</span>}
+                      </td>
+                      {/* 수량 + 누적 */}
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>수량</span>
+                        <span className={bp.filled ? styles.filledQty : styles.plannedQty}>
+                          {(bp.filled ? (realQty || bp.quantity) : bp.quantity).toLocaleString()}
+                        </span>
+                        <span className={styles.cumulativeQty} style={{ color: bp.filled ? '#1565c0' : '#bbb' }}>
+                          {bp.filled ? `누적 ${cumQty.toLocaleString()}주` : `전체 ${cumQty.toLocaleString()}주`}
+                        </span>
+                      </td>
+                      {/* 체결 버튼 */}
+                      <td className={styles.btnCell}>
+                        <button
+                          className={`${styles.fillBtn} ${bp.filled ? styles.fillBtnActive : ''}`}
+                          onClick={() => toggleBuyFilled(i)}
+                        >
+                          {bp.filled ? '체결' : '미체결'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                });
+              })()}
+            </tbody>
+          </table>
         </div>
-      </div>
+
+        {/* 수익 매도 계획 */}
+        <div className={`${styles.card} ${styles.planCard}`}>
+          <div className={styles.planCardHeader}>
+            <h3 className={styles.cardTitle} style={{ color: '#1565c0', margin: 0 }}>수익 매도 계획</h3>
+            {(() => {
+              let cnt = 0, qty = 0, amt = 0;
+              local.sellPlans.forEach((sp, i) => {
+                const act = sellsByDate[i];
+                if (!sp.filled && !act) return;
+                const q = act ? act.qty : (sp.filledQuantity || sp.quantity);
+                const p = act ? Math.round(act.amt / act.qty) : (sp.filledPrice || sp.price);
+                cnt++; qty += q; amt += q * p;
+              });
+              const totalBoughtH = local.buyPlans.reduce((s, bp) => bp.filled ? s + (bp.filledQuantity || bp.quantity) : s, 0);
+              const maSoldH = local.maSells.reduce((s, ms) => ms.filled ? s + ms.quantity : s, 0);
+              const remQty = Math.max(0, totalBoughtH - qty - maSoldH);
+              return (
+                <span className={styles.planStatsSell}>
+                  {cnt > 0 ? `${cnt}회 · ${qty.toLocaleString()}주 · ${Math.round(amt / 10000).toLocaleString()}만원 회수` : '매도 없음'}
+                  {totalBoughtH > 0 && ` · 잔여 ${remQty.toLocaleString()}주`}
+                </span>
+              );
+            })()}
+          </div>
+          <table className={styles.planTableCompact}>
+            <tbody>
+              {(() => {
+                const totalBought = local.buyPlans.reduce((sum, bp) => {
+                  if (!bp.filled) return sum;
+                  return sum + (bp.filledQuantity || bp.quantity);
+                }, 0);
+                const maSold = local.maSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
+                let remaining = totalBought - maSold;
+
+                return local.sellPlans.map((sp, i) => {
+                  const actual = sellsByDate[i];
+                  const realPrice = actual ? Math.round(actual.amt / actual.qty) : sp.filledPrice || 0;
+                  const realQty = actual ? actual.qty : sp.filledQuantity || 0;
+                  const realDate = actual?.date || sp.filledDate || '';
+                  const realProfit = (sp.filled || actual) && local.avgPrice > 0 && realPrice > 0
+                    ? ((realPrice - local.avgPrice) / local.avgPrice) * 100 : null;
+                  const metTarget = (sp.filled || actual) && realPrice >= sp.price;
+                  const sellNearInfo = !sp.filled && !actual ? getNearInfo(sp.price) : null;
+                  const soldThisRound = (sp.filled || actual) ? (realQty || sp.quantity) : 0;
+                  remaining -= soldThisRound;
+                  const remainingAfter = Math.max(0, remaining);
+                  const shortDate = realDate ? realDate.slice(5) : '';
+
+                  return (
+                    <tr key={i} className={`${sp.filled || actual ? styles.sellFilledRow : ''} ${sellNearInfo ? styles.nearbySellRow : ''}`}>
+                      {/* 목표% + 날짜 */}
+                      <td className={styles.levelCell}>
+                        <span className={styles.levelBadge} style={{ color: '#1565c0' }}>+{sp.percent}%</span>
+                        {sp.percent >= 25 && (
+                          <span className={styles.manualSellBadge}>수동</span>
+                        )}
+                        {sellNearInfo && (
+                          <span className={`${styles.nearbySellChip} ${
+                            sellNearInfo.urgency === 3 ? styles.chipUrgency3 : sellNearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
+                          }`}>
+                            {sellNearInfo.gap >= 0 ? '+' : ''}{sellNearInfo.gap.toFixed(1)}%
+                          </span>
+                        )}
+                        {(sp.filled || actual) && shortDate && (
+                          <div className={styles.dateUnder}>{shortDate}</div>
+                        )}
+                        {!(sp.filled || actual) && <div className={styles.dateUnder} style={{ color: '#ccc' }}>-</div>}
+                      </td>
+                      {/* 목표가 */}
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>목표가</span>
+                        <span className={i === nextSellIdx && !sp.filled && !actual ? styles.nextSellPrice : styles.planPrice}>
+                          {sp.price.toLocaleString()}
+                        </span>
+                        {i === nextSellIdx && !sp.filled && !actual && local.currentPrice > 0 && (
+                          <span className={`${styles.currentPriceTag} ${sellNearInfo?.urgency === 3 ? styles.priceTagUrgentSell : ''}`}>
+                            현재 {local.currentPrice.toLocaleString()}
+                            <span className={styles.priceGap}>{priceGapText(sp.price)}</span>
+                          </span>
+                        )}
+                      </td>
+                      {/* 실제가 + 수익률 */}
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>실제가</span>
+                        {(sp.filled || actual) && realPrice > 0 ? (
+                          <>
+                            <span
+                              className={styles.actualPrice}
+                              style={{ color: metTarget ? '#1565c0' : '#ff9800' }}
+                              title={metTarget ? '목표 달성' : '목표 미달 매도'}
+                            >
+                              {!metTarget && <span className={styles.undershotIcon}>⚠️</span>}
+                              {realPrice.toLocaleString()}
+                            </span>
+                            {realProfit !== null && (
+                              <span className={styles.profitUnder} style={{ color: realProfit >= 0 ? '#4caf50' : '#f44336' }}>
+                                {realProfit >= 0 ? '+' : ''}{realProfit.toFixed(1)}%
+                              </span>
+                            )}
+                          </>
+                        ) : <span className={styles.dashText}>-</span>}
+                      </td>
+                      {/* 수량 + 잔여 */}
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>수량</span>
+                        {(sp.filled || actual)
+                          ? <span className={styles.filledQty}>{(realQty || sp.quantity).toLocaleString()}</span>
+                          : <span className={styles.plannedQty}>{sp.quantity.toLocaleString()}</span>}
+                        <span className={styles.cumulativeQty} style={{ color: remainingAfter <= 0 && (sp.filled || actual) ? '#f44336' : '#888' }}>
+                          {(sp.filled || actual)
+                            ? `잔여 ${remainingAfter.toLocaleString()}`
+                            : (remaining + soldThisRound > 0 ? `잔여 ${(remaining + soldThisRound).toLocaleString()}` : '-')}
+                        </span>
+                      </td>
+                      {/* 체결 + MA버튼 */}
+                      <td className={styles.btnCell}>
+                        <button
+                          className={`${styles.fillBtn} ${sp.filled || actual ? styles.sellBtnActive : ''}`}
+                          onClick={() => toggleSellFilled(i)}
+                        >
+                          {sp.filled || actual ? '체결' : '미체결'}
+                        </button>
+                        {(sp.filled || actual) && maSelectIdx !== i && (
+                          <button className={styles.maTransferBtn} onClick={() => setMaSelectIdx(i)}>MA</button>
+                        )}
+                        {maSelectIdx === i && (
+                          <div className={styles.maSelectPopup}>
+                            <span className={styles.maSelectLabel}>이평선:</span>
+                            {[20, 60, 120].map((d) => (
+                              <button key={d} className={styles.maSelectBtn}
+                                onClick={() => moveToMA(i, d, actual ? { price: Math.round(actual.amt / actual.qty), qty: actual.qty, date: actual.date } : undefined)}>
+                                {d}일
+                              </button>
+                            ))}
+                            <button className={styles.maSelectCancel} onClick={() => setMaSelectIdx(null)}>취소</button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                });
+              })()}
+            </tbody>
+          </table>
+          <div className={styles.sellNote}>
+            누적 매도: {sellsByDate.length}회 ({actualSells.length}건)
+            {sellsByDate.length >= 3 && <span className={styles.chip}>룰B 전환 가능</span>}
+          </div>
+        </div>
+
+      </div>{/* /plansRow */}
 
       {/* 이동평균선 매도 */}
       <div className={styles.card} style={{ borderLeft: '3px solid #ff9800' }}>
