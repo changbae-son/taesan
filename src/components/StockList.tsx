@@ -2,6 +2,20 @@ import { useState } from 'react';
 import type { Stock, Trade } from '../types';
 import styles from './StockList.module.css';
 
+// 매수 기록 불완전 여부 판단
+// - 보유 중인데 (totalQuantity > 0)
+// - 매매일지 buy 기록도 없고
+// - buyPlans 체결 fallback 데이터(filledDate+filledPrice+filledQuantity)도 없는 경우
+function checkIncomplete(stock: Stock, trades: Trade[]): boolean {
+  if ((stock.totalQuantity || 0) <= 0) return false;
+  const hasTrades = trades.some((t) => t.stockName === stock.name && t.type === 'buy');
+  if (hasTrades) return false;
+  const hasFallback = (stock.buyPlans || []).some(
+    (bp) => bp.filled && bp.filledDate && bp.filledPrice && bp.filledQuantity
+  );
+  return !hasFallback;
+}
+
 interface Props {
   stocks: Stock[];
   trades: Trade[];
@@ -40,8 +54,7 @@ function getGroup(stock: Stock): GroupKey {
   return 'holding';
 }
 
-export default function StockList({ stocks, trades: _trades, onSelect }: Props) {
-  void _trades;
+export default function StockList({ stocks, trades, onSelect }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   const filtered = stocks.filter((stock) => {
@@ -160,6 +173,8 @@ export default function StockList({ stocks, trades: _trades, onSelect }: Props) 
                       : 0;
                     const barWidth = Math.min(Math.abs(candleRate) / 5 * 100, 100);
 
+                    const incomplete = checkIncomplete(stock, trades);
+
                     return (
                       <div
                         key={stock.id}
@@ -171,6 +186,9 @@ export default function StockList({ stocks, trades: _trades, onSelect }: Props) 
                           <span className={styles.stockName}>
                             {stock.name}
                             {stock.code && <span className={styles.stockCode}>{stock.code.replace(/^A/, '')}</span>}
+                            {incomplete && (
+                              <span className={styles.incompleteBadge} title="매수 기록 불완전 — 클릭하여 체결 정보 입력">⚠️</span>
+                            )}
                           </span>
                           <div className={styles.badges}>
                             {stock.buySignal === 'signal' && (

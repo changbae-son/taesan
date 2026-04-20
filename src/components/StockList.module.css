@@ -187,6 +187,15 @@
   font-weight: 400;
 }
 
+.incompleteBadge {
+  font-size: 12px;
+  margin-left: 5px;
+  vertical-align: middle;
+  cursor: pointer;
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
 .badges {
   display: flex;
   align-items: center;

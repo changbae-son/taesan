@@ -215,10 +215,27 @@ export default function StockDetail({
   const actualBuys = stockTrades.filter((t) => t.type === 'buy');
   const actualSells = stockTrades.filter((t) => t.type === 'sell');
 
+  // buyPlans 체결 데이터로 fallback (Kiwoom 연동 이전 종목 대응)
+  const syntheticBuys: Trade[] = local.buyPlans
+    .filter((bp) => bp.filled && bp.filledDate && bp.filledPrice && bp.filledQuantity)
+    .map((bp) => ({
+      id: `synthetic-${local.id}-${bp.level}`,
+      date: bp.filledDate!,
+      stockName: local.name,
+      type: 'buy' as const,
+      price: bp.filledPrice!,
+      quantity: bp.filledQuantity!,
+      memo: `${bp.level}차 매수 (계획 기반)`,
+      tags: [] as string[],
+      createdAt: 0,
+    }));
+  // 실제 매매일지 기록 우선, 없으면 buyPlans 체결 데이터 사용
+  const effectiveBuys = actualBuys.length > 0 ? actualBuys : syntheticBuys;
+
   // 매수를 날짜별로 그룹핑
   const buysByDate: { date: string; qty: number; amt: number }[] = [];
   const buyDateMap: Record<string, { qty: number; amt: number }> = {};
-  for (const b of actualBuys) {
+  for (const b of effectiveBuys) {
     if (!buyDateMap[b.date]) buyDateMap[b.date] = { qty: 0, amt: 0 };
     buyDateMap[b.date].qty += b.quantity;
     buyDateMap[b.date].amt += b.price * b.quantity;
@@ -327,11 +344,11 @@ export default function StockDetail({
           )}
         </div>
       )}
-      {local.totalQuantity > 0 && actualBuys.length === 0 && (
+      {local.totalQuantity > 0 && effectiveBuys.length === 0 && (
         <div className={styles.alertOrange}>
-          ⚠️ <strong>매수 기록 불완전</strong> — Kiwoom API에서 과거 매수 내역을 조회할 수 없습니다.
+          ⚠️ <strong>매수 기록 불완전</strong> — 매수 내역을 확인할 수 없습니다.
           <br />
-          다음 매수 차수 실행 전 <strong>HTS에서 현재 진입 차수를 반드시 확인</strong>하세요.
+          기본정보 수정에서 체결 차수의 <strong>체결일·체결가·체결수량</strong>을 입력하면 이 경고가 사라집니다.
         </div>
       )}
 
