@@ -558,6 +558,28 @@ async function fetchTradeHistory(
       }
     }
   }
+  // ─── Cross-type dedup: ka10072 sell(sell_ fallback) ↔ kt00015/kt00007 buy 충돌 방지 ───
+  // ka10072 는 매도 전용 API → orderNo = "sell_DATE_CODE_PRICE_QTY" 형식 fallback 키
+  // kt00015/kt00007 는 동일 체결을 매수로 잘못 반환하는 경우 발생 → 해당 매수 레코드 제거
+  const sellFallbackSignatures = new Set<string>();
+  for (const t of dedupMap.values()) {
+    if (t.type === "sell" && (t.orderNo || "").startsWith("sell_")) {
+      sellFallbackSignatures.add(`${t.code}_${t.date}_${t.price}_${t.quantity}`);
+    }
+  }
+  for (const [key, t] of [...dedupMap.entries()]) {
+    if (t.type === "buy") {
+      const sig = `${t.code}_${t.date}_${t.price}_${t.quantity}`;
+      if (sellFallbackSignatures.has(sig)) {
+        console.log(
+          `[cross-dedup] ka10072 매도↔buy API 충돌 제거: ${t.code} ${t.date} ` +
+          `@${t.price}×${t.quantity} (ordNo: ${t.orderNo})`
+        );
+        dedupMap.delete(key);
+      }
+    }
+  }
+
   const dedupedTrades = Array.from(dedupMap.values());
   console.log(
     `[fetchTradeHistory] 완료: 총 ${allTrades.length}건 → dedup 후 ${dedupedTrades.length}건`
