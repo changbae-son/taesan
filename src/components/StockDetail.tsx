@@ -249,16 +249,17 @@ export default function StockDetail({
   const actualSells = stockTrades.filter((t) => t.type === 'sell');
 
   // buyPlans 체결 데이터로 fallback (Kiwoom 연동 이전 종목 대응)
+  // filledDate 없어도 filledPrice+filledQuantity 있으면 fallback 허용 (종가매수 등 API 날짜 미지원 대비)
   const syntheticBuys: Trade[] = local.buyPlans
-    .filter((bp) => bp.filled && bp.filledDate && bp.filledPrice && bp.filledQuantity)
+    .filter((bp) => bp.filled && bp.filledPrice && bp.filledQuantity)
     .map((bp) => ({
       id: `synthetic-${local.id}-${bp.level}`,
-      date: bp.filledDate!,
+      date: bp.filledDate || new Date(local.updatedAt || Date.now()).toISOString().slice(0, 10),
       stockName: local.name,
       type: 'buy' as const,
       price: bp.filledPrice!,
       quantity: bp.filledQuantity!,
-      memo: `${bp.level}차 매수 (계획 기반)`,
+      memo: `${bp.level}차 매수 (계획 기반)${bp.filledDate ? '' : ' — 날짜 미상'}`,
       tags: [] as string[],
       createdAt: 0,
     }));
