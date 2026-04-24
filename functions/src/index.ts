@@ -150,7 +150,11 @@ async function fetchTodayTrades(
         type: (item.trde_tp || "").includes("매도") ? "sell" : "buy",
         price: parseInt(item.cntr_pric || "0"),
         quantity: parseInt(item.cntr_qty || "0"),
-        date: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+        date: (() => {
+          // KST 기준 날짜 (UTC+9) — 장중(9시~15:30)에도 정확한 날짜 보장
+          const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+          return `${kst.getFullYear()}${String(kst.getMonth() + 1).padStart(2, "0")}${String(kst.getDate()).padStart(2, "0")}`;
+        })(),
         time: item.ord_tm || "",
         orderNo: item.ord_no || "",
       })) : [];
@@ -1066,12 +1070,30 @@ export const kiwoomSync = functions
         const startDate = body.startDate || undefined;
         const endDate = body.endDate || undefined;
 
+        // startDate 없으면 최근 영업일(어제)~오늘(KST) 자동 설정
+        // → 종가 매수 / 전일 체결 누락 방지
+        const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const todayKST = `${kstNow.getFullYear()}${String(kstNow.getMonth() + 1).padStart(2, "0")}${String(kstNow.getDate()).padStart(2, "0")}`;
+        // 마지막 영업일 계산 (토/일이면 더 거슬러 올라감)
+        const prevBizDay = new Date(kstNow);
+        prevBizDay.setDate(prevBizDay.getDate() - 1);
+        while (prevBizDay.getDay() === 0 || prevBizDay.getDay() === 6) {
+          prevBizDay.setDate(prevBizDay.getDate() - 1);
+        }
+        const prevBizDayStr = `${prevBizDay.getFullYear()}${String(prevBizDay.getMonth() + 1).padStart(2, "0")}${String(prevBizDay.getDate()).padStart(2, "0")}`;
+
+        const historyStart = startDate || prevBizDayStr;
+        const historyEnd = endDate || todayKST;
+
+        console.log(`[kiwoomSync] 체결 조회 범위: ${historyStart} ~ ${historyEnd} (${startDate ? "수동" : "자동"})`);
+
         // 잔고 + 체결내역 조회
         const [holdings, todayTrades, historyTrades] = await Promise.all([
           fetchHoldings(config, token),
           fetchTodayTrades(config, token),
-          startDate ? fetchTradeHistory(config, token, startDate, endDate) : Promise.resolve([]),
+          fetchTradeHistory(config, token, historyStart, historyEnd),
         ]);
+        // todayTrades(ka10076 당일) 와 historyTrades 를 합쳐 dedup 은 syncToFirestore 내부에서 처리
         const trades = [...historyTrades, ...todayTrades];
 
         // Firestore에 동기화
