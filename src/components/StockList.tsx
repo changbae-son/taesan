@@ -46,6 +46,29 @@ function getFirstBuyQty(stock: Stock): number {
   return 0;
 }
 
+// 1차 매수 총금액 (체결 데이터 우선, 없으면 계획가)
+function getFirstBuyAmt(stock: Stock): number {
+  const first = (stock.buyPlans || []).find((b) => b.level === 1);
+  if (first) {
+    const price = (first.filled && first.filledPrice) ? first.filledPrice : first.price;
+    const qty = (first.filled && first.filledQuantity) ? first.filledQuantity : first.quantity;
+    if (price > 0 && qty > 0) return price * qty;
+  }
+  // fallback: Stock 기본 필드
+  if (stock.firstBuyPrice > 0 && stock.firstBuyQuantity > 0) {
+    return stock.firstBuyPrice * stock.firstBuyQuantity;
+  }
+  return 0;
+}
+
+// 금액 표시 포맷 (만원 단위)
+function fmtAmt(n: number): string {
+  if (n <= 0) return '-';
+  if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(1)}억`;
+  if (n >= 10_000) return `${(n / 10_000).toFixed(0)}만`;
+  return n.toLocaleString();
+}
+
 type GroupKey = 'signal' | 'waiting' | 'holding';
 
 function getGroup(stock: Stock): GroupKey {
@@ -174,6 +197,9 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                     const barWidth = Math.min(Math.abs(candleRate) / 5 * 100, 100);
 
                     const incomplete = checkIncomplete(stock, trades);
+                    const firstBuyAmt = getFirstBuyAmt(stock);
+                    const currentVal = (stock.currentPrice || 0) * (stock.totalQuantity || 0);
+                    const showAmt = (stock.totalQuantity || 0) > 0 && firstBuyAmt > 0;
 
                     return (
                       <div
@@ -181,7 +207,7 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                         className={cardClass}
                         onClick={() => onSelect(stock.id)}
                       >
-                        {/* 1줄: 종목명 + 상태 */}
+                        {/* 1줄: 종목명 + 금액 + 상태 */}
                         <div className={styles.cardRow1}>
                           <span className={styles.stockName}>
                             {stock.name}
@@ -190,6 +216,18 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                               <span className={styles.incompleteBadge} title="매수 기록 불완전 — 클릭하여 체결 정보 입력">⚠️</span>
                             )}
                           </span>
+                          {showAmt && (
+                            <span className={styles.amtInfo}>
+                              <span className={styles.amtInit}>{fmtAmt(firstBuyAmt)}</span>
+                              <span className={styles.amtArrow}>→</span>
+                              <span
+                                className={styles.amtCurrent}
+                                style={{ color: currentVal >= firstBuyAmt ? '#4caf50' : '#f44336' }}
+                              >
+                                {fmtAmt(currentVal)}
+                              </span>
+                            </span>
+                          )}
                           <div className={styles.badges}>
                             {stock.buySignal === 'signal' && (
                               <span className={styles.signalBadge}>매수신호!</span>
