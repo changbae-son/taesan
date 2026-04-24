@@ -834,8 +834,7 @@ async function syncToFirestore(
           }
         }
       } else {
-        // 매도 내역 없음 = 매도한 적 없는 종목: 현재 보유량 = 원래 매수량
-        // firstBuyQuantity가 이미 올바르게 설정되어 있으면 보존
+        // 체결 API 데이터 없음 → holdings 데이터로 기본 처리
         if (!existingData?.firstBuyQuantity || existingData.firstBuyQuantity === 0) {
           updateData.firstBuyQuantity = h.quantity;
         }
@@ -844,6 +843,29 @@ async function syncToFirestore(
         }
         updateData.avgPrice = h.avgPrice;
         updateData.totalQuantity = h.quantity;
+
+        // buyPlans 1차가 미체결이거나 filledPrice/filledQuantity 없으면
+        // holdings 데이터로 채워서 ⚠️ 배지 해소
+        const existingBuyPlans: any[] = existingData?.buyPlans || [];
+        const bp0 = existingBuyPlans[0];
+        if (bp0 && (!bp0.filled || !bp0.filledPrice || !bp0.filledQuantity)) {
+          const updatedBuyPlans = existingBuyPlans.map((bp: any, idx: number) => {
+            if (idx === 0) {
+              return {
+                ...bp,
+                price: bp.price || h.avgPrice,
+                quantity: bp.quantity || h.quantity,
+                filled: true,
+                filledDate: bp.filledDate || "",
+                filledQuantity: bp.filledQuantity || h.quantity,
+                filledPrice: bp.filledPrice || h.avgPrice,
+              };
+            }
+            return bp;
+          });
+          updateData.buyPlans = updatedBuyPlans;
+          console.log(`[동기화] ${h.name}: buyPlans 1차 holdings 기반 체결 처리`);
+        }
       }
 
       await db.collection("stocks").doc(existingDocId).update(updateData);

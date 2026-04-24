@@ -10,8 +10,9 @@ function checkIncomplete(stock: Stock, trades: Trade[]): boolean {
   if ((stock.totalQuantity || 0) <= 0) return false;
   const hasTrades = trades.some((t) => t.stockName === stock.name && t.type === 'buy');
   if (hasTrades) return false;
+  // filledDate 없어도 price/qty만 있으면 완전한 기록으로 간주 (API가 날짜 미지원 시 대비)
   const hasFallback = (stock.buyPlans || []).some(
-    (bp) => bp.filled && bp.filledDate && bp.filledPrice && bp.filledQuantity
+    (bp) => bp.filled && bp.filledPrice && bp.filledQuantity
   );
   return !hasFallback;
 }
