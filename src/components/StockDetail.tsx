@@ -30,8 +30,13 @@ export default function StockDetail({
   onSnapshot,
 }: Props) {
   const [local, setLocal] = useState<Stock>(stock);
-  const [maSelectIdx, setMaSelectIdx] = useState<number | null>(null);
   const [showBasicInfo, setShowBasicInfo] = useState(false);
+
+  // ── 수익매도 수동 편집 ──
+  const [sellEditIdx, setSellEditIdx] = useState<number | null>(null);
+  const [sellEditDraft, setSellEditDraft] = useState<{
+    date: string; price: number; qty: number;
+  } | null>(null);
 
   // ── 기본 정보 수정 draft ──
   const [editDraft, setEditDraft] = useState<{
@@ -108,18 +113,49 @@ export default function StockDetail({
       currentPrice: editDraft.currentPrice,
     });
     // 수동 입력한 가격/수량/체결정보로 override
-    const finalBuyPlans = base.buyPlans.map((bp, i) => ({
-      ...bp,
-      price: editDraft.prices[i] > 0 ? editDraft.prices[i] : bp.price,
-      quantity: editDraft.quantities[i] > 0 ? editDraft.quantities[i] : bp.quantity,
-      // 체결 차수만 체결 정보 저장
-      ...(bp.filled && {
-        filledDate: editDraft.filledDates[i],
-        filledPrice: editDraft.filledPrices[i],
-        filledQuantity: editDraft.filledQtys[i],
-      }),
-    }));
-    const final: Stock = { ...base, buyPlans: finalBuyPlans, updatedAt: Date.now() };
+    // 체결 정보(가격+수량)가 모두 입력되면 자동으로 filled=true 처리
+    const finalBuyPlans = base.buyPlans.map((bp, i) => {
+      const fp = editDraft.filledPrices[i];
+      const fq = editDraft.filledQtys[i];
+      const hasFillInfo = (fp ?? 0) > 0 && (fq ?? 0) > 0;
+      const willBeFilled = bp.filled || hasFillInfo;
+      // 사용자가 직접 입력한 체결 정보는 manualOverride=true로 보호
+      // (다음 sync/reconcile에서 덮어쓰지 않도록)
+      const isManualEntry = hasFillInfo && (
+        editDraft.filledPrices[i] !== bp.filledPrice ||
+        editDraft.filledQtys[i] !== bp.filledQuantity ||
+        editDraft.filledDates[i] !== bp.filledDate
+      );
+      return {
+        ...bp,
+        price: editDraft.prices[i] > 0 ? editDraft.prices[i] : bp.price,
+        quantity: editDraft.quantities[i] > 0 ? editDraft.quantities[i] : bp.quantity,
+        filled: willBeFilled,
+        filledDate: willBeFilled ? editDraft.filledDates[i] : bp.filledDate,
+        filledPrice: willBeFilled ? fp : bp.filledPrice,
+        filledQuantity: willBeFilled ? fq : bp.filledQuantity,
+        manualOverride: isManualEntry || bp.manualOverride,
+      };
+    });
+    // 평단가 재계산 (filled buyPlans 기준)
+    let totalCost = 0;
+    let totalQty = 0;
+    for (const bp of finalBuyPlans) {
+      if (bp.filled) {
+        const p = bp.filledPrice || bp.price;
+        const q = bp.filledQuantity || bp.quantity;
+        totalCost += p * q;
+        totalQty += q;
+      }
+    }
+    const newAvg = totalQty > 0 ? Math.round(totalCost / totalQty) : base.avgPrice;
+    const final: Stock = {
+      ...base,
+      buyPlans: finalBuyPlans,
+      avgPrice: newAvg,
+      totalQuantity: totalQty > 0 ? totalQty : base.totalQuantity,
+      updatedAt: Date.now(),
+    };
     setLocal(final);
     onSave(final);
     setEditDraft(null);
@@ -188,26 +224,160 @@ export default function StockDetail({
     update({ maSells: ma });
   };
 
-  // 수익매도 → 이동평균선 매도로 이동 (sellsByDate는 렌더 시점에 참조)
-  const moveToMA = (sellIdx: number, maDay: number, actualData?: { price: number; qty: number; date: string }) => {
-    const sp = local.sellPlans[sellIdx];
-    const price = actualData?.price || sp.price;
-    const qty = actualData?.qty || sp.quantity;
-    const date = actualData?.date || sp.filledDate || '';
+  // 수익매도 수동 편집 열기
+  const openSellEdit = (i: number) => {
+    const sp = local.sellPlans[i];
+    setSellEditIdx(i);
+    setSellEditDraft({
+      date: sp.filledDate || '',
+      price: sp.filledPrice || sp.price || 0,
+      qty: sp.filledQuantity || sp.quantity || 0,
+    });
+    setSplitIdx(null);
+  };
 
-    // 해당 이평선 찾아서 업데이트
-    const ma = [...local.maSells];
-    const maIdx = ma.findIndex((m) => m.ma === maDay);
-    if (maIdx >= 0) {
-      ma[maIdx] = { ...ma[maIdx], price, quantity: qty, filled: true, filledDate: date, fromSellPlan: sellIdx + 1 };
+  // 수익매도 수동 편집 저장 (manualOverride=true 설정)
+  const confirmSellEdit = () => {
+    if (sellEditIdx === null || !sellEditDraft) return;
+    const plans = [...local.sellPlans];
+    plans[sellEditIdx] = {
+      ...plans[sellEditIdx],
+      filled: true,
+      filledDate: sellEditDraft.date,
+      filledPrice: sellEditDraft.price,
+      filledQuantity: sellEditDraft.qty,
+      manualOverride: true,
+    };
+    const newSellCount = plans.filter((p) => p.filled).length;
+    update({ sellPlans: plans, sellCount: newSellCount });
+    setSellEditIdx(null);
+    setSellEditDraft(null);
+  };
+
+  // 수익매도 수동 편집 해제 (manualOverride 제거 → sync 자동 반영 허용)
+  const clearSellOverride = (i: number) => {
+    const plans = [...local.sellPlans];
+    const { manualOverride: _removed, ...rest } = plans[i] as any;
+    plans[i] = rest;
+    update({ sellPlans: plans });
+  };
+
+  // ── MA 분리 (sellPlan → maSells 이동) ──
+  const [splitIdx, setSplitIdx] = useState<number | null>(null);
+  const [splitDraft, setSplitDraft] = useState<{
+    ma: number; qty: number; price: number; date: string;
+  } | null>(null);
+
+  const openSplitToMA = (i: number) => {
+    const sp = local.sellPlans[i];
+    setSplitIdx(i);
+    setSplitDraft({
+      ma: 60, // 기본 60일선
+      qty: sp.filledQuantity || 0,
+      price: sp.filledPrice || 0,
+      date: sp.filledDate || new Date().toISOString().slice(0, 10),
+    });
+    setSellEditIdx(null);
+  };
+
+  const confirmSplitToMA = () => {
+    if (splitIdx === null || !splitDraft) return;
+    const sp = local.sellPlans[splitIdx];
+    const splitQty = splitDraft.qty;
+    if (splitQty <= 0) return;
+    const currentFilledQty = sp.filledQuantity || 0;
+    if (splitQty > currentFilledQty) {
+      alert(`분리 수량(${splitQty})이 체결 수량(${currentFilledQty})을 초과합니다.`);
+      return;
     }
 
-    // 수익매도에서 체결 해제
-    const sells = [...local.sellPlans];
-    sells[sellIdx] = { ...sells[sellIdx], filled: false };
+    // 1. sellPlan 차감
+    const plans = [...local.sellPlans];
+    const remaining = currentFilledQty - splitQty;
+    plans[splitIdx] = {
+      ...sp,
+      filledQuantity: remaining,
+      filled: remaining > 0,
+      manualOverride: true, // sync 보호
+    };
+    if (remaining === 0) {
+      plans[splitIdx].filledDate = '';
+      plans[splitIdx].filledPrice = 0;
+    }
 
-    update({ sellPlans: sells, maSells: ma });
-    setMaSelectIdx(null);
+    // 2. maSells에 추가 (해당 MA 슬롯)
+    const maList = [...local.maSells];
+    const maIdx = maList.findIndex((m) => m.ma === splitDraft.ma);
+    if (maIdx >= 0) {
+      // 기존 슬롯이 비어있으면 채우고, 이미 차있으면 수량 누적
+      const existing = maList[maIdx];
+      if (existing.filled) {
+        const totalQty = existing.quantity + splitQty;
+        const totalAmt = existing.price * existing.quantity + splitDraft.price * splitQty;
+        maList[maIdx] = {
+          ...existing,
+          quantity: totalQty,
+          price: Math.round(totalAmt / totalQty),
+          filledDate: splitDraft.date,
+          insertAfterPercent: sp.percent,
+          splitFromPercent: sp.percent,
+        };
+      } else {
+        maList[maIdx] = {
+          ...existing,
+          quantity: splitQty,
+          price: splitDraft.price,
+          filled: true,
+          filledDate: splitDraft.date,
+          insertAfterPercent: sp.percent,
+          splitFromPercent: sp.percent,
+        };
+      }
+    }
+
+    const newSellCount = plans.filter((p) => p.filled).length;
+    update({ sellPlans: plans, maSells: maList, sellCount: newSellCount });
+    setSplitIdx(null);
+    setSplitDraft(null);
+  };
+
+  // ── MA 행 → sellPlan 복원 ──
+  const restoreMAToSell = (maIdx: number) => {
+    const m = local.maSells[maIdx];
+    if (!m.filled || !m.splitFromPercent) {
+      alert('분리 정보가 없는 MA 매도는 복원할 수 없습니다.');
+      return;
+    }
+    const targetPercent = m.splitFromPercent;
+    const plans = [...local.sellPlans];
+    const targetIdx = plans.findIndex((p) => p.percent === targetPercent);
+    if (targetIdx < 0) return;
+
+    const sp = plans[targetIdx];
+    const currentQty = sp.filledQuantity || 0;
+    const currentPrice = sp.filledPrice || 0;
+    const newQty = currentQty + m.quantity;
+    const newAmt = currentPrice * currentQty + m.price * m.quantity;
+    const newPrice = newQty > 0 ? Math.round(newAmt / newQty) : 0;
+
+    plans[targetIdx] = {
+      ...sp,
+      filled: true,
+      filledQuantity: newQty,
+      filledPrice: newPrice,
+      filledDate: sp.filledDate || m.filledDate || '',
+    };
+
+    // maSells 항목 비움
+    const maList = [...local.maSells];
+    maList[maIdx] = {
+      ma: m.ma,
+      price: 0,
+      quantity: 0,
+      filled: false,
+    };
+
+    update({ sellPlans: plans, maSells: maList });
   };
 
   const profitPercent =
@@ -287,21 +457,28 @@ export default function StockDetail({
     ? ((local.currentPrice - actualAvgPrice) / actualAvgPrice) * 100
     : 0;
 
-  // 매도를 날짜별로 그룹핑
-  const sellsByDate: { date: string; qty: number; amt: number; trades: Trade[] }[] = [];
-  const sellDateMap: Record<string, { qty: number; amt: number; trades: Trade[] }> = {};
-  for (const s of actualSells) {
-    if (!sellDateMap[s.date]) sellDateMap[s.date] = { qty: 0, amt: 0, trades: [] };
-    sellDateMap[s.date].qty += s.quantity;
-    sellDateMap[s.date].amt += s.price * s.quantity;
-    sellDateMap[s.date].trades.push(s);
-  }
-  Object.keys(sellDateMap).sort().forEach((d) => {
-    sellsByDate.push({ date: d, ...sellDateMap[d] });
-  });
+  // 매도: 개별 체결 순차 매핑 (날짜↑, 같은 날짜는 가격↑)
+  // 각 체결 건이 하나의 sellPlan 슬롯과 1:1 대응
+  const sellsIndividual: { date: string; qty: number; amt: number; trades: Trade[] }[] = [
+    ...actualSells
+  ]
+    .sort((a, b) => {
+      const dc = a.date.localeCompare(b.date);
+      if (dc !== 0) return dc;
+      return a.price - b.price; // 같은 날: 가격 오름차순 (백엔드와 동일 정렬)
+    })
+    .map((s) => ({
+      date: s.date,
+      qty: s.quantity,
+      amt: s.price * s.quantity,
+      trades: [s],
+    }));
+
+  // 하위 호환용 별칭 (기존 코드 참조 최소화)
+  const sellsByDate = sellsIndividual;
 
   // 다음 매도 차수 인덱스
-  const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsByDate[i]);
+  const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsIndividual[i]);
 
   // 1차 매수 참고 정보 (헤더 배지용)
   const firstBuyPlan = local.buyPlans[0];
@@ -654,44 +831,46 @@ export default function StockDetail({
                         )}
                       </td>
                     </tr>
-                    {/* 서브 행: 체결 차수만 — 체결일 / 체결가 / 체결수량 */}
-                    {bp.filled && (
-                      <tr key={`fill-${i}`} className={styles.editFillDataRow}>
-                        <td colSpan={4}>
-                          <div className={styles.editFillDataInner}>
-                            <div className={styles.editFillDataField}>
-                              <label>체결일</label>
-                              <input
-                                type="date"
-                                className={styles.editDraftInput}
-                                value={editDraft.filledDates[i] || ''}
-                                onChange={(e) => handleDraftFillDate(i, e.target.value)}
-                              />
-                            </div>
-                            <div className={styles.editFillDataField}>
-                              <label>체결가</label>
-                              <input
-                                type="number"
-                                className={styles.editDraftInput}
-                                value={editDraft.filledPrices[i] || ''}
-                                placeholder="실제 체결가"
-                                onChange={(e) => handleDraftFillPrice(i, Number(e.target.value))}
-                              />
-                            </div>
-                            <div className={styles.editFillDataField}>
-                              <label>체결수량</label>
-                              <input
-                                type="number"
-                                className={styles.editDraftInput}
-                                value={editDraft.filledQtys[i] || ''}
-                                placeholder="실제 수량"
-                                onChange={(e) => handleDraftFillQty(i, Number(e.target.value))}
-                              />
-                            </div>
+                    {/* 서브 행: 모든 차수에 체결정보 입력 가능
+                        — 미체결 차수도 체결가+체결수량 입력 시 자동으로 체결 처리됨 */}
+                    <tr key={`fill-${i}`} className={`${styles.editFillDataRow} ${!bp.filled ? styles.editFillDataRowUnfilled : ''}`}>
+                      <td colSpan={4}>
+                        <div className={styles.editFillDataInner}>
+                          <span className={styles.editFillDataLabel}>
+                            {bp.filled ? '체결 정보' : '체결 정보 (입력 시 자동 체결 처리)'}
+                          </span>
+                          <div className={styles.editFillDataField}>
+                            <label>체결일</label>
+                            <input
+                              type="date"
+                              className={styles.editDraftInput}
+                              value={editDraft.filledDates[i] || ''}
+                              onChange={(e) => handleDraftFillDate(i, e.target.value)}
+                            />
                           </div>
-                        </td>
-                      </tr>
-                    )}
+                          <div className={styles.editFillDataField}>
+                            <label>체결가</label>
+                            <input
+                              type="number"
+                              className={styles.editDraftInput}
+                              value={editDraft.filledPrices[i] || ''}
+                              placeholder="실제 체결가"
+                              onChange={(e) => handleDraftFillPrice(i, Number(e.target.value))}
+                            />
+                          </div>
+                          <div className={styles.editFillDataField}>
+                            <label>체결수량</label>
+                            <input
+                              type="number"
+                              className={styles.editDraftInput}
+                              value={editDraft.filledQtys[i] || ''}
+                              placeholder="실제 수량"
+                              onChange={(e) => handleDraftFillQty(i, Number(e.target.value))}
+                            />
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
                   </>
                 ))}
               </tbody>
@@ -882,22 +1061,80 @@ export default function StockDetail({
                 const maSold = local.maSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
                 let remaining = totalBought - maSold;
 
-                return local.sellPlans.map((sp, i) => {
-                  const actual = sellsByDate[i];
+                // MA 행 렌더 헬퍼
+                const renderMARow = (m: typeof local.maSells[0], mi: number) => {
+                  const profit = local.avgPrice > 0 && m.price > 0
+                    ? ((m.price - local.avgPrice) / local.avgPrice) * 100 : null;
+                  const shortD = m.filledDate ? m.filledDate.slice(5) : '';
+                  return (
+                    <tr key={`ma-${mi}`} className={styles.maInsertedRow}>
+                      <td className={styles.levelCell}>
+                        <span className={styles.maInsertedBadge}>MA{m.ma}</span>
+                        {shortD && <div className={styles.dateUnder}>{shortD}</div>}
+                      </td>
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>MA가</span>
+                        <span className={styles.dashText}>-</span>
+                      </td>
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>실제가</span>
+                        <span className={styles.actualPrice} style={{ color: '#ff9800' }}>
+                          {m.price.toLocaleString()}
+                        </span>
+                        {profit !== null && (
+                          <span className={styles.profitUnder} style={{ color: profit >= 0 ? '#4caf50' : '#f44336' }}>
+                            {profit >= 0 ? '+' : ''}{profit.toFixed(1)}%
+                          </span>
+                        )}
+                      </td>
+                      <td className={styles.numCell}>
+                        <span className={styles.colLabel}>수량</span>
+                        <span className={styles.filledQty} style={{ color: '#ff9800' }}>{m.quantity.toLocaleString()}</span>
+                        <span className={styles.cumulativeQty}>MA 매도</span>
+                      </td>
+                      <td className={styles.btnCell}>
+                        {m.splitFromPercent !== undefined && (
+                          <button
+                            className={styles.maRestoreBtn}
+                            onClick={() => restoreMAToSell(mi)}
+                            title={`+${m.splitFromPercent}% 차수로 복원`}
+                          >
+                            ↩️
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                };
+
+                const rows: any[] = [];
+
+                // [insertAfterPercent === 0] 1차 이전 MA 매도
+                local.maSells.forEach((m, mi) => {
+                  if (m.filled && m.insertAfterPercent === 0) {
+                    rows.push(renderMARow(m, mi));
+                  }
+                });
+
+                local.sellPlans.forEach((sp, i) => {
+                  // manualOverride: sp 값 우선 (분리/편집 보호)
+                  const useSpOnly = sp.manualOverride === true;
+                  const actual = useSpOnly ? null : sellsByDate[i];
                   const realPrice = actual ? Math.round(actual.amt / actual.qty) : sp.filledPrice || 0;
                   const realQty = actual ? actual.qty : sp.filledQuantity || 0;
                   const realDate = actual?.date || sp.filledDate || '';
-                  const realProfit = (sp.filled || actual) && local.avgPrice > 0 && realPrice > 0
+                  const isFilled = sp.filled || !!actual;
+                  const realProfit = isFilled && local.avgPrice > 0 && realPrice > 0
                     ? ((realPrice - local.avgPrice) / local.avgPrice) * 100 : null;
-                  const metTarget = (sp.filled || actual) && realPrice >= sp.price;
-                  const sellNearInfo = !sp.filled && !actual ? getNearInfo(sp.price) : null;
-                  const soldThisRound = (sp.filled || actual) ? (realQty || sp.quantity) : 0;
+                  const metTarget = isFilled && realPrice >= sp.price;
+                  const sellNearInfo = !isFilled ? getNearInfo(sp.price) : null;
+                  const soldThisRound = isFilled ? (realQty || sp.quantity) : 0;
                   remaining -= soldThisRound;
                   const remainingAfter = Math.max(0, remaining);
                   const shortDate = realDate ? realDate.slice(5) : '';
 
-                  return (
-                    <tr key={i} className={`${sp.filled || actual ? styles.sellFilledRow : ''} ${sellNearInfo ? styles.nearbySellRow : ''}`}>
+                  rows.push(
+                    <tr key={i} className={`${isFilled ? styles.sellFilledRow : ''} ${sellNearInfo ? styles.nearbySellRow : ''}`}>
                       {/* 목표% + 날짜 */}
                       <td className={styles.levelCell}>
                         <span className={styles.levelBadge} style={{ color: '#1565c0' }}>+{sp.percent}%</span>
@@ -911,18 +1148,18 @@ export default function StockDetail({
                             {sellNearInfo.gap >= 0 ? '+' : ''}{sellNearInfo.gap.toFixed(1)}%
                           </span>
                         )}
-                        {(sp.filled || actual) && shortDate && (
+                        {isFilled && shortDate && (
                           <div className={styles.dateUnder}>{shortDate}</div>
                         )}
-                        {!(sp.filled || actual) && <div className={styles.dateUnder} style={{ color: '#ccc' }}>-</div>}
+                        {!isFilled && <div className={styles.dateUnder} style={{ color: '#ccc' }}>-</div>}
                       </td>
                       {/* 목표가 */}
                       <td className={styles.numCell}>
                         <span className={styles.colLabel}>목표가</span>
-                        <span className={i === nextSellIdx && !sp.filled && !actual ? styles.nextSellPrice : styles.planPrice}>
+                        <span className={i === nextSellIdx && !isFilled ? styles.nextSellPrice : styles.planPrice}>
                           {sp.price.toLocaleString()}
                         </span>
-                        {i === nextSellIdx && !sp.filled && !actual && local.currentPrice > 0 && (
+                        {i === nextSellIdx && !isFilled && local.currentPrice > 0 && (
                           <span className={`${styles.currentPriceTag} ${sellNearInfo?.urgency === 3 ? styles.priceTagUrgentSell : ''}`}>
                             현재 {local.currentPrice.toLocaleString()}
                             <span className={styles.priceGap}>{priceGapText(sp.price)}</span>
@@ -932,7 +1169,7 @@ export default function StockDetail({
                       {/* 실제가 + 수익률 */}
                       <td className={styles.numCell}>
                         <span className={styles.colLabel}>실제가</span>
-                        {(sp.filled || actual) && realPrice > 0 ? (
+                        {isFilled && realPrice > 0 ? (
                           <>
                             <span
                               className={styles.actualPrice}
@@ -953,48 +1190,144 @@ export default function StockDetail({
                       {/* 수량 + 잔여 */}
                       <td className={styles.numCell}>
                         <span className={styles.colLabel}>수량</span>
-                        {(sp.filled || actual)
+                        {isFilled
                           ? <span className={styles.filledQty}>{(realQty || sp.quantity).toLocaleString()}</span>
                           : <span className={styles.plannedQty}>{sp.quantity.toLocaleString()}</span>}
-                        <span className={styles.cumulativeQty} style={{ color: remainingAfter <= 0 && (sp.filled || actual) ? '#f44336' : '#888' }}>
-                          {(sp.filled || actual)
+                        <span className={styles.cumulativeQty} style={{ color: remainingAfter <= 0 && isFilled ? '#f44336' : '#888' }}>
+                          {isFilled
                             ? `잔여 ${remainingAfter.toLocaleString()}`
                             : (remaining + soldThisRound > 0 ? `잔여 ${(remaining + soldThisRound).toLocaleString()}` : '-')}
                         </span>
                       </td>
-                      {/* 체결 + MA버튼 */}
+                      {/* 체결 + MA버튼 + 수동편집 */}
                       <td className={styles.btnCell}>
                         <button
-                          className={`${styles.fillBtn} ${sp.filled || actual ? styles.sellBtnActive : ''}`}
+                          className={`${styles.fillBtn} ${isFilled ? styles.sellBtnActive : ''}`}
                           onClick={() => toggleSellFilled(i)}
                         >
-                          {sp.filled || actual ? '체결' : '미체결'}
+                          {isFilled ? '체결' : '미체결'}
                         </button>
-                        {(sp.filled || actual) && maSelectIdx !== i && (
-                          <button className={styles.maTransferBtn} onClick={() => setMaSelectIdx(i)}>MA</button>
+                        {isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && (
+                          <button className={styles.splitBtn} onClick={() => openSplitToMA(i)} title="이 차수의 일부/전체를 MA 매도로 분리">🔀 MA</button>
                         )}
-                        {maSelectIdx === i && (
-                          <div className={styles.maSelectPopup}>
-                            <span className={styles.maSelectLabel}>이평선:</span>
-                            {[20, 60, 120].map((d) => (
-                              <button key={d} className={styles.maSelectBtn}
-                                onClick={() => moveToMA(i, d, actual ? { price: Math.round(actual.amt / actual.qty), qty: actual.qty, date: actual.date } : undefined)}>
-                                {d}일
-                              </button>
-                            ))}
-                            <button className={styles.maSelectCancel} onClick={() => setMaSelectIdx(null)}>취소</button>
+                        {sellEditIdx !== i && splitIdx !== i && (
+                          <button className={styles.sellEditBtn} onClick={() => openSellEdit(i)}>✏️</button>
+                        )}
+                        {sp.manualOverride && sellEditIdx !== i && splitIdx !== i && (
+                          <span className={styles.manualOverrideBadge} title="수동 편집됨 (sync 보호)">수동</span>
+                        )}
+                        {sellEditIdx === i && sellEditDraft && (
+                          <div className={styles.sellEditPopup}>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>날짜</label>
+                              <input
+                                type="date"
+                                className={styles.sellEditInput}
+                                value={sellEditDraft.date}
+                                onChange={(e) => setSellEditDraft({ ...sellEditDraft, date: e.target.value })}
+                              />
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>체결가</label>
+                              <input
+                                type="number"
+                                className={styles.sellEditInput}
+                                value={sellEditDraft.price || ''}
+                                onChange={(e) => setSellEditDraft({ ...sellEditDraft, price: Number(e.target.value) })}
+                              />
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>수량</label>
+                              <input
+                                type="number"
+                                className={styles.sellEditInput}
+                                value={sellEditDraft.qty || ''}
+                                onChange={(e) => setSellEditDraft({ ...sellEditDraft, qty: Number(e.target.value) })}
+                              />
+                            </div>
+                            <div className={styles.sellEditActions}>
+                              <button className={styles.sellEditSave} onClick={confirmSellEdit}>저장</button>
+                              <button className={styles.sellEditCancel} onClick={() => { setSellEditIdx(null); setSellEditDraft(null); }}>취소</button>
+                              {sp.manualOverride && (
+                                <button className={styles.sellEditReset} onClick={() => { clearSellOverride(i); setSellEditIdx(null); setSellEditDraft(null); }}>수동해제</button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {splitIdx === i && splitDraft && (
+                          <div className={styles.splitPopup}>
+                            <div className={styles.splitTitle}>
+                              🔀 MA 매도로 분리 (현재 +{sp.percent}% 차수)
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>이평선</label>
+                              <div className={styles.maRadioGroup}>
+                                {[20, 60, 120].map((d) => (
+                                  <button
+                                    key={d}
+                                    className={`${styles.maRadioBtn} ${splitDraft.ma === d ? styles.maRadioBtnActive : ''}`}
+                                    onClick={() => setSplitDraft({ ...splitDraft, ma: d })}
+                                  >
+                                    MA{d}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>날짜</label>
+                              <input
+                                type="date"
+                                className={styles.sellEditInput}
+                                value={splitDraft.date}
+                                onChange={(e) => setSplitDraft({ ...splitDraft, date: e.target.value })}
+                              />
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>체결가</label>
+                              <input
+                                type="number"
+                                className={styles.sellEditInput}
+                                value={splitDraft.price || ''}
+                                onChange={(e) => setSplitDraft({ ...splitDraft, price: Number(e.target.value) })}
+                              />
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>분리 수량</label>
+                              <input
+                                type="number"
+                                className={styles.sellEditInput}
+                                value={splitDraft.qty || ''}
+                                max={sp.filledQuantity || 0}
+                                onChange={(e) => setSplitDraft({ ...splitDraft, qty: Number(e.target.value) })}
+                              />
+                            </div>
+                            <div className={styles.splitHint}>
+                              현재 체결 {(sp.filledQuantity || 0).toLocaleString()}주 → 분리 후 +{sp.percent}%에 {((sp.filledQuantity || 0) - splitDraft.qty).toLocaleString()}주 남음
+                            </div>
+                            <div className={styles.sellEditActions}>
+                              <button className={styles.sellEditSave} onClick={confirmSplitToMA}>분리 실행</button>
+                              <button className={styles.sellEditCancel} onClick={() => { setSplitIdx(null); setSplitDraft(null); }}>취소</button>
+                            </div>
                           </div>
                         )}
                       </td>
                     </tr>
                   );
+
+                  // 이 sellPlan 다음에 끼어드는 MA 매도들
+                  local.maSells.forEach((m, mi) => {
+                    if (m.filled && m.insertAfterPercent === sp.percent) {
+                      rows.push(renderMARow(m, mi));
+                    }
+                  });
                 });
+                return rows;
               })()}
             </tbody>
           </table>
           <div className={styles.sellNote}>
-            누적 매도: {sellsByDate.length}회 ({actualSells.length}건)
-            {sellsByDate.length >= 3 && <span className={styles.chip}>룰B 전환 가능</span>}
+            누적 매도: {sellsIndividual.length}회 ({actualSells.length}건)
+            {sellsIndividual.length >= 3 && <span className={styles.chip}>룰B 전환 가능</span>}
           </div>
         </div>
 

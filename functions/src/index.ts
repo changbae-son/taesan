@@ -13,6 +13,8 @@ import cors = require("cors");
 
 admin.initializeApp();
 const db = admin.firestore();
+// undefined 값을 자동으로 무시 (Firestore에 저장하지 않음) - 안전망
+db.settings({ignoreUndefinedProperties: true});
 const corsHandler = cors({origin: true});
 
 // ─── 키움 REST API 설정 ───
@@ -701,39 +703,29 @@ function mapTradesToPlans(
   }
   const avgPrice = totalQty > 0 ? Math.round(totalCost / totalQty) : firstBuyPrice;
 
-  // 매도 차수 매핑: 같은 날짜의 매도는 같은 차수로 묶음
-  const sellByDate: Record<string, {totalQty: number; totalAmt: number; date: string}> = {};
-  for (const s of sells) {
-    const dt = s.date || "";
-    if (!sellByDate[dt]) {
-      sellByDate[dt] = {totalQty: 0, totalAmt: 0, date: dt};
-    }
-    sellByDate[dt].totalQty += s.quantity;
-    sellByDate[dt].totalAmt += s.price * s.quantity;
-  }
-
-  const sellDates = Object.keys(sellByDate).sort();
-  const sellCount = sellDates.length;
+  // 매도 차수 매핑: 개별 체결 건을 순차적으로 슬롯에 매핑
+  // (날짜+시간 정렬은 위의 stockTrades.sort()에서 이미 처리됨)
+  // 같은 날짜 여러 건도 각각 별도 슬롯으로 배정 (분할 매도 정확 반영)
+  const sellCount = sells.length;
 
   // 수익 매도 계획 (5단계)
   const percents = [5, 10, 15, 20, 25];
   const sellPlans = percents.map((p, i) => {
-    const sellDate = sellDates[i];
-    const sellData = sellDate ? sellByDate[sellDate] : null;
+    const sellTrade = sells[i]; // i번째 체결 → i번 슬롯 1:1 매핑
 
-    if (sellData) {
-      const sellAvgPrice = Math.round(sellData.totalAmt / sellData.totalQty);
-      const formattedDate = sellDate.length === 8
-        ? `${sellDate.slice(0, 4)}-${sellDate.slice(4, 6)}-${sellDate.slice(6, 8)}`
-        : sellDate;
+    if (sellTrade) {
+      const dt = sellTrade.date || "";
+      const formattedDate = dt.length === 8
+        ? `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`
+        : dt;
       return {
         percent: p,
-        price: sellAvgPrice,
-        quantity: sellData.totalQty,
+        price: sellTrade.price,
+        quantity: sellTrade.quantity,
         filled: true,
         filledDate: formattedDate,
-        filledQuantity: sellData.totalQty,
-        filledPrice: sellAvgPrice,
+        filledQuantity: sellTrade.quantity,
+        filledPrice: sellTrade.price,
       };
     }
     return {
@@ -751,7 +743,9 @@ function mapTradesToPlans(
 // ─── Firestore에 동기화 ───
 async function syncToFirestore(
   holdings: any[],
-  trades: any[]
+  trades: any[],
+  config?: KiwoomConfig,
+  token?: string
 ): Promise<{syncedStocks: number; syncedTrades: number; soldOutStocks: string[]}> {
   const now = Date.now();
   let syncedStocks = 0;
@@ -811,12 +805,58 @@ async function syncToFirestore(
         updateData.code = h.code;
       }
 
+      // ✅ 종목명 변경 자동 감지: code로 매칭됐는데 stocks 이름과 holdings 이름이 다르면
+      //    → 회사명 변경된 것으로 보고 stocks.name 업데이트 + 모든 trades.stockName 일괄 변경
+      if (h.code && existingData?.code === h.code && existingData?.name && existingData.name !== h.name) {
+        const oldName = existingData.name;
+        const newName = h.name;
+        console.log(`[종목명변경 감지] ${oldName} → ${newName} (code: ${h.code})`);
+
+        // trades stockName 일괄 업데이트 (이전 이름으로 저장된 모든 trade)
+        const oldNameTradesSnap = await db.collection("trades")
+          .where("stockName", "==", oldName)
+          .get();
+        if (!oldNameTradesSnap.empty) {
+          const renameBatch = db.batch();
+          oldNameTradesSnap.forEach((doc) => {
+            const upd: any = {stockName: newName};
+            if (!doc.data().code) upd.code = h.code;
+            renameBatch.update(doc.ref, upd);
+          });
+          await renameBatch.commit();
+          console.log(`[종목명변경] trades ${oldNameTradesSnap.size}건 stockName 갱신`);
+        }
+
+        // stocks 문서 name 업데이트
+        updateData.name = newName;
+      }
+
       if (hasTrades) {
         // 체결 내역 기반으로 전체 업데이트
         updateData.avgPrice = h.avgPrice;
         updateData.totalQuantity = h.quantity;
-        updateData.buyPlans = mapped.buyPlans;
-        updateData.sellPlans = mapped.sellPlans;
+        // ✅ buyPlans manualOverride 보호 (사용자 수동 입력 보존)
+        const existingBuyPlans: any[] = existingData?.buyPlans || [];
+        const mergedBuyPlans = mapped.buyPlans.map((newPlan: any, i: number) => {
+          const existingPlan = existingBuyPlans[i];
+          if (existingPlan?.manualOverride) {
+            console.log(`[sync 보호] ${h.name} buy${i + 1}차 manualOverride 유지`);
+            return existingPlan;
+          }
+          return newPlan;
+        });
+        updateData.buyPlans = mergedBuyPlans;
+        // sellPlans manualOverride 보호 (수동 편집 / MA 분리 보호)
+        const existingSellPlans: any[] = existingData?.sellPlans || [];
+        const mergedSellPlans = mapped.sellPlans.map((newPlan: any, i: number) => {
+          const existingPlan = existingSellPlans[i];
+          if (existingPlan?.manualOverride) {
+            console.log(`[sync 보호] ${h.name} sell${i + 1}차 manualOverride 유지`);
+            return existingPlan; // 수동 편집된 슬롯 유지
+          }
+          return newPlan;
+        });
+        updateData.sellPlans = mergedSellPlans;
         updateData.sellCount = mapped.sellCount;
         updateData.firstBuyPrice = mapped.firstBuyPrice;
         updateData.firstBuyQuantity = mapped.firstBuyQty;
@@ -992,7 +1032,11 @@ async function syncToFirestore(
 
       console.log(`[전량매도] ${name}: 매도=${stockSells.length}건, 총매도수량=${totalSellQty}, 평균매도가=${avgSellPrice}, 평균매수가=${existingAvgBuyPrice}, 원래매수수량=${origBuyQty}, sellPlans=${filledSellCount}개`);
 
-      await db.collection("stocks").doc(docId).update({
+      // ✅ 매매완료 첫 감지 시 사이클 누적 + reentry 추적 시작
+      const wasActive = (data.totalQuantity || 0) > 0;
+      const alreadyCompleted = (data.cycles?.length || 0) > 0 && (data.totalQuantity || 0) === 0;
+
+      const completionUpdate: any = {
         totalQuantity: 0,
         currentPrice: 0,
         avgPrice: existingAvgBuyPrice,
@@ -1000,7 +1044,33 @@ async function syncToFirestore(
         sellPlans: newSellPlans,
         sellCount: filledSellCount,
         updatedAt: now,
-      });
+      };
+
+      if (wasActive && !alreadyCompleted) {
+        // 첫 매매완료 → 사이클 push + reentry 시작
+        const cycleNo = (data.cycles?.length || 0) + 1;
+        const cycle = buildTradingCycle({
+          ...data,
+          buyPlans: newBuyPlans,
+          sellPlans: newSellPlans,
+        }, cycleNo);
+        completionUpdate.cycles = admin.firestore.FieldValue.arrayUnion(cycle);
+
+        if (config && token && data.code) {
+          const reentryInit = await initializeReentryTracking(config, token, {
+            ...data,
+            code: data.code,
+            name,
+            buyPlans: newBuyPlans,
+          });
+          if (reentryInit) {
+            completionUpdate.reentry = reentryInit;
+            console.log(`[재진입] ${name} 추적 시작: 최저가 ${reentryInit.lowPrice.toLocaleString()}원 (${reentryInit.lowPriceDate})`);
+          }
+        }
+      }
+
+      await db.collection("stocks").doc(docId).update(completionUpdate);
       soldOutStocks.push(`${name}(매도${filledSellCount}회)`);
 
     } else if ((data.totalQuantity || 0) > 0) {
@@ -1110,16 +1180,19 @@ export const kiwoomSync = functions
         console.log(`[kiwoomSync] 체결 조회 범위: ${historyStart} ~ ${historyEnd} (${startDate ? "수동" : "자동"})`);
 
         // 잔고 + 체결내역 조회
-        const [holdings, todayTrades, historyTrades] = await Promise.all([
+        // ⚠️ fetchTodayTrades(ka10076 전체) 제거:
+        //   - historyEnd=todayKST 이므로 fetchTradeHistory 안에서 오늘도 이미 처리됨
+        //   - ka10076 sell_tp:"0"(전체) 는 trde_tp 로 타입 판별하는데, API가 "매도"→"1"(숫자)로
+        //     반환하면 전부 "buy" 오분류 → 오늘 매도가 매수로 이중 저장되는 버그
+        //   - todayTrades 는 fetchTradeHistory 내부 dedup/cross-dedup 을 거치지 않아 중복 방지 불가
+        const [holdings, historyTrades] = await Promise.all([
           fetchHoldings(config, token),
-          fetchTodayTrades(config, token),
           fetchTradeHistory(config, token, historyStart, historyEnd),
         ]);
-        // todayTrades(ka10076 당일) 와 historyTrades 를 합쳐 dedup 은 syncToFirestore 내부에서 처리
-        const trades = [...historyTrades, ...todayTrades];
+        const trades = historyTrades;
 
-        // Firestore에 동기화
-        const result = await syncToFirestore(holdings, trades);
+        // Firestore에 동기화 (config/token 전달 - 재진입 추적용 일봉 조회에 사용)
+        const result = await syncToFirestore(holdings, trades, config, token);
 
         res.json({
           success: true,
@@ -1286,6 +1359,372 @@ async function fetchAndCalcMA(
     console.log(`[MA계산] ${code} 실패:`, err);
     return null;
   }
+}
+
+// ─── 종목 일봉 차트 조회 (재진입 추적용 - 저가/종가 포함) ───
+// 매매완료 종목의 리얼 최저가를 찾기 위해 사용
+interface DailyCandle {
+  date: string;     // YYYY-MM-DD
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+async function fetchDailyChart(
+  config: KiwoomConfig,
+  token: string,
+  code: string,
+  fromDate?: string  // YYYYMMDD - 이 날짜 이후 데이터만 수집 (없으면 전체)
+): Promise<DailyCandle[]> {
+  try {
+    const candles: DailyCandle[] = [];
+    let contYn = "N";
+    let nextKey = "";
+    const MAX_PAGES = 12; // 페이지당 ~20봉, 12페이지 = ~240봉 (1년+ 커버)
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const reqHeaders: Record<string, string> = {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": `Bearer ${token}`,
+        "api-id": "ka10081",
+      };
+      if (contYn === "Y" && nextKey) {
+        reqHeaders["cont-yn"] = "Y";
+        reqHeaders["next-key"] = nextKey;
+      }
+
+      const res = await fetch(`${config.baseUrl}/api/dostk/chart`, {
+        method: "POST",
+        headers: reqHeaders,
+        body: JSON.stringify({
+          stk_cd: code,
+          base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+          upd_stkpc_tp: "1",
+          qry_tp: "0",
+        }),
+      });
+
+      const respContYn = res.headers.get("cont-yn") || res.headers.get("Cont-Yn") || "";
+      const respNextKey = res.headers.get("next-key") || res.headers.get("Next-Key") || "";
+      const data = await res.json() as any;
+
+      const chart: any[] = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
+      let stopEarly = false;
+      for (const c of chart) {
+        const dt = String(c.dt || c.date || "").trim();
+        const close = parseInt(c.cur_prc || c.cls_prc || c.close || "0");
+        const open = parseInt(c.open_pric || c.op_prc || c.open || "0");
+        const high = parseInt(c.high_pric || c.hgst_prc || c.hi_pric || c.high || "0");
+        const low = parseInt(c.low_pric || c.lwst_prc || c.lo_pric || c.low || "0");
+
+        if (close <= 0 || !dt) continue;
+
+        // fromDate 이전 봉이면 더 이상 페이지 가져올 필요 없음 (역순 응답이라 중단)
+        if (fromDate && dt < fromDate) {
+          stopEarly = true;
+          break;
+        }
+
+        const formatted = dt.length === 8
+          ? `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`
+          : dt;
+
+        candles.push({
+          date: formatted,
+          open: open || close,
+          high: high || close,
+          low: low || close,
+          close,
+        });
+      }
+
+      if (stopEarly || respContYn !== "Y" || !respNextKey) break;
+      contYn = "Y";
+      nextKey = respNextKey;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    return candles;
+  } catch (err) {
+    console.log(`[일봉] ${code} 실패:`, err);
+    return [];
+  }
+}
+
+// ─── 단일 종목 현재가 조회 (매매완료 reentry 추적용 - holdings에 없는 종목) ───
+async function fetchSinglePrice(
+  config: KiwoomConfig,
+  token: string,
+  code: string
+): Promise<{currentPrice: number; openPrice: number} | null> {
+  try {
+    const res = await fetch(`${config.baseUrl}/api/dostk/chart`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": `Bearer ${token}`,
+        "api-id": "ka10081",
+      },
+      body: JSON.stringify({
+        stk_cd: code,
+        base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+        upd_stkpc_tp: "0",
+        qry_tp: "0",
+      }),
+    });
+    const data = await res.json() as any;
+    const chart = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
+    if (chart.length === 0) return null;
+    const top = chart[0];
+    return {
+      currentPrice: parseInt(top.cur_prc || top.cls_prc || "0"),
+      openPrice: parseInt(top.open_pric || top.op_prc || "0"),
+    };
+  } catch (err) {
+    console.log(`[현재가] ${code} 실패:`, err);
+    return null;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  재진입 추적 (태산매매법: 매매완료 → +100% → -50% → 첫 양봉)
+// ════════════════════════════════════════════════════════════════
+
+// ─── 사이클 history 객체 생성 (매매완료 시점에 stocks.cycles 배열에 push) ───
+function buildTradingCycle(
+  stockData: any,
+  cycleNo: number
+): any {
+  const today = new Date().toISOString().slice(0, 10);
+  const buyPlans = stockData.buyPlans || [];
+  const sellPlans = stockData.sellPlans || [];
+  const maSells = stockData.maSells || [];
+
+  let totalBuyAmt = 0;
+  for (const bp of buyPlans) {
+    if (bp.filled) {
+      const price = bp.filledPrice || bp.price || 0;
+      const qty = bp.filledQuantity || bp.quantity || 0;
+      totalBuyAmt += price * qty;
+    }
+  }
+  let totalSellAmt = 0;
+  for (const sp of sellPlans) {
+    if (sp.filled) {
+      const price = sp.filledPrice || sp.price || 0;
+      const qty = sp.filledQuantity || sp.quantity || 0;
+      totalSellAmt += price * qty;
+    }
+  }
+  for (const m of maSells) {
+    if (m.filled) totalSellAmt += (m.price || 0) * (m.quantity || 0);
+  }
+  const profit = totalSellAmt - totalBuyAmt;
+  const profitPct = totalBuyAmt > 0 ? (profit / totalBuyAmt) * 100 : 0;
+
+  // 시작일 = 가장 빠른 매수 filledDate
+  const buyDates = buyPlans
+    .filter((bp: any) => bp.filled && bp.filledDate)
+    .map((bp: any) => bp.filledDate)
+    .sort();
+  const startDate = buyDates[0] || "";
+
+  return {
+    cycleNo,
+    startDate,
+    endDate: today,
+    totalBuyAmt,
+    totalSellAmt,
+    realizedProfit: profit,
+    profitPercent: Math.round(profitPct * 100) / 100,
+    buyPlans: buyPlans.map((bp: any) => ({...bp})),
+    sellPlans: sellPlans.map((sp: any) => ({...sp})),
+    maSells: maSells.map((m: any) => ({...m})),
+    rule: stockData.rule || "A",
+  };
+}
+
+// ─── 매매완료 종목 reentry 추적 시작 (1회성 초기 설정) ───
+// 일봉 API로 매매기간 + 이후 누적 최저가 추출
+async function initializeReentryTracking(
+  config: KiwoomConfig,
+  token: string,
+  stockData: any
+): Promise<any> {
+  const code = stockData.code;
+  if (!code) {
+    console.log(`[재진입 init] ${stockData.name} code 없음 - 추적 시작 불가`);
+    return null;
+  }
+
+  // 시작일 = 가장 빠른 매수 filledDate
+  const buyDates = (stockData.buyPlans || [])
+    .filter((bp: any) => bp.filled && bp.filledDate)
+    .map((bp: any) => (bp.filledDate as string).replace(/-/g, ""))
+    .sort();
+  const fromDate = buyDates[0] || undefined;
+
+  console.log(`[재진입 init] ${stockData.name}(${code}) 일봉 조회 시작 (from=${fromDate || "전체"})`);
+  const candles = await fetchDailyChart(config, token, code, fromDate);
+
+  if (candles.length === 0) {
+    console.log(`[재진입 init] ${stockData.name} 일봉 데이터 없음`);
+    return null;
+  }
+
+  // 최저가 추출 (모든 봉의 low 중 최솟값)
+  let lowPrice = Number.MAX_SAFE_INTEGER;
+  let lowDate = "";
+  for (const c of candles) {
+    if (c.low > 0 && c.low < lowPrice) {
+      lowPrice = c.low;
+      lowDate = c.date;
+    }
+  }
+
+  if (lowPrice === Number.MAX_SAFE_INTEGER) {
+    console.log(`[재진입 init] ${stockData.name} 유효 저가 없음`);
+    return null;
+  }
+
+  // 현재가 (최신 봉의 close)
+  const sortedCandles = [...candles].sort((a, b) => b.date.localeCompare(a.date));
+  const currentPrice = sortedCandles[0]?.close || 0;
+
+  console.log(`[재진입 init] ${stockData.name} 최저가 ${lowPrice.toLocaleString()}원 (${lowDate}), 현재 ${currentPrice.toLocaleString()}원`);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const isRebounded = currentPrice >= lowPrice * 2;
+
+  // Firestore는 undefined 거부 - 빈 문자열로 처리하거나 필드 제외
+  const result: any = {
+    enabled: true,
+    status: "tracking",
+    lowPrice,
+    lowPriceDate: lowDate,
+    lowPriceSource: "kiwoom_daily",
+    rebounded: isRebounded,
+    reboundDate: isRebounded ? today : "",
+    peakPrice: currentPrice,
+    peakPriceDate: today,
+    targetPrice: Math.round(currentPrice * 0.5),
+    signalSent: false,
+    signalDate: "",
+    readyAt: "",
+    startedAt: Date.now(),
+  };
+  return result;
+}
+
+// ─── 가격 업데이트 시 reentry 상태 자동 갱신 (옵션 A: 단순 동적 갱신) ───
+function updateReentryTracking(
+  reentry: any,
+  currentPrice: number
+): {updated: boolean; newReady: boolean} {
+  if (!reentry || !reentry.enabled || reentry.status === "paused") {
+    return {updated: false, newReady: false};
+  }
+  if (currentPrice <= 0) return {updated: false, newReady: false};
+
+  const today = new Date().toISOString().slice(0, 10);
+  let updated = false;
+  let newReady = false;
+
+  // 1. 최저가 갱신 (현재가가 더 낮으면)
+  if (currentPrice < reentry.lowPrice || !reentry.lowPrice) {
+    reentry.lowPrice = currentPrice;
+    reentry.lowPriceDate = today;
+    reentry.lowPriceSource = "realtime";
+    updated = true;
+  }
+
+  // 2. 반등 확인 (lowPrice * 2 도달)
+  if (!reentry.rebounded && reentry.lowPrice > 0 && currentPrice >= reentry.lowPrice * 2) {
+    reentry.rebounded = true;
+    reentry.reboundDate = today;
+    updated = true;
+  }
+
+  // 3. 신고점 갱신 (현재가가 peak 초과 - 옵션 A: 단순 동적 갱신)
+  if (currentPrice > (reentry.peakPrice || 0)) {
+    reentry.peakPrice = currentPrice;
+    reentry.peakPriceDate = today;
+    reentry.targetPrice = Math.round(currentPrice * 0.5);
+    // 새 고점이면 ready 상태에서 다시 tracking으로 (가격이 다시 -50% 도달해야 ready)
+    if (reentry.status === "ready") {
+      reentry.status = "tracking";
+      reentry.readyAt = ""; // Firestore: undefined 대신 빈 문자열
+      reentry.signalSent = false;
+    }
+    updated = true;
+  }
+
+  // 4. 매수 대기 진입 (반등 후 + 신고점 -50% 이하)
+  if (
+    reentry.rebounded &&
+    reentry.peakPrice > 0 &&
+    currentPrice <= reentry.peakPrice * 0.5 &&
+    reentry.status !== "ready"
+  ) {
+    reentry.status = "ready";
+    reentry.readyAt = today;
+    newReady = true;
+    updated = true;
+  }
+
+  return {updated, newReady};
+}
+
+// ─── 매매완료 종목 reentry 추적 일괄 업데이트 (가격 fetch + 상태 갱신) ───
+async function refreshReentryStocks(config: KiwoomConfig, token: string): Promise<{
+  updated: number;
+  newReady: string[];
+}> {
+  const updated: string[] = [];
+  const newReady: string[] = [];
+
+  // reentry.enabled=true 인 종목 조회 (보유수량 0인 매매완료 종목 중)
+  const snap = await db.collection("stocks").get();
+  const targets: Array<{id: string; data: any}> = [];
+  snap.forEach((doc) => {
+    const d = doc.data();
+    if (d.reentry?.enabled && (d.totalQuantity || 0) === 0 && d.code) {
+      targets.push({id: doc.id, data: d});
+    }
+  });
+
+  if (targets.length === 0) return {updated: 0, newReady};
+
+  console.log(`[재진입 갱신] 대상 ${targets.length}종목`);
+
+  for (const {id, data} of targets) {
+    try {
+      const priceInfo = await fetchSinglePrice(config, token, data.code);
+      if (!priceInfo || priceInfo.currentPrice <= 0) continue;
+
+      const reentry = {...data.reentry};
+      const result = updateReentryTracking(reentry, priceInfo.currentPrice);
+
+      if (result.updated) {
+        await db.collection("stocks").doc(id).update({
+          currentPrice: priceInfo.currentPrice,
+          reentry,
+          updatedAt: Date.now(),
+        });
+        updated.push(data.name);
+        if (result.newReady) {
+          newReady.push(data.name);
+          console.log(`[재진입] ${data.name} READY 진입 (peak=${reentry.peakPrice}, target=${reentry.targetPrice}, 현재=${priceInfo.currentPrice})`);
+        }
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    } catch (err: any) {
+      console.log(`[재진입 갱신] ${data.name} 실패: ${err.message}`);
+    }
+  }
+
+  return {updated: updated.length, newReady};
 }
 
 // ─── 보유종목 이동평균 업데이트 + 텔레그램 근접 알림 ───
@@ -1557,7 +1996,7 @@ export const kiwoomAutoSync = functions
  */
 export const kiwoomPriceUpdate = functions
   .region("asia-northeast3")
-  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 30})
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 60})
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
@@ -1588,11 +2027,20 @@ export const kiwoomPriceUpdate = functions
           }
         }
 
+        // 매매완료 reentry 추적 종목 가격 갱신 + 상태 전이
+        const reentryResult = await refreshReentryStocks(config, token);
+
         await db.collection("settings").doc("lastSync").set({
           timestamp: now, stocks: updated, trades: 0,
         });
 
-        res.json({success: true, updated, time: new Date().toISOString()});
+        res.json({
+          success: true,
+          updated,
+          reentryUpdated: reentryResult.updated,
+          reentryNewReady: reentryResult.newReady,
+          time: new Date().toISOString(),
+        });
       } catch (error: any) {
         res.status(500).json({success: false, error: error.message});
       }
@@ -1941,7 +2389,31 @@ async function runBuySignalCheck(): Promise<string> {
       // Rule A: 이전 매수가 대비 -10% / Rule B(매도3회+): 저점 대비 -10%
       const candidates: {name: string; code: string; nextBuyPrice: number; nextBuyLevel: number; currentPrice: number; quantity: number; docId: string; alreadySent: boolean}[] = [];
       for (const [name, stock] of Object.entries(stocks)) {
-        if (!stock.buyPlans || ((stock.totalQuantity || 0) === 0 && !(stock.buyPlans || []).some((b: any) => b.filled))) continue;
+        // 매매완료(totalQuantity=0) 종목은 일반 매수신호 대상 제외
+        // 단, 재진입 추적 ready 상태이면 별도 후보로 추가
+        if (!stock.buyPlans || (stock.totalQuantity || 0) <= 0) {
+          // 재진입 ready 상태 → 1차 매수 양봉 감지 대상
+          if (
+            stock.reentry?.enabled &&
+            stock.reentry?.status === "ready" &&
+            stock.code &&
+            stock.currentPrice > 0
+          ) {
+            const alreadySent = stock.reentry?.signalSent === true;
+            candidates.push({
+              name,
+              code: stock.code,
+              nextBuyPrice: stock.reentry.targetPrice,
+              nextBuyLevel: 1, // 재진입은 항상 1차
+              currentPrice: stock.currentPrice,
+              quantity: stock.firstBuyQuantity || 0,
+              docId: stock.docId,
+              alreadySent,
+              isReentry: true, // 재진입 마크
+            } as any);
+          }
+          continue;
+        }
         const nextBuy = (stock.buyPlans || []).find((b: any) => !b.filled);
         if (!nextBuy || !stock.currentPrice || stock.currentPrice <= 0) continue;
 
@@ -2014,18 +2486,31 @@ async function runBuySignalCheck(): Promise<string> {
       for (const c of candidates) {
         const openPrice = openPrices[c.code] || 0;
         const isYangbong = openPrice > 0 && c.currentPrice > openPrice;
+        const isReentry = (c as any).isReentry === true;
 
         if (isYangbong && !c.alreadySent) {
           // 첫 양봉! 매수신호 발송
           signals.push({...c, openPrice});
-          await db.collection("stocks").doc(c.docId).update({
-            buySignal: "signal",
-            buySignalAt: now,
-            buySignalOpen: openPrice,
-            buySignalSent: true,
-            buySignalLevel: c.nextBuyLevel,
-          });
-          console.log(`[매수신호] ${c.name}: 첫 양봉 매수신호! 시가=${openPrice} → 현재가=${c.currentPrice} (${c.nextBuyLevel}차 매수가=${c.nextBuyPrice})`);
+          if (isReentry) {
+            // 재진입 신호: reentry.signalSent 마크
+            await db.collection("stocks").doc(c.docId).update({
+              "reentry.signalSent": true,
+              "reentry.signalDate": new Date().toISOString().slice(0, 10),
+              buySignal: "signal",
+              buySignalAt: now,
+              buySignalOpen: openPrice,
+            });
+            console.log(`[재진입 매수신호] ${c.name}: 첫 양봉! 시가=${openPrice} → 현재가=${c.currentPrice} (목표 ${c.nextBuyPrice})`);
+          } else {
+            await db.collection("stocks").doc(c.docId).update({
+              buySignal: "signal",
+              buySignalAt: now,
+              buySignalOpen: openPrice,
+              buySignalSent: true,
+              buySignalLevel: c.nextBuyLevel,
+            });
+            console.log(`[매수신호] ${c.name}: 첫 양봉 매수신호! 시가=${openPrice} → 현재가=${c.currentPrice} (${c.nextBuyLevel}차 매수가=${c.nextBuyPrice})`);
+          }
         } else if (isYangbong && c.alreadySent) {
           // 이미 첫 양봉 알림 발송됨 - 상태만 유지
           await db.collection("stocks").doc(c.docId).update({
@@ -2037,13 +2522,17 @@ async function runBuySignalCheck(): Promise<string> {
         } else {
           // 음봉 - 대기 상태
           waitings.push({...c, openPrice});
-          await db.collection("stocks").doc(c.docId).update({
+          const updateData: any = {
             buySignal: "waiting",
             buySignalAt: now,
             buySignalOpen: openPrice,
-            // 음봉이면 signalSent 리셋 (다음 양봉이 "첫 양봉"이 됨)
-            buySignalSent: false,
-          });
+          };
+          if (isReentry) {
+            updateData["reentry.signalSent"] = false;
+          } else {
+            updateData.buySignalSent = false; // 음봉이면 signalSent 리셋
+          }
+          await db.collection("stocks").doc(c.docId).update(updateData);
           console.log(`[매수신호] ${c.name}: 음봉 (시가=${openPrice}, 현재가=${c.currentPrice}) - signalSent 리셋`);
         }
       }
@@ -2056,19 +2545,38 @@ async function runBuySignalCheck(): Promise<string> {
       const mm = String(kst.getMinutes()).padStart(2, "0");
 
       if (signals.length > 0) {
-        let msg = `<b>🔴 태산매매법 매수신호! (첫 양봉)</b>\n`;
-        msg += `<i>${y}-${m}-${d} ${hh}:${mm}</i>\n\n`;
+        // 재진입 신호와 일반 신호 분리해서 발송 (구분 명확화)
+        const reentrySignals = signals.filter((s: any) => s.isReentry);
+        const normalSignals = signals.filter((s: any) => !s.isReentry);
 
-        for (const s of signals) {
-          const yangbongRate = s.openPrice > 0 ? ((s.currentPrice - s.openPrice) / s.openPrice * 100).toFixed(1) : "?";
-          msg += `<b>📌 ${s.name}</b> (${s.code})\n`;
-          msg += `  ${s.nextBuyLevel}차 매수 | 매수가: ${s.nextBuyPrice.toLocaleString()}원\n`;
-          msg += `  현재가: ${s.currentPrice.toLocaleString()}원\n`;
-          msg += `  시가: ${s.openPrice.toLocaleString()}원 (양봉 +${yangbongRate}%)\n`;
-          msg += `  수량: ${s.quantity.toLocaleString()}주\n\n`;
+        if (normalSignals.length > 0) {
+          let msg = `<b>🔴 태산매매법 매수신호! (첫 양봉)</b>\n`;
+          msg += `<i>${y}-${m}-${d} ${hh}:${mm}</i>\n\n`;
+          for (const s of normalSignals) {
+            const yangbongRate = s.openPrice > 0 ? ((s.currentPrice - s.openPrice) / s.openPrice * 100).toFixed(1) : "?";
+            msg += `<b>📌 ${s.name}</b> (${s.code})\n`;
+            msg += `  ${s.nextBuyLevel}차 매수 | 매수가: ${s.nextBuyPrice.toLocaleString()}원\n`;
+            msg += `  현재가: ${s.currentPrice.toLocaleString()}원\n`;
+            msg += `  시가: ${s.openPrice.toLocaleString()}원 (양봉 +${yangbongRate}%)\n`;
+            msg += `  수량: ${s.quantity.toLocaleString()}주\n\n`;
+          }
+          msg += `⏰ <b>종가배팅 준비하세요!</b>`;
+          await sendTelegram(msg);
         }
-        msg += `⏰ <b>종가배팅 준비하세요!</b>`;
-        await sendTelegram(msg);
+
+        if (reentrySignals.length > 0) {
+          let msg = `<b>🟣 재진입 1차 매수신호! (매매완료 후 사이클 재개)</b>\n`;
+          msg += `<i>${y}-${m}-${d} ${hh}:${mm}</i>\n\n`;
+          for (const s of reentrySignals as any[]) {
+            const yangbongRate = s.openPrice > 0 ? ((s.currentPrice - s.openPrice) / s.openPrice * 100).toFixed(1) : "?";
+            msg += `<b>📌 ${s.name}</b> (${s.code})\n`;
+            msg += `  매매완료 후 재진입 | -50% 도달 후 첫 양봉\n`;
+            msg += `  현재가: ${s.currentPrice.toLocaleString()}원\n`;
+            msg += `  시가: ${s.openPrice.toLocaleString()}원 (양봉 +${yangbongRate}%)\n\n`;
+          }
+          msg += `⏰ <b>재진입 1차 매수 준비!</b>`;
+          await sendTelegram(msg);
+        }
       }
 
       // 대기 종목도 참고 알림 (첫 양봉 미발생 종목)
@@ -2515,9 +3023,10 @@ export const stockSearch = functions
 // ─────────────────────────────────────────────────────────────
 // 목적: trade_kiwoom_* 문서 생성 시 해당 종목의 buyPlans/sellPlans
 //       차수 filled 플래그를 자동 갱신. 계획가/계획수량은 보존.
-// 설계: 날짜 그룹 기반 차수 매칭 (StockDetail / TradeJournal과 동일)
-//       - 같은 날 여러 번 체결 = 같은 차수
-//       - 새 날짜 = 다음 차수
+// 설계: 매수=날짜 그룹 기반, 매도=개별 체결 순차 매핑
+//       - 매수: 같은 날 여러 번 체결 = 같은 차수
+//       - 매도: 개별 체결 건을 순차적으로 슬롯에 배정 (분할 매도 정확 반영)
+//       - manualOverride=true 슬롯은 덮어쓰지 않음
 //       - 계획 차수 초과 시 로그만 남기고 무시 (수동 확인 유도)
 // ═══════════════════════════════════════════════════════════════
 
@@ -2564,9 +3073,8 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   const trades = tradesSnap.docs.map((d) => ({id: d.id, ...(d.data() as any)}));
 
-  // 날짜 그룹핑: {date → {totalQty, totalAmt, count}}
+  // 매수: 날짜 그룹핑 (같은 날 매수 = 같은 차수)
   const buyByDate: Record<string, {qty: number; amt: number}> = {};
-  const sellByDate: Record<string, {qty: number; amt: number}> = {};
 
   for (const t of trades) {
     if (!t.date) continue;
@@ -2578,22 +3086,26 @@ async function reconcileStockPlans(stockName: string): Promise<{
       if (!buyByDate[t.date]) buyByDate[t.date] = {qty: 0, amt: 0};
       buyByDate[t.date].qty += qty;
       buyByDate[t.date].amt += price * qty;
-    } else if (t.type === "sell") {
-      if (!sellByDate[t.date]) sellByDate[t.date] = {qty: 0, amt: 0};
-      sellByDate[t.date].qty += qty;
-      sellByDate[t.date].amt += price * qty;
     }
   }
 
+  // 매도: 개별 체결 정렬 (날짜↑, 같은 날짜는 가격↑) → 각 체결을 순차 슬롯에 배정
+  const sortedSells = trades
+    .filter((t) => t.type === "sell" && t.date && Number(t.quantity) > 0)
+    .sort((a, b) => {
+      const dc = (a.date || "").localeCompare(b.date || "");
+      if (dc !== 0) return dc;
+      return (Number(a.price) || 0) - (Number(b.price) || 0); // 같은 날: 가격 오름차순
+    });
+
   const buyDates = Object.keys(buyByDate).sort();
-  const sellDates = Object.keys(sellByDate).sort();
 
   let buyFilledCount = 0;
   let sellFilledCount = 0;
   let exceedsBuy = 0;
   let exceedsSell = 0;
 
-  // 매수 차수 갱신 (계획가/계획수량 보존)
+  // 매수 차수 갱신 (계획가/계획수량 보존, manualOverride 보호)
   for (let i = 0; i < buyDates.length; i++) {
     const date = buyDates[i];
     const info = buyByDate[date];
@@ -2601,6 +3113,11 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
     if (i < buyPlans.length) {
       const plan = buyPlans[i];
+      if (plan.manualOverride) {
+        // 사용자 수동 입력된 슬롯은 유지
+        console.log(`[reconcile] ${stockName} buy${i + 1}차 manualOverride 보존 (${plan.filledDate} ${plan.filledPrice}원 ${plan.filledQuantity}주)`);
+        continue;
+      }
       buyPlans[i] = {
         ...plan,
         // 계획가/계획수량(price, quantity)은 절대 변경하지 않음
@@ -2619,29 +3136,73 @@ async function reconcileStockPlans(stockName: string): Promise<{
       );
     }
   }
+  // trades에 없는 차수 처리:
+  //   - manualOverride=true → 보호
+  //   - 사용자가 입력한 데이터 (filledPrice+filledQty 둘 다 있음) → 보호
+  //   - 둘 다 없는 옛 자동 데이터만 unfilled 리셋
+  for (let i = buyDates.length; i < buyPlans.length; i++) {
+    if (!buyPlans[i].filled) continue;
+    if (buyPlans[i].manualOverride) {
+      console.log(`[reconcile] ${stockName} buy${i + 1}차 manualOverride 보존 (trades 없음)`);
+      continue;
+    }
+    const hasUserData = (buyPlans[i].filledPrice || 0) > 0 && (buyPlans[i].filledQuantity || 0) > 0;
+    if (hasUserData) {
+      console.log(`[reconcile] ${stockName} buy${i + 1}차 사용자 입력 보존 (filledPrice=${buyPlans[i].filledPrice}, filledQty=${buyPlans[i].filledQuantity})`);
+      continue;
+    }
+    console.log(`[reconcile] ${stockName} buy${i + 1}차 unfilled 리셋 (trades에 없음, 기존 filledDate=${buyPlans[i].filledDate})`);
+    buyPlans[i] = {
+      ...buyPlans[i],
+      filled: false,
+      filledDate: "",
+      filledQuantity: 0,
+      filledPrice: 0,
+    };
+    buyFilledCount++;
+  }
 
-  // 매도 차수 갱신
-  for (let i = 0; i < sellDates.length; i++) {
-    const date = sellDates[i];
-    const info = sellByDate[date];
-    const avgPrice = Math.round(info.amt / info.qty);
+  // 매도 차수 갱신: 개별 체결을 순차 슬롯에 매핑 (manualOverride 보존)
+  for (let i = 0; i < sortedSells.length; i++) {
+    const t = sortedSells[i];
+    const price = Number(t.price) || 0;
+    const qty = Number(t.quantity) || 0;
 
     if (i < sellPlans.length) {
       const plan = sellPlans[i];
+      if (plan.manualOverride) {
+        // 수동 편집된 슬롯은 유지
+        console.log(`[reconcile] ${stockName} sell${i + 1}차 manualOverride 보존 (${plan.filledDate} ${plan.filledPrice}원 ${plan.filledQuantity}주)`);
+        continue;
+      }
       sellPlans[i] = {
         ...plan,
         filled: true,
-        filledDate: date,
-        filledQuantity: info.qty,
-        filledPrice: avgPrice,
+        filledDate: t.date,
+        filledQuantity: qty,
+        filledPrice: price,
       };
       sellFilledCount++;
     } else {
       exceedsSell++;
       console.log(
-        `[reconcile] ${stockName} 매도 계획 초과: ${date} ${info.qty}주 ` +
-          `(계획 ${sellPlans.length}차, 실제 ${i + 1}번째 날짜)`
+        `[reconcile] ${stockName} 매도 계획 초과: ${t.date} ${qty}주 @ ${price}원 ` +
+          `(계획 ${sellPlans.length}차, 실제 ${i + 1}번째 체결)`
       );
+    }
+  }
+  // ✅ 핵심: trades에 없는 sellPlans 차수도 unfilled 리셋 (manualOverride 제외)
+  for (let i = sortedSells.length; i < sellPlans.length; i++) {
+    if (sellPlans[i].filled && !sellPlans[i].manualOverride) {
+      console.log(`[reconcile] ${stockName} sell${i + 1}차 unfilled 리셋 (trades에 없음, 기존 filledDate=${sellPlans[i].filledDate})`);
+      sellPlans[i] = {
+        ...sellPlans[i],
+        filled: false,
+        filledDate: "",
+        filledQuantity: 0,
+        filledPrice: 0,
+      };
+      sellFilledCount++;
     }
   }
 
@@ -3872,6 +4433,371 @@ export const diagApiExplore = functions
         });
       } catch (error: any) {
         console.error("[diagApiExplore] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 잘못 저장된 trade 삭제 (운영 데이터 정리용)
+ * POST /deleteTrades
+ * body: { tradeIds: ["trade_kiwoom_xxx", ...] }
+ */
+export const deleteTrades = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {tradeIds} = req.body || {};
+        if (!Array.isArray(tradeIds) || tradeIds.length === 0) {
+          res.status(400).json({success: false, error: "tradeIds 배열 필수"});
+          return;
+        }
+        const batch = db.batch();
+        for (const id of tradeIds) {
+          batch.delete(db.collection("trades").doc(String(id)));
+        }
+        await batch.commit();
+        console.log(`[deleteTrades] ${tradeIds.length}건 삭제: ${tradeIds.join(", ")}`);
+        res.json({success: true, deleted: tradeIds.length, tradeIds});
+      } catch (error: any) {
+        console.error("[deleteTrades] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 잘못된 종목 동기화 보정 (특정 종목 재동기화)
+ * POST /fixStockSync
+ * body: { stockName: "원익" } — 해당 종목의 잘못 분류된 buy trade를 제거 후 reconcile
+ *
+ * 대상: fetchTodayTrades 버그로 오늘 매도가 buy로도 이중 기록된 경우
+ * 로직: 오늘 날짜 buy trade 중 동일 날짜/가격/수량의 sell trade가 있으면 buy를 삭제
+ */
+export const fixStockSync = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 120})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {stockName} = req.body || {};
+        if (!stockName) {
+          res.status(400).json({success: false, error: "stockName 필수"});
+          return;
+        }
+
+        // 해당 종목의 모든 trades 조회
+        const tradesSnap = await db.collection("trades").where("stockName", "==", stockName).get();
+        const buys: Array<{id: string; date: string; price: number; qty: number}> = [];
+        const sellSigs = new Set<string>();
+
+        tradesSnap.forEach((doc) => {
+          const d = doc.data();
+          if (d.type === "sell") {
+            sellSigs.add(`${d.date}_${d.price}_${d.quantity}`);
+          } else if (d.type === "buy") {
+            buys.push({id: doc.id, date: d.date, price: d.price, qty: d.quantity});
+          }
+        });
+
+        // buy 중 같은 날짜+가격+수량의 sell이 있는 것 = 오분류된 매수
+        const toDelete: string[] = [];
+        for (const b of buys) {
+          const sig = `${b.date}_${b.price}_${b.qty}`;
+          if (sellSigs.has(sig)) {
+            toDelete.push(b.id);
+            console.log(`[fixStockSync] ${stockName} 오분류 buy 삭제 대상: ${b.id} (${b.date} @${b.price}×${b.qty})`);
+          }
+        }
+
+        // 오분류 buy 없어도 항상 reconcile 실행 (기존 오염 데이터 정리)
+        if (toDelete.length === 0) {
+          const reconcileResult = await reconcileStockPlans(stockName);
+          res.json({success: true, stockName, deleted: 0, message: "오분류 buy 없음 — reconcile만 실행", reconcile: reconcileResult});
+          return;
+        }
+
+        // 삭제 실행
+        const batch = db.batch();
+        for (const id of toDelete) batch.delete(db.collection("trades").doc(id));
+        await batch.commit();
+
+        // 삭제 후 reconcile
+        const reconcileResult = await reconcileStockPlans(stockName);
+        console.log(`[fixStockSync] ${stockName}: ${toDelete.length}건 삭제 후 reconcile 완료`);
+
+        res.json({
+          success: true,
+          stockName,
+          deleted: toDelete.length,
+          deletedIds: toDelete,
+          reconcile: reconcileResult,
+        });
+      } catch (error: any) {
+        console.error("[fixStockSync] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 재진입 추적 관리 (시작/중지/리셋/최저가 수정)
+ * POST /reentryControl
+ * body:
+ *   { stockName: "...", action: "start" }   - 추적 시작 (일봉 API 자동 조회)
+ *   { stockName: "...", action: "pause" }   - 추적 일시 중지
+ *   { stockName: "...", action: "resume" }  - 다시 시작
+ *   { stockName: "...", action: "reset" }   - 추적 리셋 (현재가부터 새로)
+ *   { stockName: "...", action: "stop" }    - 추적 완전 중단 (reentry 제거)
+ *   { stockName: "...", action: "setLow", lowPrice: 12000, lowPriceDate: "2026-04-15" } - 수동 최저가 수정
+ */
+export const reentryControl = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {stockName, action, lowPrice, lowPriceDate, code: codeInput} = req.body || {};
+        if (!stockName || !action) {
+          res.status(400).json({success: false, error: "stockName/action 필수"});
+          return;
+        }
+
+        const snap = await db.collection("stocks")
+          .where("name", "==", stockName)
+          .limit(1)
+          .get();
+        if (snap.empty) {
+          res.status(404).json({success: false, error: `${stockName} 종목 없음`});
+          return;
+        }
+
+        const docRef = snap.docs[0].ref;
+        const data = snap.docs[0].data();
+
+        if (action === "start") {
+          if ((data.totalQuantity || 0) > 0) {
+            res.status(400).json({success: false, error: "보유 중인 종목은 매매완료 상태가 아니라 추적 시작 불가"});
+            return;
+          }
+
+          // code 우선순위: 사용자 입력 > stocks 문서 > stockCodes 컬렉션 자동 검색
+          let stockCode = codeInput || data.code;
+          if (!stockCode) {
+            console.log(`[재진입 init] ${stockName} code 누락 - stockCodes에서 자동 검색 시도`);
+            const codesSnap = await db.collection("stockCodes")
+              .where("name", "==", stockName)
+              .limit(1)
+              .get();
+            if (!codesSnap.empty) {
+              stockCode = codesSnap.docs[0].data().code;
+              console.log(`[재진입 init] ${stockName} code 자동 채움: ${stockCode}`);
+            } else {
+              res.status(400).json({
+                success: false,
+                error: `${stockName}의 종목코드를 찾을 수 없습니다.`,
+                hint: "POST body에 'code' 필드로 종목코드를 직접 입력해주세요. (예: A356860 또는 356860)",
+                needsCode: true,
+              });
+              return;
+            }
+          }
+          // A 접두사 정규화 (키움 API는 A001234 형식)
+          if (stockCode && !stockCode.startsWith("A") && /^\d/.test(stockCode)) {
+            stockCode = "A" + stockCode;
+          }
+          // stocks 문서에 code 저장 (다음에 자동 사용)
+          if (stockCode !== data.code) {
+            await docRef.update({code: stockCode});
+          }
+
+          const config = await getKiwoomConfig();
+          const token = await getAccessToken(config);
+          const reentry = await initializeReentryTracking(config, token, {...data, code: stockCode});
+          if (!reentry) {
+            res.status(500).json({success: false, error: "일봉 데이터 조회 실패 (키움 API 응답 없음)"});
+            return;
+          }
+          await docRef.update({reentry, updatedAt: Date.now()});
+          res.json({success: true, action, reentry, codeAutofilled: !data.code});
+          return;
+        }
+
+        if (action === "pause") {
+          await docRef.update({"reentry.status": "paused", "reentry.enabled": false, updatedAt: Date.now()});
+          res.json({success: true, action});
+          return;
+        }
+
+        if (action === "resume") {
+          await docRef.update({"reentry.status": "tracking", "reentry.enabled": true, updatedAt: Date.now()});
+          res.json({success: true, action});
+          return;
+        }
+
+        if (action === "reset") {
+          // 현재가부터 다시 추적 시작 (lowPrice = 현재가)
+          let stockCode = data.code;
+          if (!stockCode) {
+            const codesSnap = await db.collection("stockCodes")
+              .where("name", "==", stockName)
+              .limit(1)
+              .get();
+            if (!codesSnap.empty) {
+              stockCode = codesSnap.docs[0].data().code;
+              await docRef.update({code: stockCode});
+            } else {
+              res.status(400).json({success: false, error: `${stockName}의 종목코드 찾을 수 없음`});
+              return;
+            }
+          }
+          const config = await getKiwoomConfig();
+          const token = await getAccessToken(config);
+          const reentry = await initializeReentryTracking(config, token, {...data, code: stockCode});
+          if (!reentry) {
+            res.status(500).json({success: false, error: "일봉 데이터 조회 실패"});
+            return;
+          }
+          await docRef.update({reentry, updatedAt: Date.now()});
+          res.json({success: true, action, reentry});
+          return;
+        }
+
+        if (action === "stop") {
+          await docRef.update({reentry: admin.firestore.FieldValue.delete(), updatedAt: Date.now()});
+          res.json({success: true, action});
+          return;
+        }
+
+        if (action === "setLow") {
+          if (!lowPrice || lowPrice <= 0) {
+            res.status(400).json({success: false, error: "lowPrice 필수"});
+            return;
+          }
+          const update: any = {
+            "reentry.lowPrice": lowPrice,
+            "reentry.lowPriceDate": lowPriceDate || new Date().toISOString().slice(0, 10),
+            "reentry.lowPriceSource": "manual",
+            updatedAt: Date.now(),
+          };
+          // peak >= lowPrice * 2면 rebounded 자동 갱신
+          if ((data.reentry?.peakPrice || 0) >= lowPrice * 2) {
+            update["reentry.rebounded"] = true;
+          }
+          await docRef.update(update);
+          res.json({success: true, action, lowPrice});
+          return;
+        }
+
+        res.status(400).json({success: false, error: `알 수 없는 action: ${action}`});
+      } catch (error: any) {
+        console.error("[reentryControl] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 종목명 변경 (회사명 변경 대응)
+ * POST /renameStock
+ * body: { fromName: "유투바이오", toName: "지구홀딩스", code?: "221800" }
+ *
+ * 동작:
+ *   1) trades 컬렉션에서 stockName=fromName 인 모든 문서를 toName 으로 업데이트
+ *      (code 가 비어있고 인자로 받은 code 가 있으면 함께 채워줌)
+ *   2) stocks 컬렉션의 fromName 문서를 toName 으로 rename
+ *      - 이미 toName 문서가 있으면 충돌 보고 (수동 병합 필요)
+ *   3) reconcileStockPlans(toName) 으로 정합성 재검증
+ */
+export const renameStock = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 120})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {fromName, toName, code} = req.body || {};
+        if (!fromName || !toName) {
+          res.status(400).json({success: false, error: "fromName/toName 필수"});
+          return;
+        }
+        if (fromName === toName) {
+          res.status(400).json({success: false, error: "fromName과 toName이 동일"});
+          return;
+        }
+
+        const result: any = {
+          fromName,
+          toName,
+          tradesRenamed: 0,
+          stockRenamed: false,
+          conflict: false,
+          reconcile: null,
+        };
+
+        // 1. trades stockName 변경
+        const tradesSnap = await db.collection("trades")
+          .where("stockName", "==", fromName)
+          .get();
+
+        if (!tradesSnap.empty) {
+          const batch = db.batch();
+          tradesSnap.forEach((doc) => {
+            const update: any = {stockName: toName};
+            if (code && !doc.data().code) {
+              update.code = code;
+            }
+            batch.update(doc.ref, update);
+          });
+          await batch.commit();
+          result.tradesRenamed = tradesSnap.size;
+          console.log(`[renameStock] trades ${tradesSnap.size}건 ${fromName} → ${toName}`);
+        }
+
+        // 2. stocks 문서 이름 변경
+        const fromStockSnap = await db.collection("stocks")
+          .where("name", "==", fromName)
+          .limit(1)
+          .get();
+
+        if (!fromStockSnap.empty) {
+          const fromDoc = fromStockSnap.docs[0];
+          const fromData = fromDoc.data();
+
+          // 새 이름이 이미 stocks 컬렉션에 있는지 확인
+          const toStockSnap = await db.collection("stocks")
+            .where("name", "==", toName)
+            .limit(1)
+            .get();
+
+          if (!toStockSnap.empty) {
+            // 충돌: 두 stocks 문서를 자동 병합하지 않고 보고
+            result.conflict = true;
+            result.conflictMessage = `이미 stocks 컬렉션에 "${toName}" 문서가 존재합니다. 수동 병합이 필요합니다. fromDocId=${fromDoc.id}, toDocId=${toStockSnap.docs[0].id}`;
+            console.log(`[renameStock] 충돌: ${result.conflictMessage}`);
+          } else {
+            // 단순 rename
+            const updateData: any = {name: toName, updatedAt: Date.now()};
+            if (code && !fromData.code) {
+              updateData.code = code;
+            }
+            await fromDoc.ref.update(updateData);
+            result.stockRenamed = true;
+            console.log(`[renameStock] stocks: ${fromName} → ${toName} (docId=${fromDoc.id})`);
+          }
+        } else {
+          console.log(`[renameStock] stocks에 ${fromName} 문서 없음 (trades만 rename)`);
+        }
+
+        // 3. reconcile (충돌 없을 때만)
+        if (!result.conflict) {
+          result.reconcile = await reconcileStockPlans(toName);
+        }
+
+        res.json({success: true, ...result});
+      } catch (error: any) {
+        console.error("[renameStock] 오류:", error.message);
         res.status(500).json({success: false, error: error.message});
       }
     });

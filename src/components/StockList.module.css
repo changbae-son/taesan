@@ -133,7 +133,7 @@
   padding: 14px 16px;
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
-  border: 1px solid #eee;
+  border: 1.5px solid #333;
 }
 
 .card:hover,

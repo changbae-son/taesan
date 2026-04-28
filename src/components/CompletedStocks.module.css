@@ -1,101 +1,125 @@
 .container {
-  padding: 24px;
-  max-width: 960px;
+  padding: 16px;
+  max-width: 1200px;
 }
 
 .pageTitle {
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 700;
-  margin: 0 0 20px;
+  margin: 0 0 14px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .count {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 3px 10px;
+  padding: 2px 8px;
   background: #e8f0fe;
   color: #1a73e8;
-  border-radius: 12px;
+  border-radius: 10px;
 }
 
 /* 전체 요약 */
 .totalSummary {
   display: flex;
-  gap: 12px;
-  margin-bottom: 24px;
+  gap: 8px;
+  margin-bottom: 14px;
   flex-wrap: wrap;
 }
 
 .totalItem {
   flex: 1;
-  min-width: 140px;
+  min-width: 110px;
   background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-  padding: 16px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  padding: 10px;
   text-align: center;
 }
 
 .totalLabel {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   color: #888;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .totalValue {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 700;
 }
 
-/* 카드 그리드 */
+/* 카드 그리드 — 더 작게 */
 .cardGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
 }
 
 .card {
   background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   overflow: hidden;
   transition: box-shadow 0.2s;
 }
 
 .card:hover {
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .cardHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 8px 12px;
   border-bottom: 1px solid #f0f0f0;
 }
 
 .stockName {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
   margin: 0;
 }
 
 .stockCode {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
   color: #888;
   font-family: monospace;
-  margin-left: 5px;
+  margin-left: 4px;
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.deleteBtnInline {
+  padding: 2px 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.4;
+  transition: all 0.15s;
+}
+
+.deleteBtnInline:hover {
+  opacity: 1;
+  background: #ffebee;
+  border-color: #ef9a9a;
 }
 
 .profitBadge {
-  padding: 4px 12px;
-  border-radius: 16px;
-  font-size: 14px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -111,15 +135,15 @@
 
 /* 카드 바디 */
 .cardBody {
-  padding: 16px;
+  padding: 10px 12px;
 }
 
 .priceRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 14px;
-  padding-bottom: 14px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
   border-bottom: 1px dashed #eee;
 }
 
@@ -130,79 +154,79 @@
 
 .priceLabel {
   display: block;
-  font-size: 11px;
-  color: #999;
-  margin-bottom: 4px;
-}
-
-.priceValue {
-  font-size: 17px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.priceArrow {
-  font-size: 18px;
-  color: #ccc;
-  padding: 0 8px;
-}
-
-.statsRow {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.statItem {
-  flex: 1;
-  text-align: center;
-  padding: 8px 4px;
-  background: #f8f9fa;
-  border-radius: 6px;
-}
-
-.statLabel {
-  display: block;
   font-size: 10px;
   color: #999;
   margin-bottom: 2px;
 }
 
+.priceValue {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.priceArrow {
+  font-size: 14px;
+  color: #ccc;
+  padding: 0 6px;
+}
+
+.statsRow {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.statItem {
+  flex: 1;
+  text-align: center;
+  padding: 5px 3px;
+  background: #f8f9fa;
+  border-radius: 5px;
+}
+
+.statLabel {
+  display: block;
+  font-size: 9px;
+  color: #999;
+  margin-bottom: 1px;
+}
+
 .statValue {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
 .metaRow {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .metaItem {
-  font-size: 11px;
+  font-size: 10px;
   color: #888;
-  padding: 2px 8px;
+  padding: 1px 6px;
   background: #f5f5f5;
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 /* 카드 푸터 */
 .cardFooter {
-  padding: 10px 16px;
+  padding: 6px 12px;
   border-top: 1px solid #f0f0f0;
   text-align: right;
 }
 
 .deleteBtn {
-  padding: 4px 12px;
+  padding: 3px 10px;
   background: #fff;
   color: #999;
   border: 1px solid #ddd;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .deleteBtn:hover {
@@ -228,6 +252,304 @@
   color: #bbb !important;
 }
 
+/* 필터 바 */
+.filterRow {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.filterBtn {
+  padding: 4px 10px;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 14px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  color: #555;
+  transition: all 0.15s;
+}
+
+.filterBtn:hover {
+  border-color: #1a73e8;
+  color: #1a73e8;
+}
+
+.filterBtnActive {
+  background: #1a73e8;
+  color: #fff;
+  border-color: #1a73e8;
+}
+
+.filterCount {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.filterBtnActive .filterCount {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* 카드 강조 (ready/tracking) */
+.cardReady {
+  border: 2px solid #e53935;
+  box-shadow: 0 2px 12px rgba(229, 57, 53, 0.18);
+  animation: readyPulse 2s ease-in-out infinite;
+}
+
+.cardTracking {
+  border-left: 4px solid #1a73e8;
+}
+
+@keyframes readyPulse {
+  0%, 100% { box-shadow: 0 2px 12px rgba(229, 57, 53, 0.18); }
+  50% { box-shadow: 0 4px 20px rgba(229, 57, 53, 0.35); }
+}
+
+/* 사이클 요약 */
+.cycleSummary {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 6px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.cycleBadge {
+  padding: 1px 6px;
+  background: #fff3e0;
+  color: #e65100;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+/* 재진입 카드 */
+.reentryCard {
+  margin-top: 8px;
+  padding: 8px;
+  background: #f8f9fc;
+  border: 1px solid #c5cae9;
+  border-radius: 6px;
+}
+
+.reentryReady {
+  background: linear-gradient(135deg, #fff5f5 0%, #fff 60%);
+  border-color: #ef5350;
+}
+
+.reentryHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  padding-bottom: 5px;
+  border-bottom: 1px dashed #d0d4e0;
+}
+
+.reentryStatusReady,
+.reentryStatusPeak,
+.reentryStatusLow,
+.reentryStatusPaused {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.reentryStatusReady {
+  background: #c62828;
+  color: #fff;
+  animation: pulseReady 1.2s infinite;
+}
+
+@keyframes pulseReady {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.reentryStatusPeak {
+  background: #1565c0;
+  color: #fff;
+}
+
+.reentryStatusLow {
+  background: #5c6bc0;
+  color: #fff;
+}
+
+.reentryStatusPaused {
+  background: #9e9e9e;
+  color: #fff;
+}
+
+.reentryCurrent {
+  font-size: 11px;
+  font-weight: 700;
+  color: #333;
+  font-variant-numeric: tabular-nums;
+}
+
+.reentryGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.reentryItem {
+  background: #fff;
+  border-radius: 4px;
+  padding: 5px 6px;
+  border: 1px solid #e8eaf0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.reentryLabel {
+  font-size: 9px;
+  color: #888;
+  font-weight: 600;
+}
+
+.reentryValue {
+  font-size: 12px;
+  font-weight: 700;
+  color: #222;
+  font-variant-numeric: tabular-nums;
+}
+
+.reentryDate {
+  font-size: 9px;
+  color: #aaa;
+}
+
+.reentrySource {
+  display: inline-block;
+  margin-left: 3px;
+  padding: 0 4px;
+  background: #e8f0fe;
+  color: #1a73e8;
+  border-radius: 2px;
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.reentryCheck {
+  display: inline-block;
+  font-size: 9px;
+  color: #43a047;
+  font-weight: 700;
+}
+
+.reentryReadyHint {
+  margin-top: 6px;
+  padding: 5px 7px;
+  background: #fff8e1;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #e65100;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.reentryControls {
+  display: flex;
+  gap: 3px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.reentryBtn {
+  flex: 1;
+  min-width: 70px;
+  padding: 3px 6px;
+  background: #fff;
+  border: 1px solid #c5cae9;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  color: #3949ab;
+  font-weight: 600;
+}
+
+.reentryBtn:hover {
+  background: #e8eaf6;
+}
+
+.reentryBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.reentryStartBox {
+  margin-top: 8px;
+  padding: 8px;
+  background: #fafafa;
+  border: 1px dashed #ccc;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.reentryStartHint {
+  display: block;
+  font-size: 10px;
+  color: #888;
+  margin-bottom: 5px;
+}
+
+/* 최저가 수정 폼 */
+.editLowForm {
+  margin-top: 10px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #ffb74d;
+  border-radius: 6px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.editLowInput {
+  flex: 1;
+  min-width: 100px;
+  padding: 4px 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.reentrySave {
+  padding: 4px 10px;
+  background: #1a73e8;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.reentryCancel {
+  padding: 4px 10px;
+  background: #eee;
+  color: #666;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
 @media (max-width: 768px) {
   .container {
     padding: 12px;
@@ -236,6 +558,9 @@
     flex-direction: column;
   }
   .cardGrid {
+    grid-template-columns: 1fr;
+  }
+  .reentryGrid {
     grid-template-columns: 1fr;
   }
 }

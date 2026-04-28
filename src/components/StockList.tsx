@@ -78,6 +78,17 @@ function getGroup(stock: Stock): GroupKey {
   return 'holding';
 }
 
+// 보유중 3단계 티어 분류
+// 0: 매도 임박 (다음 매도가 -2% 이내)
+// 1: 수익권 보유 (수익률 +3% 이상)
+// 2: 일반 보유 (나머지)
+function getHoldingTier(stock: Stock): number {
+  const sellGap = getNextSellGap(stock);
+  if (sellGap !== null && sellGap >= -2) return 0;
+  if (getProfitPercent(stock) >= 3) return 1;
+  return 2;
+}
+
 export default function StockList({ stocks, trades, onSelect }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -94,10 +105,35 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
     grouped[getGroup(stock)].push(stock);
   }
 
-  // 정렬: 신호/대기는 매수가 근접 순, 보유는 수익률 낮은 순
+  // 정렬: 신호/대기는 매수가 근접 순
   grouped.signal.sort((a, b) => (getNextBuyGap(a) ?? 999) - (getNextBuyGap(b) ?? 999));
   grouped.waiting.sort((a, b) => (getNextBuyGap(a) ?? 999) - (getNextBuyGap(b) ?? 999));
-  grouped.holding.sort((a, b) => getProfitPercent(a) - getProfitPercent(b));
+
+  // 보유중: 3단계 액션 중심 정렬
+  // [Tier 0] 매도 임박 → sellGap 오름차순 (목표가에 가장 가까운 것 먼저)
+  // [Tier 1] 수익권 보유 → 수익률 내림차순 (높은 수익 먼저, 25% 수동매도 준비)
+  // [Tier 2] 일반 보유 → 다음 매수가 근접 오름차순 (추가매수 임박 먼저), gap없으면 수익률 오름차순
+  grouped.holding.sort((a, b) => {
+    const tierA = getHoldingTier(a);
+    const tierB = getHoldingTier(b);
+    if (tierA !== tierB) return tierA - tierB;
+
+    if (tierA === 0) {
+      // 매도 임박: 목표가와 가장 가까운(gap 최소) 순
+      return (getNextSellGap(a) ?? 999) - (getNextSellGap(b) ?? 999);
+    }
+    if (tierA === 1) {
+      // 수익권: 수익률 내림차순
+      return getProfitPercent(b) - getProfitPercent(a);
+    }
+    // 일반 보유: 다음 매수가 근접 오름차순
+    const bgA = getNextBuyGap(a);
+    const bgB = getNextBuyGap(b);
+    if (bgA !== null && bgB !== null) return bgA - bgB;
+    if (bgA !== null) return -1;
+    if (bgB !== null) return 1;
+    return getProfitPercent(a) - getProfitPercent(b);
+  });
 
   const groupConfig: { key: GroupKey; label: string; icon: string; color: string }[] = [
     { key: 'signal', label: '매수신호', icon: '🔴', color: '#c62828' },

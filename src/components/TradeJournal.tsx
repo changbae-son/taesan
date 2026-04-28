@@ -51,6 +51,8 @@ interface StockVerification {
   avgDiffPct: number;
   hasEstimated: boolean;
   status: 'match' | 'mismatch' | 'estimated' | 'no-stock';
+  mismatchReason?: 'qty' | 'avg' | 'both';   // 불일치 원인 분류
+  missingBuyQty?: number;                     // 매도 시 매수 이력 부족 수량
 }
 
 // 한국 주식 매도 비용: 거래세 0.18% + 증권사 수수료 약 0.015% = 약 0.195%
@@ -105,6 +107,7 @@ function computeContexts(
     let buyCount = 0;
     let sellCount = 0;
     let stockHasEstimated = false;
+    let totalMissingBuyQty = 0;  // 매도 시 매수 이력 부족 누적량
 
     for (const t of sorted) {
       const isKiwoom = t.id.startsWith('trade_kiwoom_');
@@ -155,17 +158,32 @@ function computeContexts(
         const calcFees = applyFees ? fullCost * FEE_RATE : 0;
 
         if (qty >= t.quantity && avg > 0) {
+          // 매수 이력 충분 — 자체 계산 평단 사용
           useAvg = avg;
           pnl = (t.price - useAvg) * t.quantity - calcFees;
           pnlPct = ((t.price - useAvg) / useAvg) * 100;
           fees = applyFees ? calcFees : undefined;
+        } else if (qty > 0 && avg > 0) {
+          // 매수 이력 일부 있음 — 부분 추정 (보유분은 실제 평단, 초과분은 종목 평단)
+          const knownPnl = (t.price - avg) * qty - (applyFees ? t.price * qty * FEE_RATE : 0);
+          const shortQty = t.quantity - qty;
+          const fallbackAvg = stockAvg > 0 ? stockAvg : avg;
+          const unknownPnl = (t.price - fallbackAvg) * shortQty - (applyFees ? t.price * shortQty * FEE_RATE : 0);
+          useAvg = avg;
+          pnl = knownPnl + unknownPnl;
+          pnlPct = ((t.price - avg) / avg) * 100;  // 알려진 평단 기준
+          fees = applyFees ? calcFees : undefined;
+          isEstimated = true;
+          stockHasEstimated = true;
+          totalMissingBuyQty += shortQty;
+          estimatedReason = `매수 이력 부족(보유 ${qty}주 / 매도 ${t.quantity}주) — 초과분 ${shortQty}주는 종목 평단 사용`;
         } else if (stockAvg > 0) {
+          // 매수 이력 전무 — stock.avgPrice 전체 사용
           useAvg = stockAvg;
           isEstimated = true;
           stockHasEstimated = true;
-          estimatedReason = qty === 0
-            ? '매수 이력 없음 — 종목 평단 사용'
-            : `매수 이력 부족(${qty}/${t.quantity}주) — 종목 평단 사용`;
+          totalMissingBuyQty += t.quantity;
+          estimatedReason = `매수 기록 없음 — 종목 평단(${stockAvg.toLocaleString()}원) 사용`;
           pnl = (t.price - useAvg) * t.quantity - calcFees;
           pnlPct = ((t.price - useAvg) / useAvg) * 100;
           fees = applyFees ? calcFees : undefined;
@@ -173,6 +191,7 @@ function computeContexts(
           useAvg = 0;
           isEstimated = true;
           stockHasEstimated = true;
+          totalMissingBuyQty += t.quantity;
           estimatedReason = '평단 데이터 없음 — 손익 계산 불가';
           pnl = undefined;
           pnlPct = undefined;
@@ -225,9 +244,20 @@ function computeContexts(
     const expectedQty = stock?.totalQuantity || 0;
     const expectedAvg = stock?.avgPrice || 0;
     const qtyDiff = qty - expectedQty;
-    const avgDiffPct = expectedAvg > 0 ? Math.abs((avg - expectedAvg) / expectedAvg) * 100 : 0;
+    const avgDiffPct = expectedAvg > 0 && expectedQty > 0
+      ? Math.abs((avg - expectedAvg) / expectedAvg) * 100
+      : 0;
     const qtyMatch = Math.abs(qtyDiff) <= QTY_TOLERANCE;
-    const avgMatch = expectedAvg > 0 ? avgDiffPct <= AVG_TOLERANCE_PCT : true;
+    // 완전 매도(expectedQty=0)이면 평단 검증 생략 — stock.avgPrice는 잔고 없을 때 의미 없음
+    const avgMatch = expectedQty === 0
+      ? true
+      : expectedAvg > 0
+        ? avgDiffPct <= AVG_TOLERANCE_PCT
+        : true;
+    let mismatchReason: StockVerification['mismatchReason'];
+    if (!qtyMatch && !avgMatch) mismatchReason = 'both';
+    else if (!qtyMatch) mismatchReason = 'qty';
+    else if (!avgMatch) mismatchReason = 'avg';
     let status: StockVerification['status'];
     if (!stock) status = 'no-stock';
     else if (stockHasEstimated) status = 'estimated';
@@ -247,6 +277,8 @@ function computeContexts(
       avgDiffPct,
       hasEstimated: stockHasEstimated,
       status,
+      mismatchReason,
+      missingBuyQty: totalMissingBuyQty > 0 ? totalMissingBuyQty : undefined,
     };
     verifications.set(stockName, verification);
 
@@ -385,6 +417,7 @@ export default function TradeJournal({
   const [editId, setEditId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [applyFees, setApplyFees] = useState(true);
+  const [showMismatchDetail, setShowMismatchDetail] = useState(false);
 
   // 계산: 문맥 (평단/보유/손익) — 매수 이력 부족 시 stock.avgPrice fallback
   const { contexts: contextMap, verifications: stockVerifications } = useMemo(
@@ -635,42 +668,102 @@ export default function TradeJournal({
         </div>
       </div>
 
-      {/* 검증 바 (Fix 2): 매매일지 누적 vs 실제 보유값 일치 여부 */}
+      {/* 검증 바 (Fix 2): 매매일지 누적 vs 실제 보유값 일치 여부 — 클릭 시 상세 토글 */}
       {stockVerifications.size > 0 && (
         <div className={styles.verifyBar}>
-          <span className={styles.verifyBarTitle}>🔍 검증 현황</span>
-          {verifySummary.match > 0 && (
-            <span className={styles.verifyBarMatch} title="매매일지 누적이 실제 보유 수량/평단과 일치">
-              ✓ 일치 <b>{verifySummary.match}</b>종목
+          {/* 요약 헤더 행 — 클릭으로 상세 토글 */}
+          <div
+            className={styles.verifyBarRow}
+            onClick={() => setShowMismatchDetail((v) => !v)}
+          >
+            <span className={styles.verifyBarTitle}>🔍 검증 현황</span>
+            {verifySummary.match > 0 && (
+              <span className={styles.verifyBarMatch}>
+                ✓ 일치 <b>{verifySummary.match}</b>종목
+              </span>
+            )}
+            {verifySummary.mismatch > 0 && (
+              <span className={styles.verifyBarMismatch}>
+                ⚠️ 불일치 <b>{verifySummary.mismatch}</b>종목
+              </span>
+            )}
+            {verifySummary.estimated > 0 && (
+              <span className={styles.verifyBarEstimated}>
+                ⓘ 추정 <b>{verifySummary.estimated}</b>종목
+              </span>
+            )}
+            {verifySummary.noStock > 0 && (
+              <span className={styles.verifyBarNoStock}>
+                · 미등록 {verifySummary.noStock}종목
+              </span>
+            )}
+            <span className={styles.verifyBarToggle}>
+              {showMismatchDetail ? '▲' : '▼'} 상세
             </span>
+          </div>
+
+          {/* 종목별 상세 패널 */}
+          {showMismatchDetail && (
+            <div className={styles.verifyDetail}>
+              {[...stockVerifications.values()]
+                .filter((v) => v.status !== 'no-stock')
+                .sort((a, b) => {
+                  const order: Record<string, number> = { mismatch: 0, estimated: 1, match: 2 };
+                  return (order[a.status] ?? 3) - (order[b.status] ?? 3);
+                })
+                .map((v) => (
+                  <div
+                    key={v.stockName}
+                    className={`${styles.verifyDetailRow} ${
+                      v.status === 'mismatch'
+                        ? styles.verifyDetailMismatch
+                        : v.status === 'estimated'
+                          ? styles.verifyDetailEstimated
+                          : styles.verifyDetailMatch
+                    }`}
+                    onClick={() => {
+                      setFilterStock(v.stockName);
+                      setShowMismatchDetail(false);
+                    }}
+                    title="클릭 → 해당 종목 필터"
+                  >
+                    <span className={styles.verifyDetailName}>{v.stockName}</span>
+                    <span className={styles.verifyDetailStatus}>
+                      {v.status === 'match' ? '✓ 일치' : v.status === 'estimated' ? '⚠ 추정' : '❌ 불일치'}
+                    </span>
+                    {v.status !== 'match' && (
+                      <>
+                        {!v.qtyMatch && (
+                          <span className={`${styles.verifyDetailChip} ${styles.verifyDetailChipQty}`}>
+                            수량 계산{v.computedQty}주 / 실제{v.expectedQty}주 ({v.qtyDiff >= 0 ? '+' : ''}{v.qtyDiff})
+                          </span>
+                        )}
+                        {!v.avgMatch && v.expectedQty > 0 && (
+                          <span className={`${styles.verifyDetailChip} ${styles.verifyDetailChipAvg}`}>
+                            평단 {fmt(v.computedAvg)}원 / 실제 {fmt(v.expectedAvg)}원 ({v.avgDiffPct.toFixed(1)}% 차이)
+                          </span>
+                        )}
+                        {v.missingBuyQty && v.missingBuyQty > 0 && (
+                          <span className={`${styles.verifyDetailChip} ${styles.verifyDetailChipMissing}`}>
+                            매수이력 부족 {v.missingBuyQty}주
+                          </span>
+                        )}
+                        {v.mismatchReason && (
+                          <span className={styles.verifyDetailReason}>
+                            원인: {v.mismatchReason === 'qty' ? '수량 불일치' : v.mismatchReason === 'avg' ? '평단 불일치' : '수량+평단 불일치'}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))}
+            </div>
           )}
-          {verifySummary.mismatch > 0 && (
-            <span
-              className={styles.verifyBarMismatch}
-              title={verifySummary.mismatchList
-                .map(
-                  (v) =>
-                    `${v.stockName}: 수량 ${v.computedQty}/${v.expectedQty}주 (차이 ${v.qtyDiff >= 0 ? '+' : ''}${v.qtyDiff}), 평단 ${fmt(v.computedAvg)}/${fmt(v.expectedAvg)} (${v.avgDiffPct.toFixed(1)}%)`,
-                )
-                .join('\n')}
-            >
-              ⚠️ 불일치 <b>{verifySummary.mismatch}</b>종목
-            </span>
-          )}
-          {verifySummary.estimated > 0 && (
-            <span className={styles.verifyBarEstimated} title="매수 이력 부족으로 종목 평단을 사용해 추정">
-              ⓘ 추정 <b>{verifySummary.estimated}</b>종목
-            </span>
-          )}
-          {verifySummary.noStock > 0 && (
-            <span className={styles.verifyBarNoStock} title="관심종목에 등록되지 않은 종목">
-              · 미등록 {verifySummary.noStock}종목
-            </span>
-          )}
-          {verifySummary.mismatch > 0 && (
-            <span className={styles.verifyBarHint}>
-              ⚠️ 매수/매도 누락 또는 과다 기록 가능성. 불일치 종목의 매매일지를 검토하세요.
-            </span>
+
+          {verifySummary.mismatch > 0 && !showMismatchDetail && (
+            <div className={styles.verifyBarHint}>
+              ⚠️ 매수/매도 누락 또는 과다 기록 가능성 — ▼ 상세를 클릭하여 확인하세요.
+            </div>
           )}
         </div>
       )}

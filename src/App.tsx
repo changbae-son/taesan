@@ -77,7 +77,10 @@ export default function App() {
   const handleDeleteStock = (id: string) => {
     removeStock(id);
     setSelectedStockId(null);
-    changeTab('list');
+    // 종목상세에서 삭제한 경우만 리스트로 이동, 그 외 탭(매매완료 등)에서는 현재 탭 유지
+    if (activeTab === 'detail') {
+      changeTab('list');
+    }
     showToast('종목이 삭제되었습니다');
   };
 

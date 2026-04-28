@@ -775,21 +775,44 @@
 /* ───── 검증 바 (Fix 2) ───── */
 .verifyBar {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 8px 14px;
+  flex-direction: column;
   margin: 0 0 10px;
   background: #fafafa;
   border: 1px solid #e8e8e8;
   border-radius: 8px;
   font-size: 12px;
+  overflow: hidden;
+}
+
+/* 요약 헤더 행 — 클릭 토글 */
+.verifyBarRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.verifyBarRow:hover {
+  background: #f0f0f0;
 }
 
 .verifyBarTitle {
   font-weight: 700;
   color: #555;
   margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.verifyBarToggle {
+  margin-left: auto;
+  font-size: 11px;
+  color: #888;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .verifyBarMatch {
@@ -798,7 +821,6 @@
   background: #e8f5e9;
   padding: 3px 10px;
   border-radius: 12px;
-  cursor: help;
 }
 .verifyBarMatch b { color: #1b5e20; margin: 0 2px; }
 
@@ -809,7 +831,6 @@
   border: 1px solid #ffcdd2;
   padding: 3px 10px;
   border-radius: 12px;
-  cursor: help;
   animation: verifyBlink 1.8s ease-in-out infinite;
 }
 .verifyBarMismatch b { color: #b71c1c; margin: 0 2px; }
@@ -825,7 +846,6 @@
   background: #fff3e0;
   padding: 3px 10px;
   border-radius: 12px;
-  cursor: help;
 }
 .verifyBarEstimated b { color: #bf360c; margin: 0 2px; }
 
@@ -835,12 +855,111 @@
 }
 
 .verifyBarHint {
-  flex-basis: 100%;
   font-size: 11px;
   color: #c62828;
-  padding-top: 4px;
+  padding: 6px 14px 8px;
   border-top: 1px dashed #ffcdd2;
-  margin-top: 2px;
+  background: #fff9f9;
+}
+
+/* ───── 검증 상세 패널 ───── */
+.verifyDetail {
+  border-top: 1px solid #e8e8e8;
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #fff;
+  animation: slideDown 0.18s ease-out;
+}
+
+.verifyDetailRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: filter 0.12s;
+}
+.verifyDetailRow:hover {
+  filter: brightness(0.95);
+}
+
+.verifyDetailMismatch {
+  background: #fff5f5;
+  border: 1px solid #ffcdd2;
+}
+.verifyDetailEstimated {
+  background: #fff8f0;
+  border: 1px solid #ffe0b2;
+}
+.verifyDetailMatch {
+  background: #f5fbf5;
+  border: 1px solid #c8e6c9;
+}
+
+.verifyDetailName {
+  font-size: 13px;
+  font-weight: 700;
+  color: #222;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.verifyDetailStatus {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.verifyDetailMismatch .verifyDetailStatus {
+  color: #c62828;
+  background: #ffebee;
+}
+.verifyDetailEstimated .verifyDetailStatus {
+  color: #e65100;
+  background: #fff3e0;
+}
+.verifyDetailMatch .verifyDetailStatus {
+  color: #2e7d32;
+  background: #e8f5e9;
+}
+
+.verifyDetailChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.verifyDetailChipQty {
+  background: #ffebee;
+  color: #c62828;
+  border: 1px solid #ffcdd2;
+}
+.verifyDetailChipAvg {
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffe0b2;
+}
+.verifyDetailChipMissing {
+  background: #f3e5f5;
+  color: #7b1fa2;
+  border: 1px solid #ce93d8;
+}
+
+.verifyDetailReason {
+  font-size: 10px;
+  color: #888;
+  font-style: italic;
+  margin-left: auto;
 }
 
 /* ───── 카드별 검증 뱃지 ───── */

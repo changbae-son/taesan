@@ -6,6 +6,7 @@ export interface BuyPlan {
   filledDate?: string; // 체결일 (YYYY-MM-DD)
   filledQuantity?: number; // 실제 체결 수량
   filledPrice?: number; // 실제 체결 단가
+  manualOverride?: boolean; // true면 sync/reconcile 시 덮어쓰지 않음
 }
 
 export interface SellPlan {
@@ -16,6 +17,7 @@ export interface SellPlan {
   filledDate?: string; // 체결일 (YYYY-MM-DD)
   filledQuantity?: number; // 실제 체결 수량
   filledPrice?: number; // 실제 체결 단가
+  manualOverride?: boolean; // true면 sync/reconcile 시 덮어쓰지 않음
 }
 
 export interface MASell {
@@ -24,7 +26,57 @@ export interface MASell {
   quantity: number;
   filled: boolean;
   filledDate?: string;
-  fromSellPlan?: number; // 수익매도 몇차에서 이동했는지
+  fromSellPlan?: number; // 수익매도 몇차에서 이동했는지 (구버전 호환)
+  insertAfterPercent?: number; // 0|5|10|15|20|25 - sellPlans 어느 차수 다음에 표시할지
+  splitFromPercent?: number; // 분리 시 원래 sellPlan의 percent (복원용)
+}
+
+// 매매완료 후 재진입 추적 (태산매매법: 최저가 → +100% → -50% → 첫 양봉 = 1차 매수)
+export interface ReentryTracking {
+  enabled: boolean;                    // ON/OFF (사용자 수동 중지 가능)
+  status: 'tracking' | 'ready' | 'paused';
+
+  // Phase 1: 최저가 추적
+  lowPrice: number;                    // 매매기간 + 매매완료 후 누적 최저가
+  lowPriceDate: string;                // 최저가 일자 (YYYY-MM-DD)
+  lowPriceSource: 'kiwoom_daily' | 'manual' | 'realtime'; // 최저가 출처
+
+  // Phase 2: 반등 확인 (lowPrice 대비 +100% 도달)
+  rebounded: boolean;
+  reboundDate?: string;
+
+  // Phase 3: 신고점 추적 (자동 갱신)
+  peakPrice: number;
+  peakPriceDate: string;
+
+  // Phase 4: -50% 매수 목표가
+  targetPrice: number;                 // peakPrice * 0.5
+
+  // 매수 대기 (-50% 도달)
+  readyAt?: string;
+
+  // 양봉 신호
+  signalSent?: boolean;
+  signalDate?: string;
+
+  startedAt: number;                   // 추적 시작 시각 (매매완료 일자 timestamp)
+}
+
+// 한 사이클 매매 기록 (매매완료 시점에 영구 보관)
+export interface TradingCycle {
+  cycleNo: number;                     // 1, 2, 3 ...
+  startDate: string;                   // 1차 매수일
+  endDate: string;                     // 매매완료일
+  totalBuyAmt: number;
+  totalSellAmt: number;
+  realizedProfit: number;
+  profitPercent: number;
+  buyPlans: BuyPlan[];                 // 그 사이클 매매기록 스냅샷
+  sellPlans: SellPlan[];
+  maSells: MASell[];
+  reentryLowPrice?: number;            // 그 사이클 종료 후 추적된 최저가 (참고용)
+  reentryPeakPrice?: number;
+  rule: 'A' | 'B';                     // 그 사이클의 룰
 }
 
 export interface Stock {
@@ -59,6 +111,10 @@ export interface Stock {
   maAlertDate?: string;    // 마지막 MA 근접 알림 발송일
   maCandles?: number;      // 계산에 사용된 봉 수
   profitAlertDate?: string; // 마지막 23%+ 수익 알림 발송일
+  // 재진입 추적 (매매완료 후 다시 1차 매수까지)
+  reentry?: ReentryTracking;
+  // 사이클 history (영구 보관) - 각 매매완료 시점에 push
+  cycles?: TradingCycle[];
   createdAt: number;
   updatedAt: number;
 }

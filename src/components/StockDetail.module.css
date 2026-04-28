@@ -218,6 +218,34 @@
   background: #f0f4ff;
   border-radius: 0 0 8px 8px;
   flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+/* 체결 정보 라벨 (미체결 차수 안내용) */
+.editFillDataLabel {
+  font-size: 10px;
+  font-weight: 700;
+  color: #3949ab;
+  align-self: center;
+  padding-right: 6px;
+  border-right: 1px solid #c5cae9;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+/* 미체결 차수의 체결 정보 행 — 회색조로 구분 */
+.editFillDataRowUnfilled td {
+  background: #fafafa;
+  border-bottom: 1px dashed #ccc;
+}
+
+.editFillDataRowUnfilled .editFillDataInner {
+  background: #fafafa;
+}
+
+.editFillDataRowUnfilled .editFillDataLabel {
+  color: #888;
+  border-right-color: #ddd;
 }
 
 .editFillDataField {
@@ -951,6 +979,224 @@
   font-size: 10px;
   font-weight: 600;
   margin-left: 4px;
+}
+
+/* 수익매도 수동 편집 버튼 */
+.sellEditBtn {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 3px 6px;
+  background: #f5f5f5;
+  color: #555;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+.sellEditBtn:hover {
+  background: #e8eaf6;
+  border-color: #7986cb;
+}
+
+/* 수동 편집됨 배지 */
+.manualOverrideBadge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  background: #7986cb;
+  color: #fff;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+/* 수동 편집 팝업 */
+.sellEditPopup {
+  margin-top: 6px;
+  padding: 10px;
+  background: #f8f8ff;
+  border: 1px solid #7986cb;
+  border-radius: 6px;
+  min-width: 180px;
+}
+
+.sellEditRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.sellEditLabel {
+  font-size: 10px;
+  color: #888;
+  width: 36px;
+  flex-shrink: 0;
+}
+
+.sellEditInput {
+  flex: 1;
+  padding: 3px 6px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.sellEditActions {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.sellEditSave {
+  flex: 1;
+  padding: 4px 8px;
+  background: #3f51b5;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sellEditSave:hover {
+  background: #303f9f;
+}
+
+.sellEditCancel {
+  flex: 1;
+  padding: 4px 8px;
+  background: #eee;
+  color: #666;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.sellEditReset {
+  flex: 1;
+  padding: 4px 8px;
+  background: #ffebee;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* ── MA 분리 버튼 & 팝업 ── */
+.splitBtn {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 3px 6px;
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffb74d;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+.splitBtn:hover {
+  background: #ffe0b2;
+  border-color: #ff9800;
+}
+
+.splitPopup {
+  margin-top: 6px;
+  padding: 10px;
+  background: #fff8f0;
+  border: 1.5px solid #ff9800;
+  border-radius: 6px;
+  min-width: 220px;
+}
+
+.splitTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e65100;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #ffe0b2;
+}
+
+.maRadioGroup {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.maRadioBtn {
+  flex: 1;
+  padding: 4px 8px;
+  background: #fff;
+  color: #888;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.maRadioBtnActive {
+  background: #ff9800;
+  color: #fff;
+  border-color: #ff9800;
+}
+
+.splitHint {
+  font-size: 10px;
+  color: #888;
+  margin: 6px 0;
+  padding: 4px 6px;
+  background: #fff;
+  border-radius: 4px;
+  border: 1px dashed #ddd;
+}
+
+/* ── MA 끼어든 행 (sellPlans 영역에 표시) ── */
+.maInsertedRow {
+  background: linear-gradient(90deg, #fff8f0 0%, #fff 60%);
+  border-left: 3px solid #ff9800;
+}
+
+.maInsertedRow td {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.maInsertedBadge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #ff9800;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+}
+
+.maRestoreBtn {
+  padding: 3px 6px;
+  background: #f5f5f5;
+  color: #555;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.maRestoreBtn:hover {
+  background: #e8eaf6;
+  border-color: #7986cb;
 }
 
 /* 다음 액션 배너 */
