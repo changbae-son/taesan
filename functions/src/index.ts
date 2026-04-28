@@ -4802,3 +4802,62 @@ export const renameStock = functions
       }
     });
   });
+
+/**
+ * 휴지통 자동 영구삭제 (stocks_trash)
+ *
+ * 정책:
+ *   - 사용자가 매매완료 탭에서 종목 삭제 시 stocks_trash 로 이동 (30일 보관)
+ *   - expiresAt = deletedAt + 30일
+ *   - 매일 KST 03:30 실행하여 expiresAt < now() 인 문서 영구삭제
+ *
+ * 안전:
+ *   - 한 번에 최대 500건 (Firestore batch 제한)
+ *   - 실패해도 다음 날 재시도되므로 멱등
+ */
+export const purgeExpiredTrash = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 120})
+  .pubsub.schedule("30 3 * * *")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    const startedAt = Date.now();
+    console.log("[purgeExpiredTrash] 시작");
+
+    try {
+      const expired = await db
+        .collection("stocks_trash")
+        .where("expiresAt", "<", startedAt)
+        .limit(500)
+        .get();
+
+      if (expired.empty) {
+        console.log("[purgeExpiredTrash] 영구삭제 대상 없음");
+        return null;
+      }
+
+      const batch = db.batch();
+      expired.forEach((doc) => batch.delete(doc.ref));
+      await batch.commit();
+
+      const elapsed = Date.now() - startedAt;
+      console.log(
+        `[purgeExpiredTrash] ${expired.size}건 영구삭제 완료 (${elapsed}ms)`
+      );
+
+      await db.collection("settings").doc("lastTrashPurge").set({
+        timestamp: startedAt,
+        purgedCount: expired.size,
+        elapsedMs: elapsed,
+      });
+    } catch (err: any) {
+      console.error("[purgeExpiredTrash] 실패:", err.message);
+      await db.collection("settings").doc("lastTrashPurge").set({
+        timestamp: startedAt,
+        error: err.message,
+        elapsedMs: Date.now() - startedAt,
+      });
+    }
+
+    return null;
+  });

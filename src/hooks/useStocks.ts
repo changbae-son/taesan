@@ -5,11 +5,13 @@ import {
   doc,
   setDoc,
   deleteDoc,
+  getDoc,
   query,
   orderBy,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Stock } from '../types';
+import { TRASH_RETENTION_MS } from '../types';
 
 const DEBOUNCE_MS = 600;
 
@@ -166,8 +168,20 @@ export function useStocks() {
     return id;
   }, []);
 
+  // Soft-delete: stocks → stocks_trash 로 이동 (30일 보관 후 cron이 영구삭제)
   const removeStock = useCallback(async (id: string) => {
-    await deleteDoc(doc(db, 'stocks', id));
+    const ref = doc(db, 'stocks', id);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
+    const data = snap.data() as Omit<Stock, 'id'>;
+    const now = Date.now();
+    await setDoc(doc(db, 'stocks_trash', id), {
+      ...data,
+      originalId: id,
+      deletedAt: now,
+      expiresAt: now + TRASH_RETENTION_MS,
+    });
+    await deleteDoc(ref);
   }, []);
 
   return { stocks, loading, saveStock, addStock, removeStock };

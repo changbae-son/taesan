@@ -1,22 +1,27 @@
 import { useState } from 'react';
-import type { Stock, Trade } from '../types';
+import type { Stock, Trade, TrashedStock } from '../types';
+import TrashModal from './TrashModal';
 import styles from './CompletedStocks.module.css';
 
 interface Props {
   stocks: Stock[];
   trades: Trade[];
   onDelete: (id: string) => void;
+  trashed: TrashedStock[];
+  onRestore: (id: string) => void | Promise<void>;
+  onPurge: (id: string) => void | Promise<void>;
 }
 
 const REENTRY_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/reentryControl';
 
 type FilterType = 'all' | 'tracking' | 'ready' | 'paused' | 'no_tracking';
 
-export default function CompletedStocks({ stocks, trades, onDelete }: Props) {
+export default function CompletedStocks({ stocks, trades, onDelete, trashed, onRestore, onPurge }: Props) {
   const [filter, setFilter] = useState<FilterType>('all');
   const [busy, setBusy] = useState<string | null>(null); // 작업 중인 종목명
   const [editLowIdx, setEditLowIdx] = useState<string | null>(null);
   const [editLowDraft, setEditLowDraft] = useState<{ price: number; date: string } | null>(null);
+  const [trashOpen, setTrashOpen] = useState(false);
 
   // 보유수량 0이고, 매수 체결이 있었던 종목 = 매매완료
   const completed = stocks.filter(
@@ -185,24 +190,52 @@ export default function CompletedStocks({ stocks, trades, onDelete }: Props) {
     }
   };
 
+  const trashButton = (
+    <button
+      className={styles.trashBtn}
+      onClick={() => setTrashOpen(true)}
+      title="삭제된 종목 보기 (30일 보관)"
+    >
+      🗑️ 휴지통
+      {trashed.length > 0 && <span className={styles.trashBadge}>{trashed.length}</span>}
+    </button>
+  );
+
+  const trashModal = (
+    <TrashModal
+      open={trashOpen}
+      trashed={trashed}
+      onClose={() => setTrashOpen(false)}
+      onRestore={onRestore}
+      onPurge={onPurge}
+    />
+  );
+
   if (completed.length === 0) {
     return (
       <div className={styles.container}>
-        <h2 className={styles.pageTitle}>매매완료 종목</h2>
+        <div className={styles.titleRow}>
+          <h2 className={styles.pageTitle}>매매완료 종목</h2>
+          {trashButton}
+        </div>
         <div className={styles.empty}>
           <p>매매가 완료된 종목이 없습니다.</p>
           <p className={styles.emptyHint}>보유수량이 0이 되면 자동으로 여기에 표시됩니다.</p>
         </div>
+        {trashModal}
       </div>
     );
   }
 
   return (
     <div className={styles.container}>
-      <h2 className={styles.pageTitle}>
-        매매완료 종목
-        <span className={styles.count}>{completed.length}종목</span>
-      </h2>
+      <div className={styles.titleRow}>
+        <h2 className={styles.pageTitle}>
+          매매완료 종목
+          <span className={styles.count}>{completed.length}종목</span>
+        </h2>
+        {trashButton}
+      </div>
 
       {/* 전체 요약 */}
       <div className={styles.totalSummary}>
@@ -487,6 +520,7 @@ export default function CompletedStocks({ stocks, trades, onDelete }: Props) {
           );
         })}
       </div>
+      {trashModal}
     </div>
   );
 }

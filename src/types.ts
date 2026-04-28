@@ -119,6 +119,16 @@ export interface Stock {
   updatedAt: number;
 }
 
+// 휴지통: 삭제된 stock을 30일 보관 후 영구삭제
+export const TRASH_RETENTION_DAYS = 30;
+export const TRASH_RETENTION_MS = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+export interface TrashedStock extends Stock {
+  deletedAt: number;       // 삭제 시각 (timestamp)
+  expiresAt: number;       // 영구삭제 예정 시각 (deletedAt + 30일)
+  originalId: string;      // 원래 stocks 컬렉션의 doc id
+}
+
 export interface Trade {
   id: string;
   date: string;

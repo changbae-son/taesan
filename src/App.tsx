@@ -8,6 +8,7 @@ import KiwoomSettings from './components/KiwoomSettings';
 import CompletedStocks from './components/CompletedStocks';
 import Watchlist from './components/Watchlist';
 import { useStocks } from './hooks/useStocks';
+import { useTrash } from './hooks/useTrash';
 import { useWatchlist } from './hooks/useWatchlist';
 import { useTrades } from './hooks/useTrades';
 import { useSnapshots } from './hooks/useSnapshots';
@@ -17,6 +18,7 @@ import './App.css';
 
 export default function App() {
   const { stocks, loading, saveStock, addStock, removeStock } = useStocks();
+  const { trashed, restore: restoreTrash, purge: purgeTrash } = useTrash();
   const { trades, addTrade, updateTrade, removeTrade } = useTrades();
   const { snapshots, addSnapshot } = useSnapshots();
   const { visible, message, showToast } = useToast();
@@ -81,7 +83,17 @@ export default function App() {
     if (activeTab === 'detail') {
       changeTab('list');
     }
-    showToast('종목이 삭제되었습니다');
+    showToast('휴지통으로 이동했습니다 (30일 보관)');
+  };
+
+  const handleRestoreTrash = async (id: string) => {
+    await restoreTrash(id);
+    showToast('종목이 복원되었습니다');
+  };
+
+  const handlePurgeTrash = async (id: string) => {
+    await purgeTrash(id);
+    showToast('영구 삭제되었습니다');
   };
 
   if (loading) {
@@ -178,6 +190,9 @@ export default function App() {
               stocks={stocks}
               trades={trades}
               onDelete={handleDeleteStock}
+              trashed={trashed}
+              onRestore={handleRestoreTrash}
+              onPurge={handlePurgeTrash}
             />
           )}
           {activeTab === 'watchlist' && (

@@ -3,13 +3,56 @@
   max-width: 1200px;
 }
 
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 14px;
+  flex-wrap: wrap;
+}
+
 .pageTitle {
   font-size: 17px;
   font-weight: 700;
-  margin: 0 0 14px;
+  margin: 0;
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.trashBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #fff;
+  color: #444;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.trashBtn:hover {
+  background: #f7f7f7;
+  border-color: #bbb;
+}
+
+.trashBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #c62828;
+  color: #fff;
+  border-radius: 9px;
 }
 
 .count {
