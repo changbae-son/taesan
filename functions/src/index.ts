@@ -4586,6 +4586,52 @@ export const diagApiExplore = functions
  * POST /deleteTrades
  * body: { tradeIds: ["trade_kiwoom_xxx", ...] }
  */
+/**
+ * 단일 trade 필드 수정 (admin 직접 패치)
+ * POST /updateTrade
+ * body: { tradeId: "trade_kiwoom_xxx", set: { price?, quantity?, date?, type?, stockName?, code? } }
+ *
+ * 액면분할, 잘못된 단위 등 trade 데이터 정정 시 사용.
+ * trade ID는 유지되고 fields만 update.
+ */
+export const updateTrade = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {tradeId, set} = req.body || {};
+        if (!tradeId || !set || typeof set !== "object") {
+          res.status(400).json({success: false, error: "tradeId/set 필수"});
+          return;
+        }
+        const ref = db.collection("trades").doc(String(tradeId));
+        const doc = await ref.get();
+        if (!doc.exists) {
+          res.status(404).json({success: false, error: `trade 없음: ${tradeId}`});
+          return;
+        }
+        const before = doc.data();
+        // 허용 필드만 추려서 update (안전)
+        const allowed: Record<string, any> = {};
+        for (const k of ["price", "quantity", "date", "type", "stockName", "code", "memo", "tags"]) {
+          if (k in set) allowed[k] = set[k];
+        }
+        if (Object.keys(allowed).length === 0) {
+          res.status(400).json({success: false, error: "수정 가능한 필드 없음"});
+          return;
+        }
+        await ref.update(allowed);
+        const after = {...before, ...allowed};
+        console.log(`[updateTrade] ${tradeId}: ${JSON.stringify(allowed)}`);
+        res.json({success: true, tradeId, before, after});
+      } catch (error: any) {
+        console.error("[updateTrade] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 export const deleteTrades = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 60})
