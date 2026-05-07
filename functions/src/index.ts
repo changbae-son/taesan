@@ -712,6 +712,8 @@ function mapTradesToPlans(
   const percents = [5, 10, 15, 20, 25];
   const sellPlans = percents.map((p, i) => {
     const sellTrade = sells[i]; // i번째 체결 → i번 슬롯 1:1 매핑
+    // 목표가는 항상 평단가 × (1+%) 로 유지 (실제 체결가와 분리)
+    const targetPrice = avgPrice > 0 ? Math.round(avgPrice * (1 + p / 100)) : 0;
 
     if (sellTrade) {
       const dt = sellTrade.date || "";
@@ -720,17 +722,17 @@ function mapTradesToPlans(
         : dt;
       return {
         percent: p,
-        price: sellTrade.price,
+        price: targetPrice,                  // 🔧 목표가 (실제가 아님) - 평단 기반 계산값
         quantity: sellTrade.quantity,
         filled: true,
         filledDate: formattedDate,
         filledQuantity: sellTrade.quantity,
-        filledPrice: sellTrade.price,
+        filledPrice: sellTrade.price,        // 실제 체결가
       };
     }
     return {
       percent: p,
-      price: avgPrice > 0 ? Math.round(avgPrice * (1 + p / 100)) : 0,
+      price: targetPrice,
       quantity: totalQty > 0 ? Math.round(totalQty * 0.2) : 0,
       filled: false,
       filledDate: "",
@@ -905,6 +907,49 @@ async function syncToFirestore(
           });
           updateData.buyPlans = updatedBuyPlans;
           console.log(`[동기화] ${h.name}: buyPlans 1차 holdings 기반 체결 처리`);
+        }
+      }
+
+      // ✅ Race condition 방지: update 직전 latest doc 재조회 후 manualOverride 최종 보호
+      // (sync 시작 시점과 update 시점 사이에 사용자가 분리/편집했을 수 있음)
+      const latestDoc = await db.collection("stocks").doc(existingDocId).get();
+      const latestData = latestDoc.data() || {};
+
+      // sellPlans 최종 보호 (latest 기준)
+      if (Array.isArray(updateData.sellPlans)) {
+        const latestSellPlans: any[] = latestData.sellPlans || [];
+        updateData.sellPlans = (updateData.sellPlans as any[]).map((newPlan: any, i: number) => {
+          const latest = latestSellPlans[i];
+          if (latest?.manualOverride) {
+            console.log(`[sync race 보호] ${h.name} sell+${latest.percent}% latest manualOverride 유지`);
+            return latest;
+          }
+          return newPlan;
+        });
+      }
+
+      // buyPlans 최종 보호 (latest 기준)
+      if (Array.isArray(updateData.buyPlans)) {
+        const latestBuyPlans: any[] = latestData.buyPlans || [];
+        updateData.buyPlans = (updateData.buyPlans as any[]).map((newPlan: any, i: number) => {
+          const latest = latestBuyPlans[i];
+          if (latest?.manualOverride) {
+            console.log(`[sync race 보호] ${h.name} buy${i + 1}차 latest manualOverride 유지`);
+            return latest;
+          }
+          return newPlan;
+        });
+      }
+
+      // maSells 보존: sync는 maSells를 직접 update 하지 않으므로 latestData의 maSells 그대로 유지
+      // (사용자가 분리한 maSells가 race로 손실되는 것 방지)
+      if (Array.isArray(latestData.maSells) && latestData.maSells.length > 0) {
+        // 명시적으로 latestData.maSells를 적용 (혹시 mapped 결과에 의해 변경됐을 가능성 차단)
+        const hasFilledMa = latestData.maSells.some((m: any) => m.filled);
+        if (hasFilledMa && !updateData.maSells) {
+          // updateData에 maSells가 없어도 명시적으로 latest 적용 (race 방지)
+          updateData.maSells = latestData.maSells;
+          console.log(`[sync race 보호] ${h.name} maSells 보존 (filled ${latestData.maSells.filter((m: any) => m.filled).length}건)`);
         }
       }
 
@@ -1106,6 +1151,22 @@ async function syncToFirestore(
       const formattedDate = t.date
         ? `${t.date.slice(0, 4)}-${t.date.slice(4, 6)}-${t.date.slice(6, 8)}`
         : new Date().toISOString().slice(0, 10);
+
+      // ✅ Cross-dedup 강화: 같은 (code, date, type, price, quantity) 조합 trade가 이미 있으면 skip
+      // (키움 API가 같은 체결을 다른 ord_no로 두 번 반환하는 경우 중복 방지)
+      const dupQuery = await db.collection("trades")
+        .where("code", "==", t.code || "")
+        .where("date", "==", formattedDate)
+        .where("type", "==", t.type)
+        .where("price", "==", t.price)
+        .where("quantity", "==", t.quantity)
+        .limit(1)
+        .get();
+      if (!dupQuery.empty) {
+        const existingId = dupQuery.docs[0].id;
+        console.log(`[중복방지] ${t.name} ${formattedDate} ${t.type} ${t.price}x${t.quantity} 이미 있음 (${existingId}) - 신규 ${tradeId} 스킵`);
+        continue;
+      }
 
       await docRef.set({
         date: formattedDate,
@@ -1755,28 +1816,33 @@ async function updateHoldingMAs(config: KiwoomConfig, token: string): Promise<vo
       maCandles: ma.candles,
     };
 
-    // 근접 알림: 당일 미발송 & 현재가 기준 ±3% 이내
-    if (s.maAlertDate !== today && curPrice > 0) {
+    // 단계별 근접 알림: 단계마다 당일 1회씩 (±2/1/0%)
+    if (curPrice > 0) {
+      const stagesField = (s.maStagesAlerted as any) || {};
+      const todayStages: Record<string, number> = stagesField.date === today
+        ? (stagesField.stages || {}) : {};
+      const newStages = {...todayStages};
       const alerts: string[] = [];
-      const check = (maVal: number, label: string) => {
+      let stagesChanged = false;
+
+      const checkStage = (maVal: number, label: string) => {
         if (maVal <= 0) return;
         const gap = ((curPrice - maVal) / maVal) * 100;
-        // 위에서 접근 (현재가가 MA보다 0~4% 위): 저항 가능성
-        if (gap >= 0 && gap <= 4) {
-          alerts.push(`📊 ${label}선 도달 (현재 +${gap.toFixed(1)}% → 저항 확인 필요)`);
-        }
-        // 아래에서 접근 (현재가가 MA보다 0~3% 아래): 이탈 가능성
-        if (gap < 0 && gap >= -3) {
-          alerts.push(`⚠️ ${label}선 하향 이탈 근접 (현재 ${gap.toFixed(1)}% → 손실 매도 검토)`);
-        }
+        const stage = getMaStage(gap);
+        if (!stage) return;
+        const key = `${label}:${stage}`;
+        if (newStages[key]) return;
+        newStages[key] = 1;
+        stagesChanged = true;
+        alerts.push(maStageMessage(label, stage, gap));
       };
-      check(ma.ma20, "MA20");
-      check(ma.ma60, "MA60");
-      check(ma.ma120, "MA120");
+      checkStage(ma.ma20, "MA20");
+      checkStage(ma.ma60, "MA60");
+      checkStage(ma.ma120, "MA120");
 
-      if (alerts.length > 0) {
-        updates.maAlertDate = today;
-        let msg = `<b>📈 이동평균선 근접 — ${s.name}</b>\n`;
+      if (alerts.length > 0 && stagesChanged) {
+        updates.maStagesAlerted = {date: today, stages: newStages};
+        let msg = `<b>📈 이동평균선 단계 알림 — ${s.name}</b>\n`;
         msg += `현재가: <b>${curPrice.toLocaleString()}원</b>\n`;
         msg += `MA20: ${ma.ma20 > 0 ? ma.ma20.toLocaleString() + "원" : "계산불가"}\n`;
         msg += `MA60: ${ma.ma60 > 0 ? ma.ma60.toLocaleString() + "원" : "계산불가"}\n`;
@@ -1784,7 +1850,7 @@ async function updateHoldingMAs(config: KiwoomConfig, token: string): Promise<vo
         for (const a of alerts) msg += `${a}\n`;
         msg += `\n🔍 HTS 차트에서 저항/지지 여부를 직접 확인하세요.`;
         await sendTelegram(msg);
-        console.log(`[MA알림] ${s.name} 텔레그램 발송: ${alerts.join(" | ")}`);
+        console.log(`[MA단계알림] ${s.name} 텔레그램 발송: ${alerts.join(" | ")}`);
       }
     }
 
@@ -1838,39 +1904,48 @@ async function checkRealtimeAlerts(
       }
     }
 
-    // ─── 2. MA선 근접 알림 (당일 1회, 저장된 MA값 사용) ───
-    if (s.maAlertDate !== today) {
+    // ─── 2. MA선 단계별 알림 (당일 단계마다 1회씩, ±2/1/0%) ───
+    {
+      const stagesField = (s.maStagesAlerted as any) || {};
+      const todayStages: Record<string, number> = stagesField.date === today
+        ? (stagesField.stages || {}) : {};
+
       const maChecks = [
         {label: "MA20", val: (s.ma20 || 0) as number},
         {label: "MA60", val: (s.ma60 || 0) as number},
         {label: "MA120", val: (s.ma120 || 0) as number},
       ];
 
-      const maAlerts: string[] = [];
+      const newAlerts: string[] = [];
+      const newStages = {...todayStages};
+      let stagesChanged = false;
+
       for (const m of maChecks) {
         if (m.val <= 0) continue;
         const gap = ((curPrice - m.val) / m.val) * 100;
-        if (gap >= 0 && gap <= 4) {
-          maAlerts.push(`📊 ${m.label}선 도달 (+${gap.toFixed(1)}% → 저항 확인 필요)`);
-        } else if (gap < 0 && gap >= -3) {
-          maAlerts.push(`⚠️ ${m.label}선 하향 이탈 근접 (${gap.toFixed(1)}% → 손실 매도 검토)`);
-        }
+        const stage = getMaStage(gap);
+        if (!stage) continue;
+        const key = `${m.label}:${stage}`;
+        if (newStages[key]) continue; // 이미 오늘 발송한 단계
+        newStages[key] = 1;
+        stagesChanged = true;
+        newAlerts.push(maStageMessage(m.label, stage, gap));
       }
 
-      if (maAlerts.length > 0) {
-        updates.maAlertDate = today;
+      if (newAlerts.length > 0 && stagesChanged) {
+        updates.maStagesAlerted = {date: today, stages: newStages};
 
-        let msg = `<b>📈 이동평균선 근접 — ${s.name}</b>\n`;
+        let msg = `<b>📈 이동평균선 단계 알림 — ${s.name}</b>\n`;
         msg += `현재가: <b>${curPrice.toLocaleString()}원</b>`;
         if (profitPct !== 0) {
           msg += ` (${profitPct >= 0 ? "+" : ""}${profitPct.toFixed(1)}%)`;
         }
         msg += `\n\n`;
-        for (const a of maAlerts) msg += `${a}\n`;
+        for (const a of newAlerts) msg += `${a}\n`;
         msg += `\n🔍 HTS 차트에서 직접 확인 후 판단하세요.`;
 
         await sendTelegram(msg);
-        console.log(`[MA알림] ${s.name}: ${maAlerts.join(" | ")}`);
+        console.log(`[MA단계알림] ${s.name}: ${newAlerts.join(" | ")}`);
       }
     }
 
@@ -2065,6 +2140,36 @@ export const checkIp = functions
       }
     });
   });
+
+// ─── MA 단계 판정 (현재가 vs MA gap%) ───
+// 단계: '+2', '+1', '0', '-1', '-2'
+//   gap > 2 또는 < -2: 범위 벗어남 (null)
+//   1 < gap ≤ 2: '+2' (2% 근접)
+//   0.1 < gap ≤ 1: '+1' (1% 임박)
+//   -0.1 ≤ gap ≤ 0.1: '0' (도달)
+//   -1 ≤ gap < -0.1: '-1' (1% 이탈)
+//   -2 ≤ gap < -1: '-2' (2% 이탈)
+function getMaStage(gap: number): string | null {
+  if (gap > 2) return null;
+  if (gap > 1) return "+2";
+  if (gap > 0.1) return "+1";
+  if (gap >= -0.1) return "0";
+  if (gap >= -1) return "-1";
+  if (gap >= -2) return "-2";
+  return null;
+}
+
+function maStageMessage(label: string, stage: string, gap: number): string {
+  const gapStr = (gap >= 0 ? "+" : "") + gap.toFixed(1) + "%";
+  switch (stage) {
+    case "+2": return `📊 ${label}선 2% 근접 (현재 ${gapStr})`;
+    case "+1": return `📊 ${label}선 1% 임박 (현재 ${gapStr})`;
+    case "0":  return `🎯 ${label}선 도달 (현재 ${gapStr})`;
+    case "-1": return `⚠️ ${label}선 1% 이탈 (현재 ${gapStr} → 손실 매도 검토)`;
+    case "-2": return `🚨 ${label}선 2% 이탈 (현재 ${gapStr} → 매도 권장)`;
+    default: return `${label}선 ${gapStr}`;
+  }
+}
 
 // ─── 텔레그램 메시지 전송 ───
 async function sendTelegram(text: string): Promise<boolean> {
@@ -3163,6 +3268,21 @@ async function reconcileStockPlans(stockName: string): Promise<{
   }
 
   // 매도 차수 갱신: 개별 체결을 순차 슬롯에 매핑 (manualOverride 보존)
+  // ✅ 보너스: sellPlans price(목표가)도 평단가 기반으로 재계산하여 기존 데이터 오염 자동 보정
+  const stockAvg = Number(stock.avgPrice) || 0;
+  for (let i = 0; i < sellPlans.length; i++) {
+    const plan = sellPlans[i];
+    if (plan.manualOverride) continue; // 수동 편집된 슬롯은 손대지 않음
+    if (stockAvg > 0 && plan.percent) {
+      const correctTarget = Math.round(stockAvg * (1 + plan.percent / 100));
+      if (plan.price !== correctTarget) {
+        sellPlans[i] = {...plan, price: correctTarget};
+        console.log(`[reconcile] ${stockName} sell+${plan.percent}% 목표가 보정: ${plan.price} → ${correctTarget}`);
+        sellFilledCount++; // 변경 트리거
+      }
+    }
+  }
+
   for (let i = 0; i < sortedSells.length; i++) {
     const t = sortedSells[i];
     const price = Number(t.price) || 0;
@@ -3208,9 +3328,32 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   // 변경사항이 있을 때만 업데이트
   if (buyFilledCount > 0 || sellFilledCount > 0) {
+    // ✅ Race condition 방지: update 직전 latest doc 재조회 후 manualOverride 최종 보호
+    const latestDoc = await stockDoc.ref.get();
+    const latestData = latestDoc.data() || {};
+    const latestSellPlans: any[] = latestData.sellPlans || [];
+    const latestBuyPlans: any[] = latestData.buyPlans || [];
+
+    const finalSellPlans = sellPlans.map((newPlan: any, i: number) => {
+      const latest = latestSellPlans[i];
+      if (latest?.manualOverride) {
+        console.log(`[reconcile race 보호] ${stockName} sell+${latest.percent}% latest manualOverride 유지`);
+        return latest;
+      }
+      return newPlan;
+    });
+    const finalBuyPlans = buyPlans.map((newPlan: any, i: number) => {
+      const latest = latestBuyPlans[i];
+      if (latest?.manualOverride) {
+        console.log(`[reconcile race 보호] ${stockName} buy${i + 1}차 latest manualOverride 유지`);
+        return latest;
+      }
+      return newPlan;
+    });
+
     await stockDoc.ref.update({
-      buyPlans,
-      sellPlans,
+      buyPlans: finalBuyPlans,
+      sellPlans: finalSellPlans,
       updatedAt: Date.now(),
     });
     console.log(
@@ -4711,6 +4854,104 @@ export const reentryControl = functions
  *      - 이미 toName 문서가 있으면 충돌 보고 (수동 병합 필요)
  *   3) reconcileStockPlans(toName) 으로 정합성 재검증
  */
+/**
+ * 종목 sellPlans/maSells 수동 수정 (admin 직접 패치)
+ * POST /manualSellEdit
+ * body: {
+ *   stockName: "...",
+ *   sellPlanEdits?: [{percent, set: {filled, filledPrice, filledQuantity, filledDate, manualOverride}}],
+ *   maSellEdits?: [{ma, set: {filled, price, quantity, filledDate, insertAfterPercent, splitFromPercent}}]
+ * }
+ *
+ * 클라이언트 saveStock 디바운스 race condition 우회용 (즉시 atomic 적용).
+ * sellPlans / maSells의 임의 슬롯을 수정하고 manualOverride 자동 부여.
+ */
+export const manualSellEdit = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {stockName, sellPlanEdits = [], maSellEdits = []} = req.body || {};
+        if (!stockName) {
+          res.status(400).json({success: false, error: "stockName 필수"});
+          return;
+        }
+
+        const snap = await db.collection("stocks").where("name", "==", stockName).limit(1).get();
+        if (snap.empty) {
+          res.status(404).json({success: false, error: `${stockName} 종목 없음`});
+          return;
+        }
+        const docRef = snap.docs[0].ref;
+        const data = snap.docs[0].data();
+
+        const sellPlans = Array.isArray(data.sellPlans) ? [...data.sellPlans] : [];
+        let maSells = Array.isArray(data.maSells) ? [...data.maSells] : [];
+
+        const changes: any[] = [];
+
+        // sellPlans 편집
+        for (const e of sellPlanEdits) {
+          const idx = sellPlans.findIndex((p: any) => p.percent === e.percent);
+          if (idx < 0) {
+            changes.push({type: "sellPlan", percent: e.percent, status: "not_found"});
+            continue;
+          }
+          const before = {...sellPlans[idx]};
+          sellPlans[idx] = {
+            ...sellPlans[idx],
+            ...e.set,
+            // manualOverride는 자동 true (수동 편집의 핵심)
+            manualOverride: e.set?.manualOverride !== false,
+          };
+          changes.push({type: "sellPlan", percent: e.percent, status: "updated", before, after: sellPlans[idx]});
+        }
+
+        // maSells 편집 (없으면 추가)
+        for (const e of maSellEdits) {
+          let idx = maSells.findIndex((m: any) => m.ma === e.ma);
+          if (idx < 0) {
+            // 슬롯 신규 생성
+            maSells.push({ma: e.ma, price: 0, quantity: 0, filled: false});
+            idx = maSells.length - 1;
+          }
+          const before = {...maSells[idx]};
+          maSells[idx] = {
+            ...maSells[idx],
+            ...e.set,
+          };
+          changes.push({type: "maSell", ma: e.ma, status: "updated", before, after: maSells[idx]});
+        }
+
+        // 누락된 표준 MA 슬롯(20/60/120) 보강
+        for (const ma of [20, 60, 120]) {
+          if (!maSells.find((m: any) => m.ma === ma)) {
+            maSells.push({ma, price: 0, quantity: 0, filled: false});
+          }
+        }
+        // ma 순서 정렬
+        maSells = maSells.sort((a: any, b: any) => a.ma - b.ma);
+
+        // sellCount 재계산
+        const sellCount = sellPlans.filter((p: any) => p.filled).length +
+          maSells.filter((m: any) => m.filled).length;
+
+        await docRef.update({
+          sellPlans,
+          maSells,
+          sellCount,
+          updatedAt: Date.now(),
+        });
+
+        res.json({success: true, stockName, changes, sellPlans, maSells});
+      } catch (error: any) {
+        console.error("[manualSellEdit] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 export const renameStock = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 120})

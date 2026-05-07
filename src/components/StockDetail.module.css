@@ -886,6 +886,93 @@
   gap: 8px;
 }
 
+/* ── 미분류 매도 영역 ── */
+.unmappedSection {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fff8e1;
+  border: 1.5px solid #ff9800;
+  border-radius: 6px;
+}
+
+.unmappedHeader {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e65100;
+  margin-bottom: 4px;
+}
+
+.unmappedHint {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.unmappedRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid #ffe0b2;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.unmappedDate {
+  font-size: 11px;
+  color: #888;
+  font-family: monospace;
+  flex-shrink: 0;
+}
+
+.unmappedPrice {
+  flex: 1;
+  font-weight: 700;
+  color: #333;
+  font-variant-numeric: tabular-nums;
+}
+
+.unmappedProfit {
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.unmappedBtnSell {
+  padding: 3px 8px;
+  background: #e3f2fd;
+  color: #1565c0;
+  border: 1px solid #90caf9;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.unmappedBtnSell:hover {
+  background: #bbdefb;
+}
+
+.unmappedBtnMa {
+  padding: 3px 8px;
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffb74d;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.unmappedBtnMa:hover {
+  background: #ffe0b2;
+}
+
 .maWarning {
   color: #ff9800;
   font-size: 12px;
@@ -1091,6 +1178,120 @@
   font-weight: 600;
 }
 
+.sellEditClear {
+  flex: 1;
+  padding: 4px 8px;
+  background: #fff8e1;
+  color: #ff6f00;
+  border: 1px solid #ffcc80;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.sellEditClear:hover {
+  background: #ffe0b2;
+}
+
+/* ── ↕️ 이동 버튼 & 팝업 ── */
+.moveSellBtn {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 3px 6px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #a5d6a7;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+.moveSellBtn:hover {
+  background: #c8e6c9;
+  border-color: #66bb6a;
+}
+
+.moveSellPopup {
+  margin-top: 6px;
+  padding: 10px;
+  background: #f1f8f4;
+  border: 1.5px solid #66bb6a;
+  border-radius: 6px;
+  min-width: 220px;
+}
+
+.moveSellTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: #2e7d32;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #c8e6c9;
+}
+
+.moveSellInfo {
+  font-size: 11px;
+  color: #555;
+  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.moveSellHint {
+  font-size: 10px;
+  color: #888;
+  margin-bottom: 6px;
+}
+
+.moveSellTargets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.moveSellTargetBtn {
+  padding: 5px 8px;
+  background: #fff;
+  color: #2e7d32;
+  border: 1px solid #a5d6a7;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.moveSellTargetBtn:hover:not(:disabled) {
+  background: #e8f5e9;
+  border-color: #66bb6a;
+}
+
+/* 합치기 모드 (도착 차수에 이미 체결 있음) */
+.moveSellTargetMerge {
+  background: #fff8e1;
+  color: #e65100;
+  border-color: #ffb74d;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.moveSellTargetMerge:hover {
+  background: #ffe0b2;
+  border-color: #ff9800;
+}
+
+.moveSellTargetMeta {
+  font-size: 9px;
+  color: #b0bec5;
+  font-weight: 500;
+}
+
+.moveSellTargetBtn:disabled {
+  opacity: 0.6;
+}
+
 /* ── MA 분리 버튼 & 팝업 ── */
 .splitBtn {
   display: inline-block;
@@ -1182,6 +1383,60 @@
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.3px;
+}
+
+/* MA 행 드래그 핸들 */
+.dragHandle {
+  display: inline-block;
+  margin-right: 3px;
+  font-size: 10px;
+  opacity: 0.7;
+  cursor: grab;
+  user-select: none;
+}
+
+.maInsertedRow {
+  cursor: grab;
+}
+
+.maInsertedRow:active {
+  cursor: grabbing;
+}
+
+/* 드래그 중인 MA 행 */
+.maRowDragging {
+  opacity: 0.4;
+  background: linear-gradient(90deg, #fff5e1 0%, #fff 60%) !important;
+}
+
+/* 드래그 중 일반 sellPlan 행 (drop target) */
+.dropTarget {
+  transition: background 0.15s;
+}
+
+.dropTargetOver {
+  background: #fff8e1 !important;
+  box-shadow: inset 0 -3px 0 #ff9800;
+}
+
+/* 드롭 영역 (1차 이전 등 특수 위치) */
+.dropZone {
+  background: #fafafa;
+  border: 2px dashed #ffb74d;
+  transition: all 0.15s;
+}
+
+.dropZoneOver {
+  background: #ffe0b2 !important;
+  border-color: #ff9800 !important;
+}
+
+.dropZoneCell {
+  text-align: center;
+  padding: 6px 8px !important;
+  font-size: 11px;
+  color: #e65100;
+  font-weight: 600;
 }
 
 .maRestoreBtn {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   LineChart,
   Line,
@@ -16,7 +16,7 @@ interface Props {
   stock: Stock;
   trades: Trade[];
   snapshots: Snapshot[];
-  onSave: (stock: Stock) => void;
+  onSave: (stock: Stock, immediate?: boolean) => void;
   onDelete: (id: string) => void;
   onSnapshot: (stockId: string, stockName: string, profit: number) => void;
 }
@@ -157,19 +157,101 @@ export default function StockDetail({
       updatedAt: Date.now(),
     };
     setLocal(final);
-    onSave(final);
+    lastUserActionRef.current = Date.now(); // race guard 적용
+    onSave(final, true); // immediate (기본정보 수정은 critical)
     setEditDraft(null);
     setShowBasicInfo(false);
   };
 
+  // ──────────────────────────────────────────────────────────────
+  // 백엔드 직접 저장 헬퍼 — manualSellEdit endpoint 호출
+  // 클라이언트 setDoc 대신 atomic backend update로 race condition + 캐시 문제 차단
+  // ──────────────────────────────────────────────────────────────
+  const MANUAL_SELL_EDIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/manualSellEdit';
+  const [, setPersistBusy] = useState(false);
+
+  const persistSellEdit = async (
+    newSellPlans: typeof local.sellPlans,
+    newMaSells: typeof local.maSells,
+  ): Promise<boolean> => {
+    setPersistBusy(true);
+    try {
+      const sellPlanEdits = newSellPlans.map((p) => ({
+        percent: p.percent,
+        set: {
+          filled: !!p.filled,
+          filledPrice: p.filledPrice || 0,
+          filledQuantity: p.filledQuantity || 0,
+          filledDate: p.filledDate || '',
+          manualOverride: p.manualOverride === true,
+        },
+      }));
+      const maSellEdits = (newMaSells || []).map((m) => ({
+        ma: m.ma,
+        set: {
+          filled: !!m.filled,
+          price: m.price || 0,
+          quantity: m.quantity || 0,
+          filledDate: m.filledDate || '',
+          insertAfterPercent: m.insertAfterPercent ?? null,
+          splitFromPercent: m.splitFromPercent ?? null,
+        },
+      }));
+      const res = await fetch(MANUAL_SELL_EDIT_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          stockName: local.name,
+          sellPlanEdits,
+          maSellEdits,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(`저장 실패: ${data.error || '알 수 없는 오류'}\n다시 시도해주세요.`);
+        return false;
+      }
+      // 성공 → optimistic 즉시 setLocal + race guard 적용
+      // (onSnapshot이 곧 같은 데이터로 동기화 갱신)
+      const newCount = newSellPlans.filter((p) => p.filled).length +
+        (newMaSells || []).filter((m) => m.filled).length;
+      setLocal({
+        ...local,
+        sellPlans: newSellPlans,
+        maSells: newMaSells,
+        sellCount: newCount,
+        updatedAt: Date.now(),
+      });
+      lastUserActionRef.current = Date.now();
+      return true;
+    } catch (e: any) {
+      alert(`네트워크 오류: ${e.message}\n인터넷 연결을 확인하고 다시 시도해주세요.`);
+      return false;
+    } finally {
+      setPersistBusy(false);
+    }
+  };
+
+  // 사용자 액션 직후 일정 시간 동안 stock prop 동기화 무시 (race condition 방지)
+  // 백엔드 sync (kiwoomSync, onTradeCreated 등)가 동시에 트리거되어도
+  // 사용자 진행중인 분리/편집/이동 작업이 옛 데이터로 덮어씌워지지 않도록 보호
+  const lastUserActionRef = useRef<number>(0);
+  const USER_ACTION_GRACE_MS = 2500; // 2.5초
+
   useEffect(() => {
+    // 최근 사용자 액션 후 grace 기간이면 동기화 무시
+    if (Date.now() - lastUserActionRef.current < USER_ACTION_GRACE_MS) {
+      return;
+    }
     setLocal(stock);
   }, [stock]);
 
-  const update = (partial: Partial<Stock>) => {
-    const next = recalcStock({ ...local, ...partial });
+  // immediate=true: 디바운스 없이 즉시 Firestore 저장 (critical 작업용)
+  const update = (partial: Partial<Stock>, immediate = false) => {
+    const next = recalcStock({ ...local, ...partial, updatedAt: Date.now() });
     setLocal(next);
-    onSave(next);
+    lastUserActionRef.current = Date.now(); // 사용자 액션 시점 기록
+    onSave(next, immediate);
   };
 
   const updateField = (field: keyof Stock, value: number | string) => {
@@ -183,31 +265,25 @@ export default function StockDetail({
     const resetSells = plans[index].filled
       ? local.sellPlans.map((sp) => ({ ...sp, filled: false }))
       : local.sellPlans;
-    update({ buyPlans: plans, sellPlans: resetSells });
+    update({ buyPlans: plans, sellPlans: resetSells }, true); // immediate
   };
 
-  const toggleSellFilled = (index: number) => {
+  const toggleSellFilled = async (index: number) => {
     const plans = [...local.sellPlans];
     plans[index] = { ...plans[index], filled: !plans[index].filled };
-    const newSellCount = plans[index].filled
-      ? local.sellCount + 1
-      : Math.max(0, local.sellCount - 1);
-    update({ sellPlans: plans, sellCount: newSellCount });
-    // 매도 체결 시 수익률 스냅샷 저장
-    if (plans[index].filled && local.avgPrice > 0) {
-      const profit =
-        ((plans[index].price - local.avgPrice) / local.avgPrice) * 100;
+    const ok = await persistSellEdit(plans, local.maSells);
+    if (ok && plans[index].filled && local.avgPrice > 0) {
+      const profit = ((plans[index].price - local.avgPrice) / local.avgPrice) * 100;
       onSnapshot(local.id, local.name, profit);
     }
   };
 
-  const toggleMAFilled = (index: number) => {
+  const toggleMAFilled = async (index: number) => {
     const ma = [...local.maSells];
     ma[index] = { ...ma[index], filled: !ma[index].filled };
-    update({ maSells: ma });
-    if (ma[index].filled && local.avgPrice > 0) {
-      const profit =
-        ((ma[index].price - local.avgPrice) / local.avgPrice) * 100;
+    const ok = await persistSellEdit(local.sellPlans, ma);
+    if (ok && ma[index].filled && local.avgPrice > 0) {
+      const profit = ((ma[index].price - local.avgPrice) / local.avgPrice) * 100;
       onSnapshot(local.id, local.name, profit);
     }
   };
@@ -236,8 +312,8 @@ export default function StockDetail({
     setSplitIdx(null);
   };
 
-  // 수익매도 수동 편집 저장 (manualOverride=true 설정)
-  const confirmSellEdit = () => {
+  // 수익매도 수동 편집 저장 (manualOverride=true 설정) - backend 직접 저장
+  const confirmSellEdit = async () => {
     if (sellEditIdx === null || !sellEditDraft) return;
     const plans = [...local.sellPlans];
     plans[sellEditIdx] = {
@@ -248,18 +324,281 @@ export default function StockDetail({
       filledQuantity: sellEditDraft.qty,
       manualOverride: true,
     };
-    const newSellCount = plans.filter((p) => p.filled).length;
-    update({ sellPlans: plans, sellCount: newSellCount });
-    setSellEditIdx(null);
-    setSellEditDraft(null);
+    const ok = await persistSellEdit(plans, local.maSells);
+    if (ok) {
+      setSellEditIdx(null);
+      setSellEditDraft(null);
+    }
   };
 
-  // 수익매도 수동 편집 해제 (manualOverride 제거 → sync 자동 반영 허용)
-  const clearSellOverride = (i: number) => {
+  // 수익매도 슬롯 비우기 - backend 직접 저장
+  const clearSellSlot = async (i: number) => {
     const plans = [...local.sellPlans];
-    const { manualOverride: _removed, ...rest } = plans[i] as any;
-    plans[i] = rest;
-    update({ sellPlans: plans });
+    plans[i] = {
+      ...plans[i],
+      filled: false,
+      filledDate: '',
+      filledPrice: 0,
+      filledQuantity: 0,
+      manualOverride: true,
+    };
+    const ok = await persistSellEdit(plans, local.maSells);
+    if (ok) {
+      setSellEditIdx(null);
+      setSellEditDraft(null);
+    }
+  };
+
+  // 수익매도 수동 편집 해제 - backend 직접 저장
+  const clearSellOverride = async (i: number) => {
+    const plans = [...local.sellPlans];
+    plans[i] = { ...plans[i], manualOverride: false };
+    await persistSellEdit(plans, local.maSells);
+  };
+
+  // ── 미분류 매도 이동 ──
+  // 매핑 안 된 trade를 sellPlans 또는 maSells로 수동 이동
+  const moveUnmappedToSell = async (t: { date: string; price: number; quantity: number }) => {
+    const percentStr = prompt('어느 차수로 이동? (5 / 10 / 15 / 20 / 25)', '25');
+    if (!percentStr) return;
+    const percent = parseInt(percentStr.replace(/\D/g, ''));
+    if (![5, 10, 15, 20, 25].includes(percent)) {
+      alert('5, 10, 15, 20, 25 중 하나만 가능합니다.');
+      return;
+    }
+    const plans = [...local.sellPlans];
+    const idx = plans.findIndex((p) => p.percent === percent);
+    if (idx < 0) return;
+
+    if (plans[idx].filled) {
+      // 합치기 모드 (가중평균)
+      const oldP = plans[idx].filledPrice || 0;
+      const oldQ = plans[idx].filledQuantity || 0;
+      const newQ = oldQ + t.quantity;
+      const newP = newQ > 0 ? Math.round((oldP * oldQ + t.price * t.quantity) / newQ) : 0;
+      const ok = confirm(
+        `+${percent}%에 합치시겠습니까?\n` +
+        `기존: ${oldP.toLocaleString()} × ${oldQ}주\n` +
+        `추가: ${t.price.toLocaleString()} × ${t.quantity}주\n` +
+        `결과: ${newP.toLocaleString()}원 (가중평균) × ${newQ}주`
+      );
+      if (!ok) return;
+      plans[idx] = {
+        ...plans[idx],
+        filledDate: t.date > (plans[idx].filledDate || '') ? t.date : (plans[idx].filledDate || ''),
+        filledPrice: newP,
+        filledQuantity: newQ,
+        manualOverride: true,
+      };
+    } else {
+      plans[idx] = {
+        ...plans[idx],
+        filled: true,
+        filledDate: t.date,
+        filledPrice: t.price,
+        filledQuantity: t.quantity,
+        manualOverride: true,
+      };
+    }
+    await persistSellEdit(plans, local.maSells);
+  };
+
+  const moveUnmappedToMa = async (t: { date: string; price: number; quantity: number }) => {
+    const maStr = prompt('어느 이동평균선으로? (20 / 60 / 120)', '20');
+    if (!maStr) return;
+    const ma = parseInt(maStr.replace(/\D/g, ''));
+    if (![20, 60, 120].includes(ma)) {
+      alert('20, 60, 120 중 하나만 가능합니다.');
+      return;
+    }
+    const insertStr = prompt(
+      '몇 % 차수 다음에 표시할까요? (0 / 5 / 10 / 15 / 20 / 25)\n' +
+      '(0: 1차 이전, 25: 5차 이후)',
+      '25'
+    );
+    if (!insertStr) return;
+    const insertAfter = parseInt(insertStr.replace(/\D/g, ''));
+    if (![0, 5, 10, 15, 20, 25].includes(insertAfter)) {
+      alert('0, 5, 10, 15, 20, 25 중 하나만 가능합니다.');
+      return;
+    }
+
+    const maList = [...(local.maSells || [])];
+    // 누락 슬롯 보강
+    for (const m of [20, 60, 120]) {
+      if (!maList.find((x) => x.ma === m)) {
+        maList.push({ ma: m, price: 0, quantity: 0, filled: false });
+      }
+    }
+    const idx = maList.findIndex((m) => m.ma === ma);
+
+    if (maList[idx].filled) {
+      // 합치기: 가중평균
+      const oldP = maList[idx].price || 0;
+      const oldQ = maList[idx].quantity || 0;
+      const newQ = oldQ + t.quantity;
+      const newP = newQ > 0 ? Math.round((oldP * oldQ + t.price * t.quantity) / newQ) : 0;
+      const ok = confirm(
+        `MA${ma}와 합치시겠습니까?\n` +
+        `기존: ${oldP.toLocaleString()} × ${oldQ}주\n` +
+        `추가: ${t.price.toLocaleString()} × ${t.quantity}주\n` +
+        `결과: ${newP.toLocaleString()}원 (가중평균) × ${newQ}주`
+      );
+      if (!ok) return;
+      maList[idx] = {
+        ...maList[idx],
+        price: newP,
+        quantity: newQ,
+        filledDate: t.date > (maList[idx].filledDate || '') ? t.date : (maList[idx].filledDate || ''),
+        insertAfterPercent: insertAfter,
+      };
+    } else {
+      maList[idx] = {
+        ...maList[idx],
+        filled: true,
+        price: t.price,
+        quantity: t.quantity,
+        filledDate: t.date,
+        insertAfterPercent: insertAfter,
+      };
+    }
+    await persistSellEdit(local.sellPlans, maList);
+  };
+
+  // ── 수익매도 차수 간 이동 ──
+  const [moveSellIdx, setMoveSellIdx] = useState<number | null>(null);
+
+  const openMoveSell = (i: number) => {
+    setMoveSellIdx(i);
+    setSellEditIdx(null);
+    setSplitIdx(null);
+  };
+
+  // fromIdx의 체결 데이터를 toPercent 차수로 이동 또는 합치기
+  // - 도착이 비어있으면 단순 이동
+  // - 도착에 이미 체결 있으면 confirm 후 가중평균 합산
+  const moveSellToPercent = async (fromIdx: number, toPercent: number) => {
+    const plans = [...local.sellPlans];
+    const fromPlan = plans[fromIdx];
+    const toIdx = plans.findIndex((p) => p.percent === toPercent);
+    if (toIdx < 0) {
+      alert('이동 대상 차수를 찾을 수 없습니다.');
+      return;
+    }
+    if (fromIdx === toIdx) {
+      setMoveSellIdx(null);
+      return;
+    }
+    const toPlan = plans[toIdx];
+
+    const fromPrice = fromPlan.filledPrice || 0;
+    const fromQty = fromPlan.filledQuantity || 0;
+    if (fromQty <= 0 || fromPrice <= 0) {
+      alert('출발 차수에 유효한 체결 정보가 없습니다.');
+      return;
+    }
+
+    if (toPlan.filled) {
+      // 합치기 모드: 가중평균 계산
+      const toPrice = toPlan.filledPrice || 0;
+      const toQty = toPlan.filledQuantity || 0;
+      const totalQty = fromQty + toQty;
+      const totalAmt = fromPrice * fromQty + toPrice * toQty;
+      const mergedPrice = totalQty > 0 ? Math.round(totalAmt / totalQty) : 0;
+
+      const ok = confirm(
+        `+${fromPlan.percent}% 체결을 +${toPercent}%와 합치시겠습니까?\n\n` +
+        `현재:\n` +
+        `  +${fromPlan.percent}%: ${fromPrice.toLocaleString()}원 × ${fromQty}주\n` +
+        `  +${toPercent}%: ${toPrice.toLocaleString()}원 × ${toQty}주\n\n` +
+        `합치기 결과:\n` +
+        `  +${toPercent}%: ${mergedPrice.toLocaleString()}원 (가중평균) × ${totalQty}주\n` +
+        `  +${fromPlan.percent}%: 비움 (sync 보호)\n\n` +
+        `* 매도 총액(${totalAmt.toLocaleString()}원)은 변하지 않습니다.`
+      );
+      if (!ok) return;
+
+      // 도착 슬롯: 가중평균 합산 (날짜는 더 최근 것 우선)
+      const mergedDate = (toPlan.filledDate || '') > (fromPlan.filledDate || '')
+        ? toPlan.filledDate
+        : fromPlan.filledDate;
+      plans[toIdx] = {
+        ...toPlan,
+        filled: true,
+        filledDate: mergedDate || '',
+        filledPrice: mergedPrice,
+        filledQuantity: totalQty,
+        manualOverride: true,
+      };
+    } else {
+      // 단순 이동 모드: 출발 → 도착으로 복사
+      plans[toIdx] = {
+        ...toPlan,
+        filled: true,
+        filledDate: fromPlan.filledDate || '',
+        filledPrice: fromPrice,
+        filledQuantity: fromQty,
+        manualOverride: true,
+      };
+    }
+
+    // 출발 슬롯: 비우기 + 보호
+    plans[fromIdx] = {
+      ...fromPlan,
+      filled: false,
+      filledDate: '',
+      filledPrice: 0,
+      filledQuantity: 0,
+      manualOverride: true,
+    };
+
+    // 합치기 모드 + fromIdx 이후에 체결된 차수 있으면 → cascade up 제안
+    if (toPlan.filled) {
+      const filledAfter = plans.slice(fromIdx + 1).filter((p) => p.filled);
+      if (filledAfter.length > 0) {
+        const cascadeMsg =
+          `차수가 비게 됩니다. 다음 차수들을 자동으로 앞당길까요?\n\n` +
+          filledAfter.map((p, i) => {
+            const targetPercent = plans[fromIdx + i].percent;
+            return `  +${targetPercent}% ← +${p.percent}% (${(p.filledPrice||0).toLocaleString()}원 × ${p.filledQuantity}주)`;
+          }).join('\n') +
+          `\n  +${plans[plans.length - 1].percent}%: 비어있음 (새 매도 자동 매핑 가능)\n\n` +
+          `(추천: 자동매매 분할 합치기 후 자연스러운 차수 정렬)`;
+
+        if (confirm(cascadeMsg)) {
+          // Cascade up 실행: 빈 슬롯이 다음 체결 슬롯 데이터를 가져옴
+          for (let i = fromIdx; i < plans.length - 1; i++) {
+            if (plans[i].filled) continue; // 이미 차있으면 스킵
+            // 다음 체결 슬롯 찾기
+            let nextIdx = -1;
+            for (let j = i + 1; j < plans.length; j++) {
+              if (plans[j].filled) { nextIdx = j; break; }
+            }
+            if (nextIdx < 0) break;
+            const src = plans[nextIdx];
+            plans[i] = {
+              ...plans[i], // percent / quantity 계획값 유지
+              filled: true,
+              filledDate: src.filledDate || '',
+              filledPrice: src.filledPrice || 0,
+              filledQuantity: src.filledQuantity || 0,
+              manualOverride: true,
+            };
+            plans[nextIdx] = {
+              ...plans[nextIdx],
+              filled: false,
+              filledDate: '',
+              filledPrice: 0,
+              filledQuantity: 0,
+              manualOverride: false, // 마지막 빈 슬롯은 자동 매핑 허용
+            };
+          }
+        }
+      }
+    }
+
+    const ok = await persistSellEdit(plans, local.maSells);
+    if (ok) setMoveSellIdx(null);
   };
 
   // ── MA 분리 (sellPlan → maSells 이동) ──
@@ -280,7 +619,7 @@ export default function StockDetail({
     setSellEditIdx(null);
   };
 
-  const confirmSplitToMA = () => {
+  const confirmSplitToMA = async () => {
     if (splitIdx === null || !splitDraft) return;
     const sp = local.sellPlans[splitIdx];
     const splitQty = splitDraft.qty;
@@ -306,43 +645,65 @@ export default function StockDetail({
     }
 
     // 2. maSells에 추가 (해당 MA 슬롯)
-    const maList = [...local.maSells];
-    const maIdx = maList.findIndex((m) => m.ma === splitDraft.ma);
-    if (maIdx >= 0) {
-      // 기존 슬롯이 비어있으면 채우고, 이미 차있으면 수량 누적
-      const existing = maList[maIdx];
-      if (existing.filled) {
-        const totalQty = existing.quantity + splitQty;
-        const totalAmt = existing.price * existing.quantity + splitDraft.price * splitQty;
-        maList[maIdx] = {
-          ...existing,
-          quantity: totalQty,
-          price: Math.round(totalAmt / totalQty),
-          filledDate: splitDraft.date,
-          insertAfterPercent: sp.percent,
-          splitFromPercent: sp.percent,
-        };
-      } else {
-        maList[maIdx] = {
-          ...existing,
-          quantity: splitQty,
-          price: splitDraft.price,
-          filled: true,
-          filledDate: splitDraft.date,
-          insertAfterPercent: sp.percent,
-          splitFromPercent: sp.percent,
-        };
-      }
+    // ✅ 안전망: maSells가 없거나 해당 MA 슬롯 없으면 자동 생성
+    const maList = [...(local.maSells || [])];
+    let maIdx = maList.findIndex((m) => m.ma === splitDraft.ma);
+    if (maIdx < 0) {
+      // 해당 MA 슬롯이 아예 없는 경우 신규 추가
+      maList.push({
+        ma: splitDraft.ma,
+        price: 0,
+        quantity: 0,
+        filled: false,
+      });
+      maIdx = maList.length - 1;
+    }
+    const existing = maList[maIdx];
+    // 기존 슬롯이 비어있으면 채우고, 이미 차있으면 수량 누적
+    if (existing.filled) {
+      const totalQty = existing.quantity + splitQty;
+      const totalAmt = existing.price * existing.quantity + splitDraft.price * splitQty;
+      maList[maIdx] = {
+        ...existing,
+        quantity: totalQty,
+        price: Math.round(totalAmt / totalQty),
+        filledDate: splitDraft.date,
+        insertAfterPercent: sp.percent,
+        splitFromPercent: sp.percent,
+      };
+    } else {
+      maList[maIdx] = {
+        ...existing,
+        quantity: splitQty,
+        price: splitDraft.price,
+        filled: true,
+        filledDate: splitDraft.date,
+        insertAfterPercent: sp.percent,
+        splitFromPercent: sp.percent,
+      };
     }
 
-    const newSellCount = plans.filter((p) => p.filled).length;
-    update({ sellPlans: plans, maSells: maList, sellCount: newSellCount });
-    setSplitIdx(null);
-    setSplitDraft(null);
+    const ok = await persistSellEdit(plans, maList);
+    if (ok) {
+      setSplitIdx(null);
+      setSplitDraft(null);
+    }
+  };
+
+  // ── MA 행 드래그 이동 (insertAfterPercent 변경) ──
+  const [draggingMaIdx, setDraggingMaIdx] = useState<number | null>(null);
+
+  const moveMaToInsertAfter = async (maIdx: number, newInsertAfter: number) => {
+    const m = local.maSells[maIdx];
+    if (!m) return;
+    if (m.insertAfterPercent === newInsertAfter) return; // 변화 없음
+    const maList = [...local.maSells];
+    maList[maIdx] = { ...m, insertAfterPercent: newInsertAfter };
+    await persistSellEdit(local.sellPlans, maList);
   };
 
   // ── MA 행 → sellPlan 복원 ──
-  const restoreMAToSell = (maIdx: number) => {
+  const restoreMAToSell = async (maIdx: number) => {
     const m = local.maSells[maIdx];
     if (!m.filled || !m.splitFromPercent) {
       alert('분리 정보가 없는 MA 매도는 복원할 수 없습니다.');
@@ -377,7 +738,7 @@ export default function StockDetail({
       filled: false,
     };
 
-    update({ sellPlans: plans, maSells: maList });
+    await persistSellEdit(plans, maList);
   };
 
   const profitPercent =
@@ -474,11 +835,43 @@ export default function StockDetail({
       trades: [s],
     }));
 
-  // 하위 호환용 별칭 (기존 코드 참조 최소화)
-  const sellsByDate = sellsIndividual;
+  // 종목 단위 manualOverride 감지 — 사용자가 한 번이라도 sellPlan을 직접 정리하면
+  // trade 기반 자동 fallback을 모든 슬롯에서 비활성화 (sellPlans만 신뢰)
+  const hasAnyManualOverride = local.sellPlans.some((sp) => sp.manualOverride === true);
 
-  // 다음 매도 차수 인덱스
-  const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsIndividual[i]);
+  // 슬롯별 trade fallback (manualOverride 종목은 빈 배열로 강제)
+  const sellsByDate = hasAnyManualOverride ? [] : sellsIndividual;
+
+  // ── 미분류 매도 감지 ──
+  // sellPlans + maSells filled 합계와 trades 합계 비교 → 차이만큼 미매핑
+  const totalTradeSellQty = actualSells.reduce((s, t) => s + t.quantity, 0);
+  const mappedSellPlanQty = local.sellPlans.reduce((s, p) => p.filled ? s + (p.filledQuantity || 0) : s, 0);
+  const mappedMaSellQty = (local.maSells || []).reduce((s, m) => m.filled ? s + m.quantity : s, 0);
+  const totalMappedSellQty = mappedSellPlanQty + mappedMaSellQty;
+  const unmappedSellQty = Math.max(0, totalTradeSellQty - totalMappedSellQty);
+
+  // 미분류 trades 식별: 시간순 정렬 후 mapped 합계만큼 "소비" → 남는 trade가 미분류
+  const unmappedTrades: Array<{ id: string; date: string; price: number; quantity: number }> = [];
+  if (unmappedSellQty > 0) {
+    const sortedSellsForCheck = [...actualSells].sort((a, b) =>
+      (a.date || '').localeCompare(b.date || '') || a.price - b.price
+    );
+    let consumed = 0;
+    for (const t of sortedSellsForCheck) {
+      if (consumed + t.quantity <= totalMappedSellQty) {
+        consumed += t.quantity; // 완전 매핑됨
+      } else if (consumed < totalMappedSellQty) {
+        const partial = t.quantity - (totalMappedSellQty - consumed);
+        unmappedTrades.push({ id: t.id, date: t.date, price: t.price, quantity: partial });
+        consumed = totalMappedSellQty;
+      } else {
+        unmappedTrades.push({ id: t.id, date: t.date, price: t.price, quantity: t.quantity });
+      }
+    }
+  }
+
+  // 다음 매도 차수 인덱스 (manualOverride 종목은 sellPlans만 보고 판단)
+  const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsByDate[i]);
 
   // 1차 매수 참고 정보 (헤더 배지용)
   const firstBuyPlan = local.buyPlans[0];
@@ -1061,15 +1454,29 @@ export default function StockDetail({
                 const maSold = local.maSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
                 let remaining = totalBought - maSold;
 
-                // MA 행 렌더 헬퍼
+                // MA 행 렌더 헬퍼 (드래그 가능)
                 const renderMARow = (m: typeof local.maSells[0], mi: number) => {
                   const profit = local.avgPrice > 0 && m.price > 0
                     ? ((m.price - local.avgPrice) / local.avgPrice) * 100 : null;
                   const shortD = m.filledDate ? m.filledDate.slice(5) : '';
+                  const isDragging = draggingMaIdx === mi;
                   return (
-                    <tr key={`ma-${mi}`} className={styles.maInsertedRow}>
+                    <tr
+                      key={`ma-${mi}`}
+                      className={`${styles.maInsertedRow} ${isDragging ? styles.maRowDragging : ''}`}
+                      draggable
+                      onDragStart={(e) => {
+                        setDraggingMaIdx(mi);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', `ma-${mi}`);
+                      }}
+                      onDragEnd={() => setDraggingMaIdx(null)}
+                      title="드래그해서 위치 이동 (다른 차수 행 위에 드롭)"
+                    >
                       <td className={styles.levelCell}>
-                        <span className={styles.maInsertedBadge}>MA{m.ma}</span>
+                        <span className={styles.maInsertedBadge}>
+                          <span className={styles.dragHandle}>⋮⋮</span> MA{m.ma}
+                        </span>
                         {shortD && <div className={styles.dateUnder}>{shortD}</div>}
                       </td>
                       <td className={styles.numCell}>
@@ -1109,6 +1516,30 @@ export default function StockDetail({
 
                 const rows: any[] = [];
 
+                // 드래그 중 → "1차 이전" drop zone 표시
+                if (draggingMaIdx !== null) {
+                  rows.push(
+                    <tr
+                      key="drop-top"
+                      className={styles.dropZone}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.currentTarget.classList.add(styles.dropZoneOver);
+                      }}
+                      onDragLeave={(e) => {
+                        e.currentTarget.classList.remove(styles.dropZoneOver);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.currentTarget.classList.remove(styles.dropZoneOver);
+                        moveMaToInsertAfter(draggingMaIdx, 0);
+                      }}
+                    >
+                      <td colSpan={5} className={styles.dropZoneCell}>↑ 1차 이전 (제일 위)</td>
+                    </tr>
+                  );
+                }
+
                 // [insertAfterPercent === 0] 1차 이전 MA 매도
                 local.maSells.forEach((m, mi) => {
                   if (m.filled && m.insertAfterPercent === 0) {
@@ -1134,7 +1565,27 @@ export default function StockDetail({
                   const shortDate = realDate ? realDate.slice(5) : '';
 
                   rows.push(
-                    <tr key={i} className={`${isFilled ? styles.sellFilledRow : ''} ${sellNearInfo ? styles.nearbySellRow : ''}`}>
+                    <tr
+                      key={i}
+                      className={`${isFilled ? styles.sellFilledRow : ''} ${sellNearInfo ? styles.nearbySellRow : ''} ${draggingMaIdx !== null ? styles.dropTarget : ''}`}
+                      onDragOver={(e) => {
+                        if (draggingMaIdx !== null) {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'move';
+                          e.currentTarget.classList.add(styles.dropTargetOver);
+                        }
+                      }}
+                      onDragLeave={(e) => {
+                        e.currentTarget.classList.remove(styles.dropTargetOver);
+                      }}
+                      onDrop={(e) => {
+                        if (draggingMaIdx !== null) {
+                          e.preventDefault();
+                          e.currentTarget.classList.remove(styles.dropTargetOver);
+                          moveMaToInsertAfter(draggingMaIdx, sp.percent);
+                        }
+                      }}
+                    >
                       {/* 목표% + 날짜 */}
                       <td className={styles.levelCell}>
                         <span className={styles.levelBadge} style={{ color: '#1565c0' }}>+{sp.percent}%</span>
@@ -1207,14 +1658,55 @@ export default function StockDetail({
                         >
                           {isFilled ? '체결' : '미체결'}
                         </button>
-                        {isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && (
+                        {isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
                           <button className={styles.splitBtn} onClick={() => openSplitToMA(i)} title="이 차수의 일부/전체를 MA 매도로 분리">🔀 MA</button>
                         )}
-                        {sellEditIdx !== i && splitIdx !== i && (
+                        {isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
+                          <button className={styles.moveSellBtn} onClick={() => openMoveSell(i)} title="이 체결을 다른 차수로 이동">↕️ 이동</button>
+                        )}
+                        {sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
                           <button className={styles.sellEditBtn} onClick={() => openSellEdit(i)}>✏️</button>
                         )}
-                        {sp.manualOverride && sellEditIdx !== i && splitIdx !== i && (
+                        {sp.manualOverride && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
                           <span className={styles.manualOverrideBadge} title="수동 편집됨 (sync 보호)">수동</span>
+                        )}
+                        {moveSellIdx === i && (
+                          <div className={styles.moveSellPopup}>
+                            <div className={styles.moveSellTitle}>
+                              ↕️ +{sp.percent}% 체결 이동
+                            </div>
+                            <div className={styles.moveSellInfo}>
+                              {(sp.filledPrice || 0).toLocaleString()}원 × {sp.filledQuantity || 0}주
+                              {sp.filledDate && ` · ${sp.filledDate.slice(5)}`}
+                            </div>
+                            <div className={styles.moveSellHint}>이동할 차수 선택:</div>
+                            <div className={styles.moveSellTargets}>
+                              {[5, 10, 15, 20, 25].filter((p) => p !== sp.percent).map((p) => {
+                                const target = local.sellPlans.find((sp2) => sp2.percent === p);
+                                const occupied = target?.filled === true;
+                                const targetPrice = target?.filledPrice || 0;
+                                const targetQty = target?.filledQuantity || 0;
+                                return (
+                                  <button
+                                    key={p}
+                                    className={`${styles.moveSellTargetBtn} ${occupied ? styles.moveSellTargetMerge : ''}`}
+                                    onClick={() => moveSellToPercent(i, p)}
+                                    title={
+                                      occupied
+                                        ? `+${p}% (${targetPrice.toLocaleString()} × ${targetQty}주)와 합치기 (가중평균)`
+                                        : `+${p}%로 이동 (빈 차수)`
+                                    }
+                                  >
+                                    +{p}% {occupied ? '⊕' : '↗'}
+                                    {occupied && (
+                                      <span className={styles.moveSellTargetMeta}>{targetQty}주</span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <button className={styles.sellEditCancel} onClick={() => setMoveSellIdx(null)}>취소</button>
+                          </div>
                         )}
                         {sellEditIdx === i && sellEditDraft && (
                           <div className={styles.sellEditPopup}>
@@ -1248,6 +1740,19 @@ export default function StockDetail({
                             <div className={styles.sellEditActions}>
                               <button className={styles.sellEditSave} onClick={confirmSellEdit}>저장</button>
                               <button className={styles.sellEditCancel} onClick={() => { setSellEditIdx(null); setSellEditDraft(null); }}>취소</button>
+                              {isFilled && (
+                                <button
+                                  className={styles.sellEditClear}
+                                  onClick={() => {
+                                    if (confirm(`+${sp.percent}% 차수 체결 정보를 비우시겠습니까?\n(보호되어 sync 시 자동 채워지지 않습니다)`)) {
+                                      clearSellSlot(i);
+                                    }
+                                  }}
+                                  title="이 차수의 체결 정보를 비우고 sync 보호 (다른 차수로 이동 시 사용)"
+                                >
+                                  ⚪ 비우기
+                                </button>
+                              )}
                               {sp.manualOverride && (
                                 <button className={styles.sellEditReset} onClick={() => { clearSellOverride(i); setSellEditIdx(null); setSellEditDraft(null); }}>수동해제</button>
                               )}
@@ -1329,6 +1834,44 @@ export default function StockDetail({
             누적 매도: {sellsIndividual.length}회 ({actualSells.length}건)
             {sellsIndividual.length >= 3 && <span className={styles.chip}>룰B 전환 가능</span>}
           </div>
+
+          {/* 미분류 매도 영역: sellPlans/maSells에 매핑되지 않은 trade */}
+          {unmappedTrades.length > 0 && (
+            <div className={styles.unmappedSection}>
+              <div className={styles.unmappedHeader}>
+                🔄 미분류 매도 — <strong>{unmappedSellQty.toLocaleString()}주</strong> ({unmappedTrades.length}건)
+              </div>
+              <div className={styles.unmappedHint}>
+                실제 매도되었지만 수익매도/MA매도 어디에도 배정 안 된 매도건입니다.
+                <br />
+                태산매매법 5단계 초과 매도 또는 자동 매핑 누락 가능. 수동으로 분류해주세요.
+              </div>
+              {unmappedTrades.map((t, idx) => {
+                const profitPct = local.avgPrice > 0
+                  ? ((t.price - local.avgPrice) / local.avgPrice) * 100
+                  : 0;
+                return (
+                  <div key={idx} className={styles.unmappedRow}>
+                    <span className={styles.unmappedDate}>{t.date.slice(5)}</span>
+                    <span className={styles.unmappedPrice}>
+                      {t.price.toLocaleString()}원 × {t.quantity}주
+                      {local.avgPrice > 0 && (
+                        <span className={styles.unmappedProfit} style={{ color: profitPct >= 0 ? '#2e7d32' : '#c62828' }}>
+                          {' '}{profitPct >= 0 ? '+' : ''}{profitPct.toFixed(1)}%
+                        </span>
+                      )}
+                    </span>
+                    <button className={styles.unmappedBtnSell} onClick={() => moveUnmappedToSell(t)}>
+                      ↗ 수익매도로
+                    </button>
+                    <button className={styles.unmappedBtnMa} onClick={() => moveUnmappedToMa(t)}>
+                      📉 MA매도로
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
       </div>{/* /plansRow */}

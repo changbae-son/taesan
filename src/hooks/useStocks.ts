@@ -151,9 +151,18 @@ export function useStocks() {
     };
   }, []);
 
-  const saveStock = useCallback((stock: Stock) => {
+  // saveStock(stock, true) = 즉시 저장 (디바운스 skip) - critical 작업용
+  // saveStock(stock) = 디바운스 저장 (입력 중 자동저장용)
+  const saveStock = useCallback(async (stock: Stock, immediate = false) => {
+    // 보류 중인 디바운스 취소
     if (debounceTimers.current[stock.id]) {
       clearTimeout(debounceTimers.current[stock.id]);
+      delete debounceTimers.current[stock.id];
+    }
+    if (immediate) {
+      const { id, ...data } = stock;
+      await setDoc(doc(db, 'stocks', id), { ...data, updatedAt: Date.now() });
+      return;
     }
     debounceTimers.current[stock.id] = setTimeout(async () => {
       const { id, ...data } = stock;
