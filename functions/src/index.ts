@@ -3267,6 +3267,39 @@ async function reconcileStockPlans(stockName: string): Promise<{
     buyFilledCount++;
   }
 
+  // ✅ buyPlans 계획가(price) / 계획수량(quantity) 자동 보정 (액면분할/단위오류 대응)
+  // - 체결된 차수: filledPrice/filledQuantity 기준으로 price/quantity 갱신
+  // - 미체결 차수: 이전 차수 실제가 × 0.9 (태산매매법 -10% 룰)
+  // - manualOverride 슬롯은 손대지 않음
+  for (let i = 0; i < buyPlans.length; i++) {
+    const bp = buyPlans[i];
+    if (bp.manualOverride) continue;
+
+    let correctPrice = bp.price;
+    let correctQty = bp.quantity;
+
+    if (bp.filled && (bp.filledPrice || 0) > 0) {
+      // 체결된 차수: 실제 체결가가 곧 계획가
+      correctPrice = bp.filledPrice;
+      if ((bp.filledQuantity || 0) > 0) correctQty = bp.filledQuantity;
+    } else if (i > 0) {
+      // 미체결 차수: 이전 차수 기준 -10%
+      const prev = buyPlans[i - 1];
+      const prevPrice = prev.filledPrice || prev.price || 0;
+      if (prevPrice > 0) correctPrice = Math.round(prevPrice * 0.9);
+      // 미체결 수량은 1차 수량과 동일하게 유지
+      const firstBp = buyPlans[0];
+      const firstQty = firstBp.filledQuantity || firstBp.quantity || 0;
+      if (firstQty > 0) correctQty = firstQty;
+    }
+
+    if (correctPrice !== bp.price || correctQty !== bp.quantity) {
+      console.log(`[reconcile] ${stockName} buy${i + 1}차 계획값 보정: price ${bp.price} → ${correctPrice}, qty ${bp.quantity} → ${correctQty}`);
+      buyPlans[i] = {...bp, price: correctPrice, quantity: correctQty};
+      buyFilledCount++; // 변경 트리거
+    }
+  }
+
   // 매도 차수 갱신: 개별 체결을 순차 슬롯에 매핑 (manualOverride 보존)
   // ✅ 보너스: sellPlans price(목표가)도 평단가 기반으로 재계산하여 기존 데이터 오염 자동 보정
   const stockAvg = Number(stock.avgPrice) || 0;
