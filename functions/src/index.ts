@@ -3301,18 +3301,37 @@ async function reconcileStockPlans(stockName: string): Promise<{
   }
 
   // 매도 차수 갱신: 개별 체결을 순차 슬롯에 매핑 (manualOverride 보존)
-  // ✅ 보너스: sellPlans price(목표가)도 평단가 기반으로 재계산하여 기존 데이터 오염 자동 보정
+  // ✅ 보너스: sellPlans price(목표가) + quantity(계획수량) 자동 재계산 (기존 데이터 오염 자동 보정)
   const stockAvg = Number(stock.avgPrice) || 0;
+  // buyPlans filled 합계 (계획수량 = 매수합계 × 20%)
+  const totalFilledBuyQty = buyPlans.reduce((sum: number, bp: any) =>
+    bp.filled ? sum + ((bp.filledQuantity as number) || (bp.quantity as number) || 0) : sum, 0);
+  const correctSellQty = totalFilledBuyQty > 0 ? Math.round(totalFilledBuyQty * 0.2) : 0;
+
   for (let i = 0; i < sellPlans.length; i++) {
     const plan = sellPlans[i];
     if (plan.manualOverride) continue; // 수동 편집된 슬롯은 손대지 않음
+
+    let needUpdate = false;
+    let correctPrice = plan.price;
+    let correctQty = plan.quantity;
+
+    // 목표가 자동 보정 (평단 × (1+%))
     if (stockAvg > 0 && plan.percent) {
-      const correctTarget = Math.round(stockAvg * (1 + plan.percent / 100));
-      if (plan.price !== correctTarget) {
-        sellPlans[i] = {...plan, price: correctTarget};
-        console.log(`[reconcile] ${stockName} sell+${plan.percent}% 목표가 보정: ${plan.price} → ${correctTarget}`);
-        sellFilledCount++; // 변경 트리거
-      }
+      correctPrice = Math.round(stockAvg * (1 + plan.percent / 100));
+      if (plan.price !== correctPrice) needUpdate = true;
+    }
+
+    // 계획수량 자동 보정 (체결 안 된 차수만 - 체결 차수는 실제 수량 보존)
+    if (!plan.filled && correctSellQty > 0 && plan.quantity !== correctSellQty) {
+      correctQty = correctSellQty;
+      needUpdate = true;
+    }
+
+    if (needUpdate) {
+      sellPlans[i] = {...plan, price: correctPrice, quantity: correctQty};
+      console.log(`[reconcile] ${stockName} sell+${plan.percent}% 보정: 목표가 ${plan.price}→${correctPrice}, 수량 ${plan.quantity}→${correctQty}`);
+      sellFilledCount++;
     }
   }
 
