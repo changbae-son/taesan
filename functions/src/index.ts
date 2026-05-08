@@ -3335,10 +3335,15 @@ async function reconcileStockPlans(stockName: string): Promise<{
     }
   }
 
-  // ✅ 옵션 C: manualOverride+filled 슬롯이 흡수한 매도 수량 계산
-  // (사용자가 합치기로 정리한 trade는 다른 슬롯에 다시 자동 매핑 안 함 - 이중 집계 방지)
-  const consumedByManual = sellPlans.reduce((sum: number, sp: any) =>
+  // ✅ 옵션 C: 사용자 정리 슬롯이 흡수한 매도 수량 계산 (이중 집계 방지)
+  // (1) sellPlans manualOverride+filled = 합치기로 흡수
+  // (2) maSells filled = MA 매도로 분류된 (분리/직접추가)
+  // → 두 합계만큼 sortedSells 앞에서부터 건너뛰고 자동 매핑 대상에서 제외
+  const consumedByManualSell = sellPlans.reduce((sum: number, sp: any) =>
     (sp.manualOverride === true && sp.filled) ? sum + (Number(sp.filledQuantity) || 0) : sum, 0);
+  const consumedByMaSell = (Array.isArray((stock as any).maSells) ? (stock as any).maSells : []).reduce(
+    (sum: number, m: any) => m.filled ? sum + (Number(m.quantity) || 0) : sum, 0);
+  const consumedByManual = consumedByManualSell + consumedByMaSell;
 
   // sortedSells 앞에서부터 consumedByManual 만큼 "이미 흡수"로 건너뜀
   // 남은 trade만 manualOverride 안 된 슬롯에 매핑 대상
@@ -3988,6 +3993,128 @@ export const backfillBuyPlans = functions
  *
  * ※ 읽기 전용 — 절대 데이터 수정 안 함
  */
+/**
+ * 전체 stocks 종목 일괄 reconcileStockPlans 실행
+ * POST /reconcileAllStocks
+ *
+ * 새 로직(옵션 C: manualOverride 흡수 trade 추적, 이중 집계 차단,
+ * buyPlans/sellPlans 계획값 자동 보정)을 모든 종목에 일괄 적용.
+ */
+export const reconcileAllStocks = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 540})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const stocksSnap = await db.collection("stocks").get();
+        const results: any[] = [];
+        const errors: any[] = [];
+
+        for (const doc of stocksSnap.docs) {
+          const data = doc.data();
+          const name = data.name;
+          if (!name) continue;
+          try {
+            const result = await reconcileStockPlans(name);
+            if (result.updated) {
+              results.push({stockName: name, ...result});
+            }
+          } catch (e: any) {
+            errors.push({stockName: name, error: e.message});
+            console.error(`[reconcileAll] ${name} 실패: ${e.message}`);
+          }
+        }
+
+        console.log(`[reconcileAll] 완료: 처리 ${stocksSnap.size}종목, 변경 ${results.length}종목, 오류 ${errors.length}종목`);
+
+        res.json({
+          success: true,
+          total: stocksSnap.size,
+          changedCount: results.length,
+          errorCount: errors.length,
+          results,
+          errors,
+        });
+      } catch (error: any) {
+        console.error("[reconcileAll] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 전체 종목 매도 매핑 정합성 검증
+ * GET /auditSellMapping
+ *
+ * sellPlans+maSells filled 합계 vs trades 매도 합계 비교
+ * - 일치: 정상
+ * - 불일치: 이중 집계 또는 누락
+ */
+export const auditSellMapping = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 540})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const stocksSnap = await db.collection("stocks").get();
+        const issues: any[] = [];
+        const cleans: any[] = [];
+
+        for (const doc of stocksSnap.docs) {
+          const stock = doc.data();
+          const name = stock.name;
+          if (!name) continue;
+
+          const tradesSnap = await db.collection("trades").where("stockName", "==", name).get();
+          let tradeSellQty = 0;
+          tradesSnap.forEach((d) => {
+            const t = d.data();
+            if (t.type === "sell") tradeSellQty += Number(t.quantity) || 0;
+          });
+
+          const sellPlans = (stock.sellPlans || []) as any[];
+          const maSells = (stock.maSells || []) as any[];
+
+          const sellPlanQty = sellPlans
+            .filter((p) => p.filled)
+            .reduce((s: number, p) => s + (Number(p.filledQuantity) || 0), 0);
+          const maSellQty = maSells
+            .filter((m) => m.filled)
+            .reduce((s: number, m) => s + (Number(m.quantity) || 0), 0);
+          const totalMappedQty = sellPlanQty + maSellQty;
+
+          const entry = {
+            stockName: name,
+            tradeSellQty,
+            sellPlanQty,
+            maSellQty,
+            totalMappedQty,
+            diff: tradeSellQty - totalMappedQty,
+          };
+
+          if (tradeSellQty !== totalMappedQty) {
+            issues.push(entry);
+          } else {
+            cleans.push(entry);
+          }
+        }
+
+        console.log(`[auditSell] 완료: 정합성 ${cleans.length}/${stocksSnap.size}, 불일치 ${issues.length}`);
+
+        res.json({
+          success: true,
+          total: stocksSnap.size,
+          cleanCount: cleans.length,
+          issueCount: issues.length,
+          issues,
+        });
+      } catch (error: any) {
+        console.error("[auditSell] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 export const verifyAllStocks = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 540})
