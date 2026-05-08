@@ -103,7 +103,8 @@ export default function StockDetail({
     setEditDraft({ ...editDraft, filledQtys });
   };
 
-  const confirmBasicEdit = () => {
+  // 기본 정보 수정 저장 — backend manualBuyEdit endpoint 통한 강제 저장
+  const confirmBasicEdit = async () => {
     if (!editDraft) return;
     // recalcStock으로 평단/매도계획 재계산 (가격 cascade 제외)
     const base = recalcStock({
@@ -113,14 +114,11 @@ export default function StockDetail({
       currentPrice: editDraft.currentPrice,
     });
     // 수동 입력한 가격/수량/체결정보로 override
-    // 체결 정보(가격+수량)가 모두 입력되면 자동으로 filled=true 처리
     const finalBuyPlans = base.buyPlans.map((bp, i) => {
       const fp = editDraft.filledPrices[i];
       const fq = editDraft.filledQtys[i];
       const hasFillInfo = (fp ?? 0) > 0 && (fq ?? 0) > 0;
       const willBeFilled = bp.filled || hasFillInfo;
-      // 사용자가 직접 입력한 체결 정보는 manualOverride=true로 보호
-      // (다음 sync/reconcile에서 덮어쓰지 않도록)
       const isManualEntry = hasFillInfo && (
         editDraft.filledPrices[i] !== bp.filledPrice ||
         editDraft.filledQtys[i] !== bp.filledQuantity ||
@@ -131,13 +129,13 @@ export default function StockDetail({
         price: editDraft.prices[i] > 0 ? editDraft.prices[i] : bp.price,
         quantity: editDraft.quantities[i] > 0 ? editDraft.quantities[i] : bp.quantity,
         filled: willBeFilled,
-        filledDate: willBeFilled ? editDraft.filledDates[i] : bp.filledDate,
-        filledPrice: willBeFilled ? fp : bp.filledPrice,
-        filledQuantity: willBeFilled ? fq : bp.filledQuantity,
-        manualOverride: isManualEntry || bp.manualOverride,
+        filledDate: willBeFilled ? (editDraft.filledDates[i] || '') : (bp.filledDate || ''),
+        filledPrice: willBeFilled ? (fp || 0) : (bp.filledPrice || 0),
+        filledQuantity: willBeFilled ? (fq || 0) : (bp.filledQuantity || 0),
+        manualOverride: isManualEntry || bp.manualOverride === true,
       };
     });
-    // 평단가 재계산 (filled buyPlans 기준)
+    // 평단가/총보유 재계산
     let totalCost = 0;
     let totalQty = 0;
     for (const bp of finalBuyPlans) {
@@ -149,18 +147,61 @@ export default function StockDetail({
       }
     }
     const newAvg = totalQty > 0 ? Math.round(totalCost / totalQty) : base.avgPrice;
-    const final: Stock = {
-      ...base,
-      buyPlans: finalBuyPlans,
-      avgPrice: newAvg,
-      totalQuantity: totalQty > 0 ? totalQty : base.totalQuantity,
-      updatedAt: Date.now(),
-    };
-    setLocal(final);
-    lastUserActionRef.current = Date.now(); // race guard 적용
-    onSave(final, true); // immediate (기본정보 수정은 critical)
-    setEditDraft(null);
-    setShowBasicInfo(false);
+    const newTotalQty = totalQty > 0 ? totalQty : base.totalQuantity;
+
+    // 백엔드 manualBuyEdit 강제 저장 (response await + alert)
+    setPersistBusy(true);
+    try {
+      const buyPlanEdits = finalBuyPlans.map((bp) => ({
+        level: bp.level,
+        set: {
+          price: bp.price,
+          quantity: bp.quantity,
+          filled: bp.filled,
+          filledDate: bp.filledDate || '',
+          filledPrice: bp.filledPrice || 0,
+          filledQuantity: bp.filledQuantity || 0,
+          manualOverride: bp.manualOverride === true,
+        },
+      }));
+      const topFields = {
+        firstBuyPrice: editDraft.prices[0] || 0,
+        firstBuyQuantity: editDraft.quantities[0] || 0,
+        currentPrice: editDraft.currentPrice || 0,
+        avgPrice: newAvg,
+        totalQuantity: newTotalQty,
+      };
+      const res = await fetch(MANUAL_BUY_EDIT_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          stockName: local.name,
+          buyPlanEdits,
+          topFields,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(`저장 실패: ${data.error || '알 수 없는 오류'}\n다시 시도해주세요.`);
+        return;
+      }
+      // 성공 → optimistic setLocal + race guard
+      const final: Stock = {
+        ...base,
+        buyPlans: finalBuyPlans,
+        avgPrice: newAvg,
+        totalQuantity: newTotalQty,
+        updatedAt: Date.now(),
+      };
+      setLocal(final);
+      lastUserActionRef.current = Date.now();
+      setEditDraft(null);
+      setShowBasicInfo(false);
+    } catch (e: any) {
+      alert(`네트워크 오류: ${e.message}\n인터넷 연결을 확인하고 다시 시도해주세요.`);
+    } finally {
+      setPersistBusy(false);
+    }
   };
 
   // ──────────────────────────────────────────────────────────────
@@ -168,6 +209,7 @@ export default function StockDetail({
   // 클라이언트 setDoc 대신 atomic backend update로 race condition + 캐시 문제 차단
   // ──────────────────────────────────────────────────────────────
   const MANUAL_SELL_EDIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/manualSellEdit';
+  const MANUAL_BUY_EDIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/manualBuyEdit';
   const [, setPersistBusy] = useState(false);
 
   const persistSellEdit = async (

@@ -5113,6 +5113,79 @@ export const reentryControl = functions
  *   3) reconcileStockPlans(toName) 으로 정합성 재검증
  */
 /**
+ * 종목 buyPlans + 핵심 필드 수동 수정 (admin 직접 패치)
+ * POST /manualBuyEdit
+ * body: {
+ *   stockName: "...",
+ *   buyPlanEdits?: [{level, set: {filled, filledPrice, filledQuantity, filledDate, price, quantity, manualOverride}}],
+ *   topFields?: { firstBuyPrice?, firstBuyQuantity?, currentPrice?, avgPrice?, totalQuantity? }
+ * }
+ *
+ * 종목상세 "기본 정보 수정"의 백엔드 강제 저장용.
+ * - 응답 await으로 실패 즉시 사용자 알림 가능
+ * - Race condition 차단 (백엔드 atomic update)
+ */
+export const manualBuyEdit = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {stockName, buyPlanEdits = [], topFields = {}} = req.body || {};
+        if (!stockName) {
+          res.status(400).json({success: false, error: "stockName 필수"});
+          return;
+        }
+
+        const snap = await db.collection("stocks").where("name", "==", stockName).limit(1).get();
+        if (snap.empty) {
+          res.status(404).json({success: false, error: `${stockName} 종목 없음`});
+          return;
+        }
+        const docRef = snap.docs[0].ref;
+        const data = snap.docs[0].data();
+
+        const buyPlans = Array.isArray(data.buyPlans) ? [...data.buyPlans] : [];
+        const changes: any[] = [];
+
+        // buyPlans 편집 (level 기준)
+        for (const e of buyPlanEdits) {
+          const idx = buyPlans.findIndex((b: any) => b.level === e.level);
+          if (idx < 0) {
+            changes.push({type: "buyPlan", level: e.level, status: "not_found"});
+            continue;
+          }
+          const before = {...buyPlans[idx]};
+          const merged = {...buyPlans[idx], ...e.set};
+          // manualOverride: e.set에서 명시 안 했으면 기존값 유지 (false 명시 가능)
+          if ("manualOverride" in (e.set || {})) {
+            merged.manualOverride = e.set.manualOverride === true;
+          }
+          buyPlans[idx] = merged;
+          changes.push({type: "buyPlan", level: e.level, status: "updated", before, after: merged});
+        }
+
+        // topFields 편집 (avgPrice/totalQuantity 등)
+        const topAllowed: Record<string, any> = {};
+        for (const k of ["firstBuyPrice", "firstBuyQuantity", "currentPrice", "avgPrice", "totalQuantity"]) {
+          if (k in topFields) topAllowed[k] = topFields[k];
+        }
+
+        await docRef.update({
+          buyPlans,
+          ...topAllowed,
+          updatedAt: Date.now(),
+        });
+
+        res.json({success: true, stockName, changes, buyPlans, ...topAllowed});
+      } catch (error: any) {
+        console.error("[manualBuyEdit] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
  * 종목 sellPlans/maSells 수동 수정 (admin 직접 패치)
  * POST /manualSellEdit
  * body: {
