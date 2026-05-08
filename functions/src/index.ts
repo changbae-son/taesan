@@ -3335,18 +3335,47 @@ async function reconcileStockPlans(stockName: string): Promise<{
     }
   }
 
-  for (let i = 0; i < sortedSells.length; i++) {
-    const t = sortedSells[i];
-    const price = Number(t.price) || 0;
-    const qty = Number(t.quantity) || 0;
+  // ✅ 옵션 C: manualOverride+filled 슬롯이 흡수한 매도 수량 계산
+  // (사용자가 합치기로 정리한 trade는 다른 슬롯에 다시 자동 매핑 안 함 - 이중 집계 방지)
+  const consumedByManual = sellPlans.reduce((sum: number, sp: any) =>
+    (sp.manualOverride === true && sp.filled) ? sum + (Number(sp.filledQuantity) || 0) : sum, 0);
 
-    if (i < sellPlans.length) {
-      const plan = sellPlans[i];
-      if (plan.manualOverride) {
-        // 수동 편집된 슬롯은 유지
-        console.log(`[reconcile] ${stockName} sell${i + 1}차 manualOverride 보존 (${plan.filledDate} ${plan.filledPrice}원 ${plan.filledQuantity}주)`);
-        continue;
-      }
+  // sortedSells 앞에서부터 consumedByManual 만큼 "이미 흡수"로 건너뜀
+  // 남은 trade만 manualOverride 안 된 슬롯에 매핑 대상
+  let skipped = 0;
+  const tradesToMap: any[] = [];
+  for (const t of sortedSells) {
+    const tQty = Number(t.quantity) || 0;
+    if (tQty <= 0) continue;
+    if (skipped + tQty <= consumedByManual) {
+      skipped += tQty; // 완전 흡수
+    } else if (skipped < consumedByManual) {
+      // 부분 흡수 + 부분 매핑
+      const remainingPart = tQty - (consumedByManual - skipped);
+      tradesToMap.push({...t, quantity: remainingPart});
+      skipped = consumedByManual;
+    } else {
+      tradesToMap.push(t);
+    }
+  }
+
+  if (consumedByManual > 0) {
+    console.log(`[reconcile] ${stockName} manualOverride 슬롯이 흡수한 매도: ${consumedByManual}주 / 자동 매핑 대상: ${tradesToMap.reduce((s, t) => s + (Number(t.quantity) || 0), 0)}주`);
+  }
+
+  // 매핑 인덱스: manualOverride 안 된 슬롯에만 순차 매핑
+  let mapIdx = 0;
+  for (let i = 0; i < sellPlans.length; i++) {
+    const plan = sellPlans[i];
+    if (plan.manualOverride) {
+      console.log(`[reconcile] ${stockName} sell+${plan.percent}% manualOverride 보존 (${plan.filledDate} ${plan.filledPrice}원 ${plan.filledQuantity}주)`);
+      continue;
+    }
+    if (mapIdx < tradesToMap.length) {
+      // 매핑할 trade 있음
+      const t = tradesToMap[mapIdx];
+      const price = Number(t.price) || 0;
+      const qty = Number(t.quantity) || 0;
       sellPlans[i] = {
         ...plan,
         filled: true,
@@ -3355,27 +3384,31 @@ async function reconcileStockPlans(stockName: string): Promise<{
         filledPrice: price,
       };
       sellFilledCount++;
+      mapIdx++;
     } else {
-      exceedsSell++;
-      console.log(
-        `[reconcile] ${stockName} 매도 계획 초과: ${t.date} ${qty}주 @ ${price}원 ` +
-          `(계획 ${sellPlans.length}차, 실제 ${i + 1}번째 체결)`
-      );
+      // 매핑할 trade 없음 → 기존 filled 데이터(자동 매핑 흔적) 리셋
+      if (plan.filled) {
+        console.log(`[reconcile] ${stockName} sell+${plan.percent}% unfilled 리셋 (manualOverride 슬롯에 흡수됨, 기존 ${plan.filledDate} ${plan.filledPrice}원 ${plan.filledQuantity}주)`);
+        sellPlans[i] = {
+          ...plan,
+          filled: false,
+          filledDate: "",
+          filledQuantity: 0,
+          filledPrice: 0,
+        };
+        sellFilledCount++;
+      }
     }
   }
-  // ✅ 핵심: trades에 없는 sellPlans 차수도 unfilled 리셋 (manualOverride 제외)
-  for (let i = sortedSells.length; i < sellPlans.length; i++) {
-    if (sellPlans[i].filled && !sellPlans[i].manualOverride) {
-      console.log(`[reconcile] ${stockName} sell${i + 1}차 unfilled 리셋 (trades에 없음, 기존 filledDate=${sellPlans[i].filledDate})`);
-      sellPlans[i] = {
-        ...sellPlans[i],
-        filled: false,
-        filledDate: "",
-        filledQuantity: 0,
-        filledPrice: 0,
-      };
-      sellFilledCount++;
-    }
+
+  // 매핑 못한 trade (계획 차수 초과)
+  if (mapIdx < tradesToMap.length) {
+    const exceedQty = tradesToMap.slice(mapIdx).reduce((s, t) => s + (Number(t.quantity) || 0), 0);
+    exceedsSell += tradesToMap.length - mapIdx;
+    console.log(
+      `[reconcile] ${stockName} 매도 계획 초과: ${exceedQty}주 (${tradesToMap.length - mapIdx}건) ` +
+      `- 사용자 수동 분류 필요`
+    );
   }
 
   // 변경사항이 있을 때만 업데이트
