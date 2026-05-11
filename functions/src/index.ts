@@ -1825,8 +1825,16 @@ async function updateHoldingMAs(config: KiwoomConfig, token: string): Promise<vo
       const alerts: string[] = [];
       let stagesChanged = false;
 
-      const checkStage = (maVal: number, label: string) => {
+      // ✅ 이미 매도 완료한 MA는 알림 스킵 (태산매매법: MA 매도 1회로 종결)
+      const maSellsArr: any[] = Array.isArray(s.maSells) ? s.maSells : [];
+      const isMaSold = (maNum: number) => {
+        const m = maSellsArr.find((x) => x.ma === maNum);
+        return m?.filled === true && (Number(m.quantity) || 0) > 0;
+      };
+
+      const checkStage = (maVal: number, label: string, maNum: number) => {
         if (maVal <= 0) return;
+        if (isMaSold(maNum)) return; // ✅ 매도 완료 MA 스킵
         const gap = ((curPrice - maVal) / maVal) * 100;
         const stage = getMaStage(gap);
         if (!stage) return;
@@ -1836,9 +1844,9 @@ async function updateHoldingMAs(config: KiwoomConfig, token: string): Promise<vo
         stagesChanged = true;
         alerts.push(maStageMessage(label, stage, gap));
       };
-      checkStage(ma.ma20, "MA20");
-      checkStage(ma.ma60, "MA60");
-      checkStage(ma.ma120, "MA120");
+      checkStage(ma.ma20, "MA20", 20);
+      checkStage(ma.ma60, "MA60", 60);
+      checkStage(ma.ma120, "MA120", 120);
 
       if (alerts.length > 0 && stagesChanged) {
         updates.maStagesAlerted = {date: today, stages: newStages};
@@ -1911,10 +1919,17 @@ async function checkRealtimeAlerts(
         ? (stagesField.stages || {}) : {};
 
       const maChecks = [
-        {label: "MA20", val: (s.ma20 || 0) as number},
-        {label: "MA60", val: (s.ma60 || 0) as number},
-        {label: "MA120", val: (s.ma120 || 0) as number},
+        {label: "MA20", maNum: 20, val: (s.ma20 || 0) as number},
+        {label: "MA60", maNum: 60, val: (s.ma60 || 0) as number},
+        {label: "MA120", maNum: 120, val: (s.ma120 || 0) as number},
       ];
+
+      // ✅ 이미 매도 완료한 MA는 알림 스킵 (태산매매법: MA 매도 1회로 종결)
+      const maSellsArr: any[] = Array.isArray(s.maSells) ? s.maSells : [];
+      const isMaSold = (maNum: number) => {
+        const m = maSellsArr.find((x) => x.ma === maNum);
+        return m?.filled === true && (Number(m.quantity) || 0) > 0;
+      };
 
       const newAlerts: string[] = [];
       const newStages = {...todayStages};
@@ -1922,6 +1937,7 @@ async function checkRealtimeAlerts(
 
       for (const m of maChecks) {
         if (m.val <= 0) continue;
+        if (isMaSold(m.maNum)) continue; // ✅ 매도 완료 MA 스킵
         const gap = ((curPrice - m.val) / m.val) * 100;
         const stage = getMaStage(gap);
         if (!stage) continue;
