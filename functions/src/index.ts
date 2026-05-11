@@ -1168,6 +1168,49 @@ async function syncToFirestore(
         continue;
       }
 
+      // ─── 단위 sanity check (액면분할/병합 단위 오류 자동 감지) ───
+      // 기존 stocks의 avgPrice와 새 trade의 price 비교
+      // 50배 이상 또는 1/50배 이하 차이면 단위 의심 → 텔레그램 알림 + 태그 부여
+      // (자동 정정 X: 정상 변동성 vs 단위 오류 자동 판별 불가, 사용자 확인 후 applySplitMergeRatio/updateTrade로 처리)
+      const tags: string[] = ["#키움동기화"];
+      try {
+        let avgPriceForCheck = 0;
+        if (t.code) {
+          const stockByCode = await db.collection("stocks").where("code", "==", t.code).limit(1).get();
+          if (!stockByCode.empty) avgPriceForCheck = Number(stockByCode.docs[0].data().avgPrice) || 0;
+        }
+        if (avgPriceForCheck <= 0 && t.name) {
+          const stockByName = await db.collection("stocks").where("name", "==", t.name).limit(1).get();
+          if (!stockByName.empty) avgPriceForCheck = Number(stockByName.docs[0].data().avgPrice) || 0;
+        }
+        const tradePrice = Number(t.price) || 0;
+        if (avgPriceForCheck > 0 && tradePrice > 0) {
+          const ratio = tradePrice / avgPriceForCheck;
+          if (ratio >= 50 || ratio <= 0.02) {
+            tags.push("#단위의심");
+            console.warn(`[단위경고] ${t.name} ${formattedDate} ${t.type} ${tradePrice}원×${t.quantity}주 (평단 ${avgPriceForCheck}원, 비율 ${ratio.toFixed(2)}x) — 액면분할/병합 의심`);
+            // 텔레그램 알림: 100배 이상 차이만 (1000배 등 명백한 케이스만 알림, false positive 최소화)
+            if (ratio >= 100 || ratio <= 0.01) {
+              const direction = ratio >= 100 ? "분할 전→후 미환산" : "병합 전→후 미환산";
+              const suggestedRatio = ratio >= 100 ? Math.round(ratio) : Math.round(1 / ratio);
+              await sendTelegram(
+                `<b>⚠️ 단위 의심 trade 감지 — ${t.name}</b>\n\n` +
+                `날짜: ${formattedDate}\n` +
+                `유형: ${t.type === "buy" ? "매수" : "매도"}\n` +
+                `trade: <b>${tradePrice.toLocaleString()}원 × ${(Number(t.quantity) || 0).toLocaleString()}주</b>\n` +
+                `평단가: ${avgPriceForCheck.toLocaleString()}원\n` +
+                `비율: <b>${ratio.toFixed(0)}배</b> (${direction} 가능성)\n` +
+                `추정 ratio: <b>1:${suggestedRatio.toLocaleString()}</b>\n\n` +
+                `🔧 검토 후 <code>applySplitMergeRatio</code> 또는 <code>updateTrade</code>로 정정하세요.\n` +
+                `tradeId: <code>${tradeId}</code>`
+              );
+            }
+          }
+        }
+      } catch (e: any) {
+        console.error(`[단위경고] sanity check 실패: ${e.message}`);
+      }
+
       await docRef.set({
         date: formattedDate,
         stockName: t.name,
@@ -1177,7 +1220,7 @@ async function syncToFirestore(
         price: t.price,
         quantity: t.quantity,
         memo: `키움 자동동기화 (${t.time || ""})`,
-        tags: ["#키움동기화"],
+        tags,
         createdAt: now,
       });
       syncedTrades++;
