@@ -345,6 +345,144 @@
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* 액면분할/병합 버튼 */
+.splitMergeBtn {
+  padding: 8px 16px;
+  background: #ff9800;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.splitMergeBtn:hover {
+  background: #f57c00;
+}
+
+/* 액면분할/병합 모달 */
+.splitMergePanel {
+  margin-top: 16px;
+  padding: 16px;
+  background: #fff8e1;
+  border: 2px solid #ff9800;
+  border-radius: 8px;
+}
+
+.splitMergeTitle {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #e65100;
+  font-weight: 800;
+}
+
+.splitMergeHint {
+  margin: 0 0 12px;
+  font-size: 11px;
+  color: #666;
+  line-height: 1.5;
+}
+
+.splitMergeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.splitMergeRow label {
+  font-size: 12px;
+  color: #555;
+  font-weight: 600;
+  width: 100px;
+  flex-shrink: 0;
+}
+
+.splitMergeInput {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid #ffb74d;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.splitMergePreview {
+  margin-top: 10px;
+  padding: 10px;
+  background: #fff;
+  border: 1px dashed #ffb74d;
+  border-radius: 6px;
+  font-size: 11px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.splitMergePreviewRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px dotted #eee;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.smPreviewBefore {
+  color: #888;
+  text-decoration: line-through;
+}
+
+.smPreviewAfter {
+  color: #e65100;
+  font-weight: 700;
+}
+
+.splitMergeActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  justify-content: flex-end;
+}
+
+.smPreviewBtn {
+  padding: 6px 12px;
+  background: #fff;
+  color: #e65100;
+  border: 1px solid #ffb74d;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.smApplyBtn {
+  padding: 6px 14px;
+  background: #ff9800;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.smApplyBtn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.smCancelBtn {
+  padding: 6px 12px;
+  background: #eee;
+  color: #666;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
 }
 
 .editConfirmBtn {

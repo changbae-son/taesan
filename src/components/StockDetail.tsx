@@ -210,6 +210,98 @@ export default function StockDetail({
   // ──────────────────────────────────────────────────────────────
   const MANUAL_SELL_EDIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/manualSellEdit';
   const MANUAL_BUY_EDIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/manualBuyEdit';
+  const APPLY_SPLIT_MERGE_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/applySplitMergeRatio';
+
+  // ── 액면분할/병합 처리 ──
+  const [showSplitMerge, setShowSplitMerge] = useState(false);
+  const [splitMergeDraft, setSplitMergeDraft] = useState<{
+    date: string;
+    ratioPreset: string; // "5", "0.2", "custom"
+    customRatio: number;
+  }>({
+    date: new Date().toISOString().slice(0, 10),
+    ratioPreset: '5',
+    customRatio: 5,
+  });
+  const [splitMergePreview, setSplitMergePreview] = useState<any[] | null>(null);
+
+  const getEffectiveRatio = () => {
+    if (splitMergeDraft.ratioPreset === 'custom') return splitMergeDraft.customRatio;
+    return parseFloat(splitMergeDraft.ratioPreset);
+  };
+
+  const previewSplitMerge = async () => {
+    const ratio = getEffectiveRatio();
+    if (!ratio || ratio <= 0 || ratio === 1) {
+      alert('비율은 0보다 큰 1이 아닌 숫자여야 합니다.');
+      return;
+    }
+    try {
+      const res = await fetch(APPLY_SPLIT_MERGE_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          stockName: local.name,
+          ratio,
+          splitDate: splitMergeDraft.date,
+          preview: true,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(`미리보기 실패: ${data.error}`);
+        return;
+      }
+      setSplitMergePreview(data.changes || []);
+      if ((data.changes || []).length === 0) {
+        alert('정정 대상 trade 없음 (분할일 이전 매수/매도 trade 없음)');
+      }
+    } catch (e: any) {
+      alert(`네트워크 오류: ${e.message}`);
+    }
+  };
+
+  const applySplitMerge = async () => {
+    if (!splitMergePreview || splitMergePreview.length === 0) {
+      alert('먼저 미리보기를 실행해주세요.');
+      return;
+    }
+    const ratio = getEffectiveRatio();
+    const direction = ratio > 1 ? `${ratio}:1 병합` : `1:${Math.round(1 / ratio)} 분할`;
+    if (!confirm(
+      `${local.name}에 ${direction} 비율을 적용하시겠습니까?\n\n` +
+      `${splitMergePreview.length}건의 trade가 정정됩니다.\n` +
+      `(${splitMergeDraft.date} 이전 매수/매도 trade 대상)\n\n` +
+      `* 매수/매도 총액은 그대로 보존됩니다.`
+    )) return;
+
+    setPersistBusy(true);
+    try {
+      const res = await fetch(APPLY_SPLIT_MERGE_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          stockName: local.name,
+          ratio,
+          splitDate: splitMergeDraft.date,
+          preview: false,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(`적용 실패: ${data.error}`);
+        return;
+      }
+      alert(`✅ ${data.appliedCount}건 정정 완료\n곧 buyPlans/sellPlans 자동 갱신됩니다.`);
+      setShowSplitMerge(false);
+      setSplitMergePreview(null);
+      lastUserActionRef.current = Date.now();
+    } catch (e: any) {
+      alert(`네트워크 오류: ${e.message}`);
+    } finally {
+      setPersistBusy(false);
+    }
+  };
   const [, setPersistBusy] = useState(false);
 
   const persistSellEdit = async (
@@ -1339,7 +1431,113 @@ export default function StockDetail({
               >
                 취소
               </button>
+              <button
+                className={styles.splitMergeBtn}
+                onClick={() => setShowSplitMerge(true)}
+                title="액면분할 또는 액면병합 발생 시 trade 일괄 정정"
+              >
+                🔄 액면분할/병합 처리
+              </button>
             </div>
+
+            {/* 액면분할/병합 처리 모달 */}
+            {showSplitMerge && (
+              <div className={styles.splitMergePanel}>
+                <h4 className={styles.splitMergeTitle}>🔄 액면분할/병합 처리</h4>
+                <p className={styles.splitMergeHint}>
+                  분할/병합 일자 이전 trade의 (가격, 수량)을 비율에 맞게 정정합니다.<br/>
+                  매수/매도 총액은 보존됩니다.
+                </p>
+
+                <div className={styles.splitMergeRow}>
+                  <label>분할/병합 일자</label>
+                  <input
+                    type="date"
+                    className={styles.splitMergeInput}
+                    value={splitMergeDraft.date}
+                    onChange={(e) => {
+                      setSplitMergeDraft({...splitMergeDraft, date: e.target.value});
+                      setSplitMergePreview(null);
+                    }}
+                  />
+                </div>
+
+                <div className={styles.splitMergeRow}>
+                  <label>비율</label>
+                  <select
+                    className={styles.splitMergeInput}
+                    value={splitMergeDraft.ratioPreset}
+                    onChange={(e) => {
+                      setSplitMergeDraft({...splitMergeDraft, ratioPreset: e.target.value});
+                      setSplitMergePreview(null);
+                    }}
+                  >
+                    <option value="2">2:1 병합 (2주→1주, 가격×2)</option>
+                    <option value="5">5:1 병합 (5주→1주, 가격×5) ⭐</option>
+                    <option value="10">10:1 병합 (10주→1주, 가격×10)</option>
+                    <option value="0.5">1:2 분할 (1주→2주, 가격÷2)</option>
+                    <option value="0.2">1:5 분할 (1주→5주, 가격÷5)</option>
+                    <option value="0.1">1:10 분할 (1주→10주, 가격÷10)</option>
+                    <option value="0.01">1:100 분할 (1주→100주, 가격÷100)</option>
+                    <option value="0.001">1:1000 분할 (1주→1,000주, 가격÷1,000)</option>
+                    <option value="custom">직접 입력</option>
+                  </select>
+                </div>
+
+                {splitMergeDraft.ratioPreset === 'custom' && (
+                  <div className={styles.splitMergeRow}>
+                    <label>직접 입력</label>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      className={styles.splitMergeInput}
+                      value={splitMergeDraft.customRatio}
+                      onChange={(e) => {
+                        setSplitMergeDraft({...splitMergeDraft, customRatio: parseFloat(e.target.value) || 0});
+                        setSplitMergePreview(null);
+                      }}
+                      placeholder=">1: 병합, <1: 분할"
+                    />
+                  </div>
+                )}
+
+                {/* 미리보기 결과 */}
+                {splitMergePreview && splitMergePreview.length > 0 && (
+                  <div className={styles.splitMergePreview}>
+                    <strong>📋 미리보기 ({splitMergePreview.length}건):</strong>
+                    {splitMergePreview.map((c: any, i: number) => (
+                      <div key={i} className={styles.splitMergePreviewRow}>
+                        {c.date} [{c.type === 'buy' ? '매수' : '매도'}]
+                        <span className={styles.smPreviewBefore}>
+                          {c.before.price.toLocaleString()}×{c.before.quantity}
+                        </span>
+                        →
+                        <span className={styles.smPreviewAfter}>
+                          {c.after.price.toLocaleString()}×{c.after.quantity}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className={styles.splitMergeActions}>
+                  <button className={styles.smPreviewBtn} onClick={previewSplitMerge}>📋 미리보기</button>
+                  <button
+                    className={styles.smApplyBtn}
+                    onClick={applySplitMerge}
+                    disabled={!splitMergePreview || splitMergePreview.length === 0}
+                  >
+                    ✅ 적용
+                  </button>
+                  <button
+                    className={styles.smCancelBtn}
+                    onClick={() => { setShowSplitMerge(false); setSplitMergePreview(null); }}
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -5113,6 +5113,208 @@ export const reentryControl = functions
  *   3) reconcileStockPlans(toName) 으로 정합성 재검증
  */
 /**
+ * 액면분할/병합 자동 감지
+ * POST /detectSplitMerge
+ *
+ * 동작: 각 종목별로 trade 기반 추정 평단 vs 키움 잔고 평단 비교
+ * - 5배/10배/100배/1000배 차이 발견 시 분할/병합 의심
+ * - 응답에 의심 종목 + 추정 비율 리스트
+ */
+export const detectSplitMerge = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 120})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const stocksSnap = await db.collection("stocks").get();
+        const suspicious: any[] = [];
+        const checked: any[] = [];
+
+        // 흔한 분할/병합 비율 (확인용)
+        const ratios = [
+          {value: 2, label: "2:1 병합"},
+          {value: 5, label: "5:1 병합"},
+          {value: 10, label: "10:1 병합"},
+          {value: 0.5, label: "1:2 분할"},
+          {value: 0.2, label: "1:5 분할"},
+          {value: 0.1, label: "1:10 분할"},
+          {value: 0.01, label: "1:100 분할"},
+          {value: 0.001, label: "1:1000 분할"},
+        ];
+
+        for (const doc of stocksSnap.docs) {
+          const stock = doc.data();
+          const name = stock.name;
+          if (!name) continue;
+          const stockAvg = Number(stock.avgPrice) || 0;
+          const stockQty = Number(stock.totalQuantity) || 0;
+          if (stockAvg <= 0 || stockQty <= 0) continue;
+
+          // trade 기반 추정 평단 계산
+          const tradesSnap = await db.collection("trades").where("stockName", "==", name).get();
+          let buyAmt = 0;
+          let buyQty = 0;
+          tradesSnap.forEach((d) => {
+            const t = d.data();
+            if (t.type === "buy") {
+              const p = Number(t.price) || 0;
+              const q = Number(t.quantity) || 0;
+              buyAmt += p * q;
+              buyQty += q;
+            }
+          });
+          if (buyQty === 0) continue;
+          const tradeAvg = buyAmt / buyQty;
+
+          // tradeAvg vs stockAvg 비교
+          // ratio = tradeAvg / stockAvg
+          // ratio ≈ 5 → 5:1 병합 (trade 가격이 5배 큰 옛 단위)
+          // ratio ≈ 0.001 → 1:1000 분할 (trade 가격이 1/1000 옛 단위)
+          const observedRatio = tradeAvg / stockAvg;
+          let bestMatch: any = null;
+          let bestDiff = Infinity;
+          for (const r of ratios) {
+            // ratio가 1에 가까우면 (0.95~1.05) 분할/병합 아님
+            const diff = Math.abs(observedRatio - r.value) / r.value;
+            if (diff < 0.05 && diff < bestDiff) {
+              bestMatch = r;
+              bestDiff = diff;
+            }
+          }
+
+          const entry = {
+            stockName: name,
+            stockAvg,
+            stockQty,
+            tradeAvg: Math.round(tradeAvg * 100) / 100,
+            observedRatio: Math.round(observedRatio * 1000) / 1000,
+          };
+
+          if (bestMatch) {
+            suspicious.push({
+              ...entry,
+              suggestedRatio: bestMatch.value,
+              suggestedLabel: bestMatch.label,
+              confidence: Math.max(0, 1 - bestDiff * 20),
+            });
+          } else {
+            checked.push(entry);
+          }
+        }
+
+        console.log(`[detectSplitMerge] 검사 ${stocksSnap.size}, 의심 ${suspicious.length}`);
+        res.json({success: true, total: stocksSnap.size, suspicious});
+      } catch (error: any) {
+        console.error("[detectSplitMerge] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 액면분할/병합 비율 적용 (trade 일괄 정정)
+ * POST /applySplitMergeRatio
+ * body: {
+ *   stockName: "...",
+ *   ratio: 5,                  // 5 = 5:1 병합, 0.001 = 1:1000 분할
+ *   splitDate: "2026-04-03",   // 이 날짜 이전 trade만 정정 (포함 안 함)
+ *   preview?: true             // true면 미리보기, false면 실제 적용
+ * }
+ *
+ * 정정 공식:
+ *   newQuantity = oldQuantity / ratio (병합: 수량 감소, 분할: 수량 증가)
+ *   newPrice = oldPrice * ratio       (병합: 가격 증가, 분할: 가격 감소)
+ *   매수/매도 총액 보존됨 (qty × price)
+ *
+ * 적용 후 자동 reconcile 호출하여 buyPlans/sellPlans 정렬
+ */
+export const applySplitMergeRatio = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {stockName, ratio, splitDate, preview} = req.body || {};
+        if (!stockName || !ratio || !splitDate) {
+          res.status(400).json({success: false, error: "stockName/ratio/splitDate 필수"});
+          return;
+        }
+        if (typeof ratio !== "number" || ratio <= 0 || ratio === 1) {
+          res.status(400).json({success: false, error: "ratio는 0보다 큰 1이 아닌 숫자 (5=병합, 0.001=분할)"});
+          return;
+        }
+
+        // 대상 trade 조회 (splitDate 이전)
+        const tradesSnap = await db.collection("trades")
+          .where("stockName", "==", stockName)
+          .get();
+
+        const targets: Array<{id: string; data: any}> = [];
+        tradesSnap.forEach((d) => {
+          const data = d.data();
+          if (!data.date || data.date >= splitDate) return; // 분할일 이후는 제외
+          if (data.type !== "buy" && data.type !== "sell") return;
+          targets.push({id: d.id, data});
+        });
+
+        if (targets.length === 0) {
+          res.json({success: true, message: "정정 대상 trade 없음", preview: preview === true, changes: []});
+          return;
+        }
+
+        // 정정 계산
+        const changes = targets.map(({id, data}) => {
+          const oldPrice = Number(data.price) || 0;
+          const oldQty = Number(data.quantity) || 0;
+          // 병합 (ratio > 1): qty ÷ ratio, price × ratio
+          // 분할 (ratio < 1): qty × (1/ratio), price × ratio
+          const newQty = Math.round(oldQty / ratio);
+          const newPrice = Math.round(oldPrice * ratio);
+          return {
+            tradeId: id,
+            type: data.type,
+            date: data.date,
+            before: {price: oldPrice, quantity: oldQty, total: oldPrice * oldQty},
+            after: {price: newPrice, quantity: newQty, total: newPrice * newQty},
+          };
+        });
+
+        if (preview === true) {
+          res.json({success: true, preview: true, ratio, splitDate, total: targets.length, changes});
+          return;
+        }
+
+        // 실제 적용 (batch update)
+        const batch = db.batch();
+        for (const c of changes) {
+          batch.update(db.collection("trades").doc(c.tradeId), {
+            price: c.after.price,
+            quantity: c.after.quantity,
+          });
+        }
+        await batch.commit();
+        console.log(`[applySplitMergeRatio] ${stockName} ratio=${ratio} splitDate=${splitDate}: ${changes.length}건 정정`);
+
+        // 자동 reconcile (buyPlans/sellPlans 재정렬)
+        const reconcileResult = await reconcileStockPlans(stockName);
+
+        res.json({
+          success: true,
+          preview: false,
+          ratio,
+          splitDate,
+          appliedCount: changes.length,
+          changes,
+          reconcile: reconcileResult,
+        });
+      } catch (error: any) {
+        console.error("[applySplitMergeRatio] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
  * 종목 buyPlans + 핵심 필드 수동 수정 (admin 직접 패치)
  * POST /manualBuyEdit
  * body: {
