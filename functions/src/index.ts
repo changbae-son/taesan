@@ -5395,7 +5395,17 @@ export const manualBuyEdit = functions
           updatedAt: Date.now(),
         });
 
-        res.json({success: true, stockName, changes, buyPlans, ...topAllowed});
+        // ✅ 사용자 편집 직후 reconcile 자동 실행:
+        // - 옛 자동매핑 stale 슬롯이 trades와 불일치하는 경우 정리
+        // - 옵션 C(consumedByManual)로 manualOverride 슬롯은 자동 보존
+        let reconcile: any = null;
+        try {
+          reconcile = await reconcileStockPlans(stockName);
+        } catch (e: any) {
+          console.error(`[manualBuyEdit] reconcile 실패: ${e.message}`);
+        }
+
+        res.json({success: true, stockName, changes, buyPlans, ...topAllowed, reconcile});
       } catch (error: any) {
         console.error("[manualBuyEdit] 오류:", error.message);
         res.status(500).json({success: false, error: error.message});
@@ -5493,7 +5503,31 @@ export const manualSellEdit = functions
           updatedAt: Date.now(),
         });
 
-        res.json({success: true, stockName, changes, sellPlans, maSells});
+        // ✅ 사용자 편집 직후 reconcile 자동 실행 (옵션 A: 원천 해결):
+        // - manualOverride=true 슬롯이 trade를 흡수한 후 옛 자동매핑이 stale로 남는 케이스 자동 청소
+        // - 옵션 C(consumedByManual)로 manualOverride/maSells filled 합만큼 sortedSells skip
+        // - 남은 trade가 없으면 non-manualOverride 슬롯의 filled=true는 자동 리셋
+        // - reconcile 내부에 latest doc 재조회+manualOverride 최종 보호 있어서 race 안전
+        let reconcile: any = null;
+        try {
+          reconcile = await reconcileStockPlans(stockName);
+        } catch (e: any) {
+          console.error(`[manualSellEdit] reconcile 실패: ${e.message}`);
+        }
+
+        // reconcile 후 최신 sellPlans/maSells 재조회 (UI에 정확한 결과 반환)
+        let finalSellPlans = sellPlans;
+        let finalMaSells = maSells;
+        try {
+          const refreshed = await docRef.get();
+          const rd = refreshed.data() || {};
+          if (Array.isArray(rd.sellPlans)) finalSellPlans = rd.sellPlans;
+          if (Array.isArray(rd.maSells)) finalMaSells = rd.maSells;
+        } catch (e) {
+          // ignore
+        }
+
+        res.json({success: true, stockName, changes, sellPlans: finalSellPlans, maSells: finalMaSells, reconcile});
       } catch (error: any) {
         console.error("[manualSellEdit] 오류:", error.message);
         res.status(500).json({success: false, error: error.message});
