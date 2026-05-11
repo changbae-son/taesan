@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import {
   BarChart,
   Bar,
@@ -6,8 +7,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  LineChart,
-  Line,
   PieChart,
   Pie,
   Cell,
@@ -23,140 +22,331 @@ interface Props {
 }
 
 const COLORS = ['#4caf50', '#ff9800', '#f44336', '#4a90d9', '#9c27b0'];
+const SYSTEM_TAGS = new Set(['#키움동기화', '#단위의심', '키움동기화', '단위의심']);
+
+const fmt = (n: number) => Math.round(n).toLocaleString();
+const fmtSign = (n: number) => (n >= 0 ? `+${fmt(n)}` : fmt(n));
+const colorOf = (n: number) => (n >= 0 ? '#4caf50' : '#f44336');
 
 export default function Dashboard({ stocks, trades, snapshots }: Props) {
-  // KPI
-  const totalStocks = stocks.length;
-  const profitStocks = stocks.filter(
-    (s) => s.avgPrice > 0 && s.currentPrice > s.avgPrice
-  ).length;
-  const lossStocks = stocks.filter(
-    (s) => s.avgPrice > 0 && s.currentPrice <= s.avgPrice
-  ).length;
+  // ─── 종목별 매수/매도 집계 (trades 기반 정확 계산) ───
+  const perStock = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        name: string;
+        boughtAmt: number;
+        boughtQty: number;
+        soldAmt: number;
+        soldQty: number;
+        avgBuyPrice: number;
+        realized: number;
+      }
+    > = {};
+    for (const t of trades) {
+      if (!t.stockName) continue;
+      const k = t.stockName;
+      if (!map[k]) {
+        map[k] = { name: k, boughtAmt: 0, boughtQty: 0, soldAmt: 0, soldQty: 0, avgBuyPrice: 0, realized: 0 };
+      }
+      const price = Number(t.price) || 0;
+      const qty = Number(t.quantity) || 0;
+      if (qty <= 0 || price <= 0) continue;
+      if (t.type === 'buy') {
+        map[k].boughtAmt += price * qty;
+        map[k].boughtQty += qty;
+      } else if (t.type === 'sell') {
+        map[k].soldAmt += price * qty;
+        map[k].soldQty += qty;
+      }
+    }
+    Object.values(map).forEach((s) => {
+      s.avgBuyPrice = s.boughtQty > 0 ? s.boughtAmt / s.boughtQty : 0;
+      s.realized = s.soldAmt - s.soldQty * s.avgBuyPrice;
+    });
+    return map;
+  }, [trades]);
 
-  const avgProfit =
-    stocks.filter((s) => s.avgPrice > 0).length > 0
-      ? stocks
-          .filter((s) => s.avgPrice > 0)
-          .reduce(
-            (sum, s) =>
-              sum + ((s.currentPrice - s.avgPrice) / s.avgPrice) * 100,
-            0
-          ) / stocks.filter((s) => s.avgPrice > 0).length
-      : 0;
+  // ─── 전체 KPI ───
+  const kpi = useMemo(() => {
+    const holdings = stocks.filter((s) => (s.totalQuantity || 0) > 0);
+    const completed = stocks.filter(
+      (s) => (s.totalQuantity || 0) === 0 && ((s.cycles && s.cycles.length > 0) || (s.sellPlans || []).some((p) => p.filled))
+    );
 
-  // 누적 실현 수익
-  const realizedProfit = snapshots.reduce(
-    (sum, s) => sum + s.profitPercent,
-    0
+    let totalBoughtAmt = 0;
+    let totalRealized = 0;
+    for (const ps of Object.values(perStock)) {
+      totalBoughtAmt += ps.boughtAmt;
+      totalRealized += ps.realized;
+    }
+
+    let unrealized = 0;
+    let holdingMarketValue = 0;
+    let holdingCostBasis = 0;
+    for (const s of holdings) {
+      const avg = Number(s.avgPrice) || 0;
+      const cur = Number(s.currentPrice) || 0;
+      const qty = Number(s.totalQuantity) || 0;
+      if (avg > 0 && qty > 0) {
+        unrealized += (cur - avg) * qty;
+        holdingMarketValue += cur * qty;
+        holdingCostBasis += avg * qty;
+      }
+    }
+
+    const realizedPct = totalBoughtAmt > 0 ? (totalRealized / totalBoughtAmt) * 100 : 0;
+    const unrealizedPct = holdingCostBasis > 0 ? (unrealized / holdingCostBasis) * 100 : 0;
+
+    return {
+      holdingCount: holdings.length,
+      completedCount: completed.length,
+      totalCount: stocks.length,
+      totalBoughtAmt,
+      totalRealized,
+      realizedPct,
+      unrealized,
+      unrealizedPct,
+      holdingMarketValue,
+      holdingCostBasis,
+    };
+  }, [stocks, perStock]);
+
+  // ─── 종목별 손익% (보유 종목만) ───
+  const profitData = useMemo(
+    () =>
+      stocks
+        .filter((s) => (s.totalQuantity || 0) > 0 && (s.avgPrice || 0) > 0 && (s.currentPrice || 0) > 0)
+        .map((s) => ({
+          name: s.name,
+          profit: Number((((s.currentPrice - s.avgPrice) / s.avgPrice) * 100).toFixed(2)),
+        }))
+        .sort((a, b) => b.profit - a.profit),
+    [stocks]
   );
 
-  // 차트1: 종목별 손익%
-  const profitData = stocks
-    .filter((s) => s.avgPrice > 0)
-    .map((s) => ({
-      name: s.name,
-      profit: Number(
-        (((s.currentPrice - s.avgPrice) / s.avgPrice) * 100).toFixed(2)
-      ),
+  // ─── TOP3 수익 / TOP3 손실 (보유 종목 기준) ───
+  const topGainers = useMemo(() => profitData.slice(0, 3), [profitData]);
+  const topLosers = useMemo(() => [...profitData].reverse().slice(0, 3), [profitData]);
+
+  // ─── 월별 매수/매도 횟수 ───
+  const monthlyTrades = useMemo(() => {
+    const monthMap: Record<string, { month: string; buy: number; sell: number; buyAmt: number; sellAmt: number }> = {};
+    for (const t of trades) {
+      if (!t.date) continue;
+      const m = t.date.slice(0, 7); // YYYY-MM
+      if (!monthMap[m]) monthMap[m] = { month: m, buy: 0, sell: 0, buyAmt: 0, sellAmt: 0 };
+      const price = Number(t.price) || 0;
+      const qty = Number(t.quantity) || 0;
+      if (t.type === 'buy') {
+        monthMap[m].buy += 1;
+        monthMap[m].buyAmt += price * qty;
+      } else if (t.type === 'sell') {
+        monthMap[m].sell += 1;
+        monthMap[m].sellAmt += price * qty;
+      }
+    }
+    return Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
+  }, [trades]);
+
+  // ─── 차수별 진입 분포 (보유 종목만) ───
+  const buyStageData = useMemo(() => {
+    const counts = [0, 0, 0, 0, 0];
+    stocks
+      .filter((s) => (s.totalQuantity || 0) > 0)
+      .forEach((s) => {
+        const filled = (s.buyPlans || []).filter((b) => b.filled).length;
+        if (filled > 0 && filled <= 5) counts[filled - 1]++;
+      });
+    return counts.map((value, i) => ({ name: `${i + 1}차`, value }));
+  }, [stocks]);
+
+  // ─── 매수 차수별 매도 성공률 (보유 + 매매완료 사이클 통합) ───
+  // 정의: N차까지 매수 도달한 종목/사이클 중에서 매도 1회 이상 발생한 비율
+  const buyLevelSuccess = useMemo(() => {
+    const reached = [0, 0, 0, 0, 0]; // N차 이상 매수
+    const sold = [0, 0, 0, 0, 0]; // 그 중 매도 1회+
+    const consider = (buyPlans: any[], sellPlans: any[], maSells: any[]) => {
+      const filled = (buyPlans || []).filter((b) => b.filled).length;
+      const hasSell = (sellPlans || []).some((p) => p.filled) || (maSells || []).some((m) => m.filled);
+      for (let i = 0; i < filled && i < 5; i++) {
+        reached[i]++;
+        if (hasSell) sold[i]++;
+      }
+    };
+    for (const s of stocks) {
+      consider(s.buyPlans, s.sellPlans, s.maSells);
+      for (const c of s.cycles || []) consider(c.buyPlans, c.sellPlans, c.maSells);
+    }
+    return reached.map((r, i) => ({
+      name: `${i + 1}차+`,
+      rate: r > 0 ? Number(((sold[i] / r) * 100).toFixed(1)) : 0,
+      sample: r,
     }));
+  }, [stocks]);
 
-  // 차트2: 포트폴리오 수익 추이
-  const portfolioData: { date: string; cumProfit: number }[] = [];
-  let cumProfit = 0;
-  const sortedSnaps = [...snapshots].sort((a, b) => a.createdAt - b.createdAt);
-  sortedSnaps.forEach((s) => {
-    cumProfit += s.profitPercent;
-    portfolioData.push({
-      date: s.date,
-      cumProfit: Number(cumProfit.toFixed(2)),
-    });
-  });
+  // ─── 매도 분류: 수익% 매도 vs MA 매도 (보유+사이클 통합) ───
+  const sellTypeData = useMemo(() => {
+    let profitSell = 0;
+    let maSell = 0;
+    for (const s of stocks) {
+      profitSell += (s.sellPlans || []).filter((p) => p.filled).length;
+      maSell += (s.maSells || []).filter((m) => m.filled).length;
+      for (const c of s.cycles || []) {
+        profitSell += (c.sellPlans || []).filter((p) => p.filled).length;
+        maSell += (c.maSells || []).filter((m) => m.filled).length;
+      }
+    }
+    const total = profitSell + maSell;
+    return [
+      { name: '수익% 매도', value: profitSell, pct: total > 0 ? ((profitSell / total) * 100).toFixed(1) : '0' },
+      { name: 'MA 매도', value: maSell, pct: total > 0 ? ((maSell / total) * 100).toFixed(1) : '0' },
+    ];
+  }, [stocks]);
 
-  // 차트3: 차수별 진입 분포
-  const levelCounts = [0, 0, 0, 0, 0];
-  stocks.forEach((s) => {
-    const filled = (s.buyPlans || []).filter((b) => b.filled).length;
-    if (filled > 0 && filled <= 5) levelCounts[filled - 1]++;
-  });
-  const pieData = levelCounts.map((count, i) => ({
-    name: `${i + 1}차`,
-    value: count,
-  }));
+  // ─── 매매 사이클 분석 ───
+  const cycleStats = useMemo(() => {
+    const all: { profitPercent: number; days: number; cycleNo: number; stockName: string }[] = [];
+    for (const s of stocks) {
+      for (const c of s.cycles || []) {
+        const start = c.startDate ? new Date(c.startDate).getTime() : 0;
+        const end = c.endDate ? new Date(c.endDate).getTime() : 0;
+        const days = start && end ? Math.max(0, Math.round((end - start) / (1000 * 60 * 60 * 24))) : 0;
+        all.push({ profitPercent: c.profitPercent || 0, days, cycleNo: c.cycleNo, stockName: s.name });
+      }
+    }
+    if (all.length === 0) {
+      return { count: 0, avgProfit: 0, avgDays: 0, bestProfit: 0, worstProfit: 0 };
+    }
+    const sum = all.reduce((a, b) => a + b.profitPercent, 0);
+    const dayss = all.reduce((a, b) => a + b.days, 0);
+    return {
+      count: all.length,
+      avgProfit: sum / all.length,
+      avgDays: dayss / all.length,
+      bestProfit: Math.max(...all.map((c) => c.profitPercent)),
+      worstProfit: Math.min(...all.map((c) => c.profitPercent)),
+    };
+  }, [stocks]);
 
-  // 매매 패턴 분석
+  // ─── 매매 패턴 분석 ───
   const ruleACount = stocks.filter((s) => s.rule === 'A').length;
   const ruleBCount = stocks.filter((s) => s.rule === 'B').length;
 
-  // 태그 통계
-  const tagCounts: Record<string, number> = {};
-  trades.forEach((t) => {
-    (t.tags || []).forEach((tag) => {
-      tagCounts[tag] = (tagCounts[tag] || 0) + 1;
-    });
-  });
-  const topTags = Object.entries(tagCounts)
-    .sort(([, a], [, b]) => b - a)
-    .slice(0, 5);
+  // ─── 태그 통계 (시스템 태그 제외) ───
+  const topTags = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const t of trades) {
+      for (const tag of t.tags || []) {
+        const norm = tag.startsWith('#') ? tag.slice(1) : tag;
+        if (SYSTEM_TAGS.has(tag) || SYSTEM_TAGS.has(norm)) continue;
+        counts[norm] = (counts[norm] || 0) + 1;
+      }
+    }
+    return Object.entries(counts)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 8);
+  }, [trades]);
+
+  // snapshots는 deprecated이지만 backward-compat용으로 유지 (사용 안 함)
+  void snapshots;
 
   return (
     <div className={styles.container}>
       <h2 className={styles.title}>통계 대시보드</h2>
 
-      {/* KPI 카드 */}
+      {/* KPI */}
       <div className={styles.kpiGrid}>
         <div className={styles.kpiCard}>
-          <span className={styles.kpiLabel}>총 투자 종목</span>
-          <span className={styles.kpiValue}>{totalStocks}</span>
-        </div>
-        <div className={styles.kpiCard}>
-          <span className={styles.kpiLabel}>평균 수익률</span>
-          <span
-            className={styles.kpiValue}
-            style={{ color: avgProfit >= 0 ? '#4caf50' : '#f44336' }}
-          >
-            {avgProfit.toFixed(2)}%
-          </span>
-        </div>
-        <div className={styles.kpiCard}>
-          <span className={styles.kpiLabel}>수익 / 손실</span>
+          <span className={styles.kpiLabel}>보유 종목 / 매매완료</span>
           <span className={styles.kpiValue}>
-            <span style={{ color: '#4caf50' }}>{profitStocks}</span> /{' '}
-            <span style={{ color: '#f44336' }}>{lossStocks}</span>
+            {kpi.holdingCount} / <span style={{ color: '#888', fontSize: 18 }}>{kpi.completedCount}</span>
           </span>
         </div>
         <div className={styles.kpiCard}>
-          <span className={styles.kpiLabel}>누적 실현 수익</span>
-          <span
-            className={styles.kpiValue}
-            style={{ color: realizedProfit >= 0 ? '#4caf50' : '#f44336' }}
-          >
-            {realizedProfit.toFixed(2)}%
+          <span className={styles.kpiLabel}>평가손익 (보유)</span>
+          <span className={styles.kpiValue} style={{ color: colorOf(kpi.unrealized) }}>
+            {fmtSign(kpi.unrealized)}원
           </span>
+          <span className={styles.kpiSub} style={{ color: colorOf(kpi.unrealizedPct) }}>
+            {kpi.unrealizedPct >= 0 ? '+' : ''}
+            {kpi.unrealizedPct.toFixed(2)}%
+          </span>
+        </div>
+        <div className={styles.kpiCard}>
+          <span className={styles.kpiLabel}>실현손익 (누적)</span>
+          <span className={styles.kpiValue} style={{ color: colorOf(kpi.totalRealized) }}>
+            {fmtSign(kpi.totalRealized)}원
+          </span>
+          <span className={styles.kpiSub} style={{ color: colorOf(kpi.realizedPct) }}>
+            {kpi.realizedPct >= 0 ? '+' : ''}
+            {kpi.realizedPct.toFixed(2)}%
+          </span>
+        </div>
+        <div className={styles.kpiCard}>
+          <span className={styles.kpiLabel}>총 매수금액</span>
+          <span className={styles.kpiValue} style={{ color: '#333' }}>
+            {fmt(kpi.totalBoughtAmt)}원
+          </span>
+          <span className={styles.kpiSub}>보유 시가 {fmt(kpi.holdingMarketValue)}원</span>
         </div>
       </div>
 
-      {/* 차트1: 종목별 손익 */}
+      {/* TOP3 카드 */}
+      {(topGainers.length > 0 || topLosers.length > 0) && (
+        <div className={styles.topRow}>
+          <div className={styles.chartCard}>
+            <h3 className={styles.chartTitle}>🏆 수익 TOP3 (보유)</h3>
+            {topGainers.length === 0 ? (
+              <p className={styles.emptyHint}>보유 종목 없음</p>
+            ) : (
+              <ul className={styles.topList}>
+                {topGainers.map((g) => (
+                  <li key={g.name} className={styles.topItem}>
+                    <span className={styles.topName}>{g.name}</span>
+                    <span style={{ color: colorOf(g.profit), fontWeight: 700 }}>
+                      {g.profit >= 0 ? '+' : ''}
+                      {g.profit.toFixed(2)}%
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className={styles.chartCard}>
+            <h3 className={styles.chartTitle}>📉 손실 TOP3 (보유)</h3>
+            {topLosers.length === 0 ? (
+              <p className={styles.emptyHint}>보유 종목 없음</p>
+            ) : (
+              <ul className={styles.topList}>
+                {topLosers.map((g) => (
+                  <li key={g.name} className={styles.topItem}>
+                    <span className={styles.topName}>{g.name}</span>
+                    <span style={{ color: colorOf(g.profit), fontWeight: 700 }}>
+                      {g.profit >= 0 ? '+' : ''}
+                      {g.profit.toFixed(2)}%
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 종목별 손익% */}
       {profitData.length > 0 && (
         <div className={styles.chartCard}>
-          <h3 className={styles.chartTitle}>종목별 현재 손익%</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={profitData}>
+          <h3 className={styles.chartTitle}>종목별 현재 손익% (보유)</h3>
+          <ResponsiveContainer width="100%" height={Math.max(250, profitData.length * 30)}>
+            <BarChart data={profitData} layout="vertical" margin={{ left: 60 }}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" fontSize={12} />
-              <YAxis
-                fontSize={12}
-                tickFormatter={(v) => `${v}%`}
-              />
-              <Tooltip
-                formatter={(v) => [`${Number(v).toFixed(2)}%`, '손익']}
-              />
+              <XAxis type="number" fontSize={12} tickFormatter={(v) => `${v}%`} />
+              <YAxis type="category" dataKey="name" fontSize={11} width={80} />
+              <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}%`, '손익']} />
               <Bar dataKey="profit">
                 {profitData.map((entry, i) => (
-                  <Cell
-                    key={i}
-                    fill={entry.profit >= 0 ? '#4caf50' : '#f44336'}
-                  />
+                  <Cell key={i} fill={entry.profit >= 0 ? '#4caf50' : '#f44336'} />
                 ))}
               </Bar>
             </BarChart>
@@ -164,47 +354,41 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
         </div>
       )}
 
-      {/* 차트2: 포트폴리오 수익 추이 */}
-      {portfolioData.length > 0 && (
+      {/* 월별 매매 횟수 */}
+      {monthlyTrades.length > 0 && (
         <div className={styles.chartCard}>
-          <h3 className={styles.chartTitle}>포트폴리오 수익 추이</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={portfolioData}>
+          <h3 className={styles.chartTitle}>월별 매매 횟수</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={monthlyTrades}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" fontSize={12} />
-              <YAxis
-                fontSize={12}
-                tickFormatter={(v) => `${v}%`}
-              />
+              <XAxis dataKey="month" fontSize={11} />
+              <YAxis fontSize={12} />
               <Tooltip
-                formatter={(v) => [`${Number(v).toFixed(2)}%`, '누적 수익']}
+                formatter={(v, name) => [`${v}건`, name === 'buy' ? '매수' : '매도']}
               />
-              <Line
-                type="monotone"
-                dataKey="cumProfit"
-                stroke="#4a90d9"
-                strokeWidth={2}
-              />
-            </LineChart>
+              <Legend formatter={(v) => (v === 'buy' ? '매수' : '매도')} />
+              <Bar dataKey="buy" fill="#4a90d9" />
+              <Bar dataKey="sell" fill="#ff9800" />
+            </BarChart>
           </ResponsiveContainer>
         </div>
       )}
 
-      {/* 차트3: 차수별 진입 분포 */}
-      {pieData.some((d) => d.value > 0) && (
+      {/* 차수별 진입 분포 */}
+      {buyStageData.some((d) => d.value > 0) && (
         <div className={styles.chartCard}>
-          <h3 className={styles.chartTitle}>차수별 진입 분포</h3>
+          <h3 className={styles.chartTitle}>차수별 진입 분포 (보유)</h3>
           <ResponsiveContainer width="100%" height={250}>
             <PieChart>
               <Pie
-                data={pieData.filter((d) => d.value > 0)}
+                data={buyStageData.filter((d) => d.value > 0)}
                 cx="50%"
                 cy="50%"
                 outerRadius={80}
                 dataKey="value"
                 label={(entry) => `${entry.name}: ${entry.value}`}
               >
-                {pieData
+                {buyStageData
                   .filter((d) => d.value > 0)
                   .map((_, i) => (
                     <Cell key={i} fill={COLORS[i % COLORS.length]} />
@@ -217,12 +401,97 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
         </div>
       )}
 
+      {/* 매수 차수별 매도 성공률 */}
+      {buyLevelSuccess.some((d) => d.sample > 0) && (
+        <div className={styles.chartCard}>
+          <h3 className={styles.chartTitle}>매수 차수별 매도 진입률</h3>
+          <p className={styles.chartHint}>
+            N차까지 매수한 종목/사이클 중 매도(수익% 또는 MA) 1회 이상 발생한 비율
+          </p>
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={buyLevelSuccess}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${v}%`} domain={[0, 100]} />
+              <Tooltip
+                formatter={(v: any, _n, p: any) =>
+                  [`${v}% (표본 ${p.payload.sample}건)`, '매도 진입률']
+                }
+              />
+              <Bar dataKey="rate" fill="#4a90d9" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 매도 분류 (수익% vs MA) */}
+      {sellTypeData[0].value + sellTypeData[1].value > 0 && (
+        <div className={styles.chartCard}>
+          <h3 className={styles.chartTitle}>매도 유형 분포</h3>
+          <ResponsiveContainer width="100%" height={250}>
+            <PieChart>
+              <Pie
+                data={sellTypeData}
+                cx="50%"
+                cy="50%"
+                outerRadius={80}
+                dataKey="value"
+                label={(entry: any) => `${entry.name}: ${entry.value}건 (${entry.pct}%)`}
+              >
+                <Cell fill="#4caf50" />
+                <Cell fill="#9c27b0" />
+              </Pie>
+              <Legend />
+              <Tooltip formatter={(v) => `${v}건`} />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* 매매 사이클 분석 */}
+      {cycleStats.count > 0 && (
+        <div className={styles.chartCard}>
+          <h3 className={styles.chartTitle}>매매 사이클 분석</h3>
+          <p className={styles.chartHint}>매매완료(전량매도) 후 영구 보관된 사이클 기준</p>
+          <div className={styles.patternGrid}>
+            <div className={styles.patternItem}>
+              <span className={styles.patternLabel}>완료 사이클</span>
+              <span className={styles.patternValue}>{cycleStats.count}회</span>
+            </div>
+            <div className={styles.patternItem}>
+              <span className={styles.patternLabel}>평균 수익률</span>
+              <span className={styles.patternValue} style={{ color: colorOf(cycleStats.avgProfit) }}>
+                {cycleStats.avgProfit >= 0 ? '+' : ''}
+                {cycleStats.avgProfit.toFixed(2)}%
+              </span>
+            </div>
+            <div className={styles.patternItem}>
+              <span className={styles.patternLabel}>평균 보유일</span>
+              <span className={styles.patternValue}>{cycleStats.avgDays.toFixed(0)}일</span>
+            </div>
+            <div className={styles.patternItem}>
+              <span className={styles.patternLabel}>최고 수익률</span>
+              <span className={styles.patternValue} style={{ color: '#4caf50' }}>
+                +{cycleStats.bestProfit.toFixed(2)}%
+              </span>
+            </div>
+            <div className={styles.patternItem}>
+              <span className={styles.patternLabel}>최저 수익률</span>
+              <span className={styles.patternValue} style={{ color: colorOf(cycleStats.worstProfit) }}>
+                {cycleStats.worstProfit >= 0 ? '+' : ''}
+                {cycleStats.worstProfit.toFixed(2)}%
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 매매 패턴 분석 */}
       <div className={styles.chartCard}>
         <h3 className={styles.chartTitle}>매매 패턴 분석</h3>
         <div className={styles.patternGrid}>
-          <div className={styles.patternItem}>
-            <span className={styles.patternLabel}>룰A / 룰B 비율</span>
+          <div className={styles.patternItem} title="룰A: 매수가 대비 -10% / 룰B: 저점 대비 -10%">
+            <span className={styles.patternLabel}>룰A / 룰B</span>
             <span className={styles.patternValue}>
               {ruleACount} / {ruleBCount}
             </span>
@@ -232,9 +501,7 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
             <span className={styles.patternValue}>{trades.length}건</span>
           </div>
           <div className={styles.patternItem}>
-            <span className={styles.patternLabel}>
-              매수 / 매도 / 관찰
-            </span>
+            <span className={styles.patternLabel}>매수 / 매도 / 관찰</span>
             <span className={styles.patternValue}>
               {trades.filter((t) => t.type === 'buy').length} /{' '}
               {trades.filter((t) => t.type === 'sell').length} /{' '}
@@ -244,7 +511,7 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
         </div>
         {topTags.length > 0 && (
           <div className={styles.tagSection}>
-            <span className={styles.patternLabel}>자주 사용한 태그</span>
+            <span className={styles.patternLabel}>자주 사용한 태그 (사용자 태그만)</span>
             <div className={styles.tagList}>
               {topTags.map(([tag, count]) => (
                 <span key={tag} className={styles.tagBadge}>
