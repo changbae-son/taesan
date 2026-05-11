@@ -3644,6 +3644,7 @@ export const inspectStockTrades = functions
               sellPlansCount: (stock.sellPlans || []).length,
               buyPlans: stock.buyPlans,
               sellPlans: stock.sellPlans,
+              maSells: stock.maSells,
             }
             : null,
           tradesTotal: trades.length,
