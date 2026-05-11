@@ -190,6 +190,7 @@ export default function App() {
               stocks={stocks}
               trades={trades}
               onDelete={handleDeleteStock}
+              onSelect={handleSelectStock}
               trashed={trashed}
               onRestore={handleRestoreTrash}
               onPurge={handlePurgeTrash}

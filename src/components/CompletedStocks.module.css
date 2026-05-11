@@ -127,6 +127,35 @@
   margin: 0;
 }
 
+.stockNameClickable {
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.stockNameClickable:hover {
+  color: #1565c0;
+  text-decoration: underline;
+}
+
+.detailBtn {
+  padding: 2px 8px;
+  background: #e8f0fe;
+  color: #1565c0;
+  border: 1px solid #bbdefb;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  transition: all 0.15s;
+}
+
+.detailBtn:hover {
+  background: #1565c0;
+  color: #fff;
+  border-color: #1565c0;
+}
+
 .stockCode {
   font-size: 10px;
   font-weight: 500;

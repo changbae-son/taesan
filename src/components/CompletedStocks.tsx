@@ -7,6 +7,7 @@ interface Props {
   stocks: Stock[];
   trades: Trade[];
   onDelete: (id: string) => void;
+  onSelect: (id: string) => void;
   trashed: TrashedStock[];
   onRestore: (id: string) => void | Promise<void>;
   onPurge: (id: string) => void | Promise<void>;
@@ -16,7 +17,7 @@ const REENTRY_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/ree
 
 type FilterType = 'all' | 'tracking' | 'ready' | 'paused' | 'no_tracking';
 
-export default function CompletedStocks({ stocks, trades, onDelete, trashed, onRestore, onPurge }: Props) {
+export default function CompletedStocks({ stocks, trades, onDelete, onSelect, trashed, onRestore, onPurge }: Props) {
   const [filter, setFilter] = useState<FilterType>('all');
   const [busy, setBusy] = useState<string | null>(null); // 작업 중인 종목명
   const [editLowIdx, setEditLowIdx] = useState<string | null>(null);
@@ -302,7 +303,11 @@ export default function CompletedStocks({ stocks, trades, onDelete, trashed, onR
               className={`${styles.card} ${isReady ? styles.cardReady : isTracking ? styles.cardTracking : ''}`}
             >
               <div className={styles.cardHeader}>
-                <h3 className={styles.stockName}>
+                <h3
+                  className={`${styles.stockName} ${styles.stockNameClickable}`}
+                  onClick={() => onSelect(stock.id)}
+                  title="클릭하여 종목 상세 보기"
+                >
                   {stock.name}
                   {stock.code && <span className={styles.stockCode}>({stock.code})</span>}
                 </h3>
@@ -310,6 +315,13 @@ export default function CompletedStocks({ stocks, trades, onDelete, trashed, onR
                   <span className={`${styles.profitBadge} ${isProfit ? styles.profitBadgeGreen : styles.profitBadgeRed}`}>
                     누적 {isProfit ? '+' : ''}{st.cumulativeProfitPct.toFixed(1)}%
                   </span>
+                  <button
+                    className={styles.detailBtn}
+                    title="종목 상세 보기"
+                    onClick={() => onSelect(stock.id)}
+                  >
+                    📊 상세
+                  </button>
                   <button
                     className={styles.deleteBtnInline}
                     title="종목 삭제"
