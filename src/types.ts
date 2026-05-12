@@ -18,6 +18,7 @@ export interface SellPlan {
   filledQuantity?: number; // 실제 체결 수량
   filledPrice?: number; // 실제 체결 단가
   manualOverride?: boolean; // true면 sync/reconcile 시 덮어쓰지 않음
+  consumedTradeIds?: string[]; // ✅ 옵션 D: 이 슬롯이 흡수한 trade.id 목록 (정확 매칭용)
 }
 
 export interface MASell {
@@ -29,6 +30,7 @@ export interface MASell {
   fromSellPlan?: number; // 수익매도 몇차에서 이동했는지 (구버전 호환)
   insertAfterPercent?: number; // 0|5|10|15|20|25 - sellPlans 어느 차수 다음에 표시할지
   splitFromPercent?: number; // 분리 시 원래 sellPlan의 percent (복원용)
+  consumedTradeIds?: string[]; // ✅ 옵션 D: 이 MA 슬롯이 흡수한 trade.id 목록 (정확 매칭용)
 }
 
 // 매매완료 후 재진입 추적 (태산매매법: 최저가 → +100% → -50% → 첫 양봉 = 1차 매수)
@@ -111,6 +113,10 @@ export interface Stock {
   maAlertDate?: string;    // 마지막 MA 근접 알림 발송일
   maCandles?: number;      // 계산에 사용된 봉 수
   profitAlertDate?: string; // 마지막 23%+ 수익 알림 발송일
+  // ✅ 매도 매핑 정합성 audit 결과 (auditSellMapping이 백그라운드로 갱신)
+  // tradeSellQty - (sellPlans+maSells filled 합) 값. 0이면 정상, !=0이면 mismatch.
+  mappingAuditDiff?: number;
+  mappingAuditAt?: number;
   // 재진입 추적 (매매완료 후 다시 1차 매수까지)
   reentry?: ReentryTracking;
   // 사이클 history (영구 보관) - 각 매매완료 시점에 push

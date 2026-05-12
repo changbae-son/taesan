@@ -31,6 +31,19 @@
   font-weight: 600;
 }
 
+.auditBadge {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffb74d;
+  cursor: help;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
 .deleteBtn {
   margin-left: auto;
   padding: 6px 14px;

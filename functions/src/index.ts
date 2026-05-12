@@ -1005,6 +1005,18 @@ async function syncToFirestore(
     // sellPlans 중 filled된 것이 있는지 확인
     const hasFilledSells = (data.sellPlans || []).some((sp: any) => sp.filled);
 
+    // ✅ 이미 매매완료 상태(totalQty=0 + 매도 매핑 존재)인 종목은 buyPlans/sellPlans 재계산 스킵
+    // - 사용자가 정성껏 합치기/이동한 manualOverride 슬롯을 매 sync마다 단일 1차로 무너뜨리는 버그 방지
+    // - 첫 매매완료 전환만 처리하고, 그 이후 sync는 totalQuantity만 유지
+    const alreadyCompletedStable = (data.totalQuantity || 0) === 0 &&
+      (hasFilledSells || (data.maSells || []).some((m: any) => m.filled) ||
+       (data.buyPlans || []).filter((b: any) => b.filled).length >= 2 ||
+       (data.cycles || []).length > 0);
+    if (alreadyCompletedStable) {
+      console.log(`[전량매도 스킵] ${name}: 이미 매매완료 상태 (매핑 보존)`);
+      continue;
+    }
+
     console.log(`[전량매도 체크] ${name}: totalQty=${data.totalQuantity}, stockSells=${stockSells.length}건, hasFilledSells=${hasFilledSells}, buyPlansFilled=${(data.buyPlans || []).filter((b: any) => b.filled).length}`);
 
     // 매도 데이터가 있으면 항상 sellPlans를 최신 ka10072 데이터로 갱신
@@ -3394,37 +3406,70 @@ async function reconcileStockPlans(stockName: string): Promise<{
     }
   }
 
-  // ✅ 옵션 C: 사용자 정리 슬롯이 흡수한 매도 수량 계산 (이중 집계 방지)
-  // (1) sellPlans manualOverride+filled = 합치기로 흡수
-  // (2) maSells filled = MA 매도로 분류된 (분리/직접추가)
-  // → 두 합계만큼 sortedSells 앞에서부터 건너뛰고 자동 매핑 대상에서 제외
-  const consumedByManualSell = sellPlans.reduce((sum: number, sp: any) =>
-    (sp.manualOverride === true && sp.filled) ? sum + (Number(sp.filledQuantity) || 0) : sum, 0);
-  const consumedByMaSell = (Array.isArray((stock as any).maSells) ? (stock as any).maSells : []).reduce(
-    (sum: number, m: any) => m.filled ? sum + (Number(m.quantity) || 0) : sum, 0);
-  const consumedByManual = consumedByManualSell + consumedByMaSell;
+  // ✅ 옵션 D: trade.id 명시적 매칭 + 옵션 C fallback (이중 집계 방지)
+  //
+  // 1단계: consumedTradeIds 있는 슬롯 → trade.id 직접 매칭으로 정확 흡수
+  //   - 사용자 합치기/이동/편집 시점에 어떤 trade를 흡수했는지 명시 저장
+  //   - 광전자 케이스 같은 순서 추측 오류 원천 차단
+  //
+  // 2단계: consumedTradeIds 없는 기존 manualOverride 슬롯 → 옵션 C fallback (수량 기준)
+  //   - 마이그레이션 전 데이터 호환성 보장
+  //
+  // 3단계: maSells도 동일 (consumedTradeIds 우선, 없으면 수량 fallback)
+  const maSellsArr: any[] = Array.isArray((stock as any).maSells) ? (stock as any).maSells : [];
 
-  // sortedSells 앞에서부터 consumedByManual 만큼 "이미 흡수"로 건너뜀
-  // 남은 trade만 manualOverride 안 된 슬롯에 매핑 대상
+  // 1단계: 명시적 trade.id 흡수
+  const consumedIdSet = new Set<string>();
+  for (const sp of sellPlans) {
+    if (Array.isArray(sp.consumedTradeIds)) {
+      for (const id of sp.consumedTradeIds) if (id) consumedIdSet.add(String(id));
+    }
+  }
+  for (const m of maSellsArr) {
+    if (Array.isArray(m.consumedTradeIds)) {
+      for (const id of m.consumedTradeIds) if (id) consumedIdSet.add(String(id));
+    }
+  }
+
+  // 2단계: 명시적 매칭 안 된 manualOverride/maSells의 fallback 수량 계산
+  const consumedByManualSell = sellPlans.reduce((sum: number, sp: any) => {
+    if (sp.manualOverride === true && sp.filled && !Array.isArray(sp.consumedTradeIds)) {
+      return sum + (Number(sp.filledQuantity) || 0);
+    }
+    return sum;
+  }, 0);
+  const consumedByMaSell = maSellsArr.reduce((sum: number, m: any) => {
+    if (m.filled && !Array.isArray(m.consumedTradeIds)) {
+      return sum + (Number(m.quantity) || 0);
+    }
+    return sum;
+  }, 0);
+  const consumedByManualQty = consumedByManualSell + consumedByMaSell;
+
+  // 3단계: tradesToMap 구성 — id 매칭된 건 즉시 제외, 나머지에서 수량 fallback skip
+  const remainingTrades = sortedSells.filter((t) => !consumedIdSet.has(String(t.id)));
   let skipped = 0;
   const tradesToMap: any[] = [];
-  for (const t of sortedSells) {
+  for (const t of remainingTrades) {
     const tQty = Number(t.quantity) || 0;
     if (tQty <= 0) continue;
-    if (skipped + tQty <= consumedByManual) {
-      skipped += tQty; // 완전 흡수
-    } else if (skipped < consumedByManual) {
-      // 부분 흡수 + 부분 매핑
-      const remainingPart = tQty - (consumedByManual - skipped);
+    if (skipped + tQty <= consumedByManualQty) {
+      skipped += tQty; // fallback 완전 흡수
+    } else if (skipped < consumedByManualQty) {
+      // fallback 부분 흡수 + 부분 매핑
+      const remainingPart = tQty - (consumedByManualQty - skipped);
       tradesToMap.push({...t, quantity: remainingPart});
-      skipped = consumedByManual;
+      skipped = consumedByManualQty;
     } else {
       tradesToMap.push(t);
     }
   }
 
-  if (consumedByManual > 0) {
-    console.log(`[reconcile] ${stockName} manualOverride 슬롯이 흡수한 매도: ${consumedByManual}주 / 자동 매핑 대상: ${tradesToMap.reduce((s, t) => s + (Number(t.quantity) || 0), 0)}주`);
+  if (consumedIdSet.size > 0 || consumedByManualQty > 0) {
+    console.log(
+      `[reconcile] ${stockName} 흡수: id매칭 ${consumedIdSet.size}건 + 수량fallback ${consumedByManualQty}주 / ` +
+      `자동매핑 대상: ${tradesToMap.reduce((s, t) => s + (Number(t.quantity) || 0), 0)}주`
+    );
   }
 
   // 매핑 인덱스: manualOverride 안 된 슬롯에만 순차 매핑
@@ -3475,6 +3520,16 @@ async function reconcileStockPlans(stockName: string): Promise<{
     );
   }
 
+  // ✅ audit: trade 매도수량 - 매핑수량 계산 (mismatch 감지)
+  const tradeSellQtyTotal = sortedSells.reduce((s, t) => s + (Number(t.quantity) || 0), 0);
+  const finalSellPlanQty = sellPlans
+    .filter((p: any) => p.filled)
+    .reduce((s: number, p: any) => s + (Number(p.filledQuantity) || 0), 0);
+  const finalMaSellQty = maSellsArr
+    .filter((m: any) => m.filled)
+    .reduce((s: number, m: any) => s + (Number(m.quantity) || 0), 0);
+  const mappingAuditDiff = tradeSellQtyTotal - (finalSellPlanQty + finalMaSellQty);
+
   // 변경사항이 있을 때만 업데이트
   if (buyFilledCount > 0 || sellFilledCount > 0) {
     // ✅ Race condition 방지: update 직전 latest doc 재조회 후 manualOverride 최종 보호
@@ -3503,6 +3558,8 @@ async function reconcileStockPlans(stockName: string): Promise<{
     await stockDoc.ref.update({
       buyPlans: finalBuyPlans,
       sellPlans: finalSellPlans,
+      mappingAuditDiff,
+      mappingAuditAt: Date.now(),
       updatedAt: Date.now(),
     });
     console.log(
@@ -3516,6 +3573,16 @@ async function reconcileStockPlans(stockName: string): Promise<{
       exceedsBuy,
       exceedsSell,
     };
+  }
+
+  // 변경 없어도 audit diff는 최신화
+  const existingDiff = Number((stock as any).mappingAuditDiff) || 0;
+  if (existingDiff !== mappingAuditDiff) {
+    try {
+      await stockDoc.ref.update({mappingAuditDiff, mappingAuditAt: Date.now()});
+    } catch (e) {
+      // ignore
+    }
   }
 
   return {updated: false, buyFilled: 0, sellFilled: 0, exceedsBuy, exceedsSell};
@@ -4120,6 +4187,7 @@ export const auditSellMapping = functions
         const issues: any[] = [];
         const cleans: any[] = [];
 
+        const now = Date.now();
         for (const doc of stocksSnap.docs) {
           const stock = doc.data();
           const name = stock.name;
@@ -4142,6 +4210,7 @@ export const auditSellMapping = functions
             .filter((m) => m.filled)
             .reduce((s: number, m) => s + (Number(m.quantity) || 0), 0);
           const totalMappedQty = sellPlanQty + maSellQty;
+          const diff = tradeSellQty - totalMappedQty;
 
           const entry = {
             stockName: name,
@@ -4149,13 +4218,23 @@ export const auditSellMapping = functions
             sellPlanQty,
             maSellQty,
             totalMappedQty,
-            diff: tradeSellQty - totalMappedQty,
+            diff,
           };
 
           if (tradeSellQty !== totalMappedQty) {
             issues.push(entry);
           } else {
             cleans.push(entry);
+          }
+
+          // ✅ stocks doc에 audit 결과 캐싱 (프론트 경고 배지에 사용)
+          // diff=0이면 mappingAuditDiff=0 / 0이 아니면 그 값 그대로 저장
+          if ((stock.mappingAuditDiff || 0) !== diff || !stock.mappingAuditAt) {
+            try {
+              await doc.ref.update({mappingAuditDiff: diff, mappingAuditAt: now});
+            } catch (e) {
+              // ignore
+            }
           }
         }
 
@@ -5462,10 +5541,11 @@ export const manualBuyEdit = functions
  * POST /manualSellEdit
  * body: {
  *   stockName: "...",
- *   sellPlanEdits?: [{percent, set: {filled, filledPrice, filledQuantity, filledDate, manualOverride}}],
- *   maSellEdits?: [{ma, set: {filled, price, quantity, filledDate, insertAfterPercent, splitFromPercent}}]
+ *   sellPlanEdits?: [{percent, set: {filled, filledPrice, filledQuantity, filledDate, manualOverride, consumedTradeIds?}}],
+ *   maSellEdits?: [{ma, set: {filled, price, quantity, filledDate, insertAfterPercent, splitFromPercent, consumedTradeIds?}}]
  * }
  *
+ * ✅ 옵션 D: consumedTradeIds[] 가 set에 포함되면 reconcile이 정확히 그 trade.id만 흡수.
  * 클라이언트 saveStock 디바운스 race condition 우회용 (즉시 atomic 적용).
  * sellPlans / maSells의 임의 슬롯을 수정하고 manualOverride 자동 부여.
  */

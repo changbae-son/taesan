@@ -310,6 +310,69 @@ export default function StockDetail({
   ): Promise<boolean> => {
     setPersistBusy(true);
     try {
+      // ✅ 옵션 D: 슬롯별 consumedTradeIds 자동 계산 (이미 있으면 보존)
+      // 매칭 알고리즘: date 일치 trades 중 단일 정확 매칭 → 그리디 조합 매칭
+      // 못 찾으면 빈 배열 → 백엔드가 옵션 C(수량 fallback)로 처리
+      const allSells = trades
+        .filter((t) => t.stockName === local.name && t.type === 'sell' && t.id)
+        .sort((a, b) => {
+          const dc = (a.date || '').localeCompare(b.date || '');
+          if (dc !== 0) return dc;
+          return (a.price || 0) - (b.price || 0);
+        });
+      const usedTradeIds = new Set<string>();
+      const resolveIds = (date: string, qty: number): string[] => {
+        if (!date || qty <= 0) return [];
+        const candidates = allSells.filter((t) => t.date === date && !usedTradeIds.has(t.id));
+        // 1) 단일 정확 매칭
+        const exact = candidates.find((t) => (Number(t.quantity) || 0) === qty);
+        if (exact) {
+          usedTradeIds.add(exact.id);
+          return [exact.id];
+        }
+        // 2) 그리디 조합 (qty 작은 것부터)
+        const byQtyAsc = [...candidates].sort((a, b) => (Number(a.quantity) || 0) - (Number(b.quantity) || 0));
+        let remaining = qty;
+        const ids: string[] = [];
+        for (const t of byQtyAsc) {
+          const tq = Number(t.quantity) || 0;
+          if (tq <= remaining) {
+            ids.push(t.id);
+            remaining -= tq;
+            if (remaining === 0) break;
+          }
+        }
+        if (remaining === 0) {
+          ids.forEach((id) => usedTradeIds.add(id));
+          return ids;
+        }
+        return []; // 매칭 실패 → fallback
+      };
+
+      // 슬롯에 consumedTradeIds 적용 (기존 값 보존 우선)
+      // 우선순위: maSells (split된 슬롯) → sellPlans (병합 슬롯)
+      // 이렇게 하면 split된 trade가 ma에 먼저 할당되어 정확
+      const enrichMa = (newMaSells || []).map((m) => {
+        if (!m.filled) return m;
+        if (Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0) {
+          m.consumedTradeIds.forEach((id) => usedTradeIds.add(id));
+          return m;
+        }
+        const ids = resolveIds(m.filledDate || '', Number(m.quantity) || 0);
+        return ids.length > 0 ? { ...m, consumedTradeIds: ids } : m;
+      });
+      const enrichSell = newSellPlans.map((p) => {
+        if (!p.manualOverride || !p.filled) return p;
+        if (Array.isArray(p.consumedTradeIds) && p.consumedTradeIds.length > 0) {
+          p.consumedTradeIds.forEach((id) => usedTradeIds.add(id));
+          return p;
+        }
+        const ids = resolveIds(p.filledDate || '', Number(p.filledQuantity) || 0);
+        return ids.length > 0 ? { ...p, consumedTradeIds: ids } : p;
+      });
+      newSellPlans = enrichSell;
+      newMaSells = enrichMa;
+
       const sellPlanEdits = newSellPlans.map((p) => ({
         percent: p.percent,
         set: {
@@ -318,6 +381,8 @@ export default function StockDetail({
           filledQuantity: p.filledQuantity || 0,
           filledDate: p.filledDate || '',
           manualOverride: p.manualOverride === true,
+          // ✅ 옵션 D: 사용자가 흡수한 trade.id 명시 (정확 매칭용, undefined면 reconcile이 fallback)
+          consumedTradeIds: Array.isArray(p.consumedTradeIds) ? p.consumedTradeIds : [],
         },
       }));
       const maSellEdits = (newMaSells || []).map((m) => ({
@@ -329,6 +394,7 @@ export default function StockDetail({
           filledDate: m.filledDate || '',
           insertAfterPercent: m.insertAfterPercent ?? null,
           splitFromPercent: m.splitFromPercent ?? null,
+          consumedTradeIds: Array.isArray(m.consumedTradeIds) ? m.consumedTradeIds : [],
         },
       }));
       const res = await fetch(MANUAL_SELL_EDIT_API, {
@@ -1047,6 +1113,15 @@ export default function StockDetail({
         >
           {filledBuys === 0 ? '관찰' : local.totalQuantity === 0 ? '완료' : '보유'}
         </span>
+        {/* ✅ 옵션 H: 매도 매핑 불일치 경고 배지 */}
+        {(local.mappingAuditDiff || 0) !== 0 && (
+          <span
+            className={styles.auditBadge}
+            title={`매도 trade 수량과 매핑 수량 차이: ${local.mappingAuditDiff! > 0 ? '+' : ''}${local.mappingAuditDiff}주\n양수: trade가 더 많음 (누락)\n음수: 매핑이 더 많음 (이중집계)`}
+          >
+            ⚠️ 매핑 불일치 {local.mappingAuditDiff! > 0 ? '+' : ''}{local.mappingAuditDiff}주
+          </span>
+        )}
         <button
           className={styles.deleteBtn}
           onClick={() => {
