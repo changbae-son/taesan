@@ -325,16 +325,55 @@ export default function StockDetail({
           return (a.price || 0) - (b.price || 0);
         });
       const usedTradeIds = new Set<string>();
-      const resolveIds = (date: string, qty: number): string[] => {
+      const resolveIds = (date: string, qty: number, filledPrice?: number): string[] => {
         if (!date || qty <= 0) return [];
         const candidates = allSells.filter((t) => t.date === date && !usedTradeIds.has(t.id));
-        // 1) 단일 정확 매칭
+        // 1-A) date + qty + price 단일 정확 매칭 (최우선)
+        if (filledPrice && filledPrice > 0) {
+          const exactByPrice = candidates.find(
+            (t) => (Number(t.quantity) || 0) === qty && (Number(t.price) || 0) === filledPrice
+          );
+          if (exactByPrice) {
+            usedTradeIds.add(exactByPrice.id);
+            return [exactByPrice.id];
+          }
+          // 1-B) date + qty + price (가중평균 역추적) 다중 조합
+          // 예: filledQty=144, filledPrice=12320 → 같은 날 trade 조합 중 합/평균이 일치
+          const sameDay = candidates;
+          // 조합 탐색은 비용 큼 → trade 수가 적을 때만(<=10)
+          if (sameDay.length <= 10 && sameDay.length >= 2) {
+            // 2^n subset enumeration
+            const n = sameDay.length;
+            for (let mask = 1; mask < (1 << n); mask++) {
+              let sumQty = 0, sumAmt = 0;
+              const subset: string[] = [];
+              for (let i = 0; i < n; i++) {
+                if (mask & (1 << i)) {
+                  const t = sameDay[i];
+                  const tq = Number(t.quantity) || 0;
+                  const tp = Number(t.price) || 0;
+                  sumQty += tq;
+                  sumAmt += tq * tp;
+                  subset.push(t.id);
+                }
+              }
+              if (sumQty === qty) {
+                const avg = sumQty > 0 ? Math.round(sumAmt / sumQty) : 0;
+                if (avg === filledPrice) {
+                  subset.forEach((id) => usedTradeIds.add(id));
+                  return subset;
+                }
+              }
+            }
+          }
+        }
+        // 2) 단일 qty 정확 매칭 (가격 무시 — 1주처럼 흔한 케이스 fallback)
         const exact = candidates.find((t) => (Number(t.quantity) || 0) === qty);
         if (exact) {
           usedTradeIds.add(exact.id);
           return [exact.id];
         }
-        // 2) 그리디 조합 (qty 작은 것부터)
+        // 3) 그리디 조합 (qty 작은 것부터)
         const byQtyAsc = [...candidates].sort((a, b) => (Number(a.quantity) || 0) - (Number(b.quantity) || 0));
         let remaining = qty;
         const ids: string[] = [];
@@ -362,7 +401,7 @@ export default function StockDetail({
           m.consumedTradeIds.forEach((id) => usedTradeIds.add(id));
           return m;
         }
-        const ids = resolveIds(m.filledDate || '', Number(m.quantity) || 0);
+        const ids = resolveIds(m.filledDate || '', Number(m.quantity) || 0, Number(m.price) || 0);
         return ids.length > 0 ? { ...m, consumedTradeIds: ids } : m;
       });
       const enrichSell = newSellPlans.map((p) => {
@@ -371,7 +410,7 @@ export default function StockDetail({
           p.consumedTradeIds.forEach((id) => usedTradeIds.add(id));
           return p;
         }
-        const ids = resolveIds(p.filledDate || '', Number(p.filledQuantity) || 0);
+        const ids = resolveIds(p.filledDate || '', Number(p.filledQuantity) || 0, Number(p.filledPrice) || 0);
         return ids.length > 0 ? { ...p, consumedTradeIds: ids } : p;
       });
       newSellPlans = enrichSell;
@@ -1061,33 +1100,57 @@ export default function StockDetail({
   // 슬롯별 trade fallback (manualOverride 종목은 빈 배열로 강제)
   const sellsByDate = hasAnyManualOverride ? [] : sellsIndividual;
 
-  // ── 미분류 매도 감지 ──
-  // sellPlans + maSells filled 합계와 trades 합계 비교 → 차이만큼 미매핑
-  const totalTradeSellQty = actualSells.reduce((s, t) => s + t.quantity, 0);
-  const mappedSellPlanQty = local.sellPlans.reduce((s, p) => p.filled ? s + (p.filledQuantity || 0) : s, 0);
-  const mappedMaSellQty = (local.maSells || []).reduce((s, m) => m.filled ? s + m.quantity : s, 0);
-  const totalMappedSellQty = mappedSellPlanQty + mappedMaSellQty;
-  const unmappedSellQty = Math.max(0, totalTradeSellQty - totalMappedSellQty);
-
-  // 미분류 trades 식별: 시간순 정렬 후 mapped 합계만큼 "소비" → 남는 trade가 미분류
-  const unmappedTrades: Array<{ id: string; date: string; price: number; quantity: number }> = [];
-  if (unmappedSellQty > 0) {
-    const sortedSellsForCheck = [...actualSells].sort((a, b) =>
-      (a.date || '').localeCompare(b.date || '') || a.price - b.price
-    );
-    let consumed = 0;
-    for (const t of sortedSellsForCheck) {
-      if (consumed + t.quantity <= totalMappedSellQty) {
-        consumed += t.quantity; // 완전 매핑됨
-      } else if (consumed < totalMappedSellQty) {
-        const partial = t.quantity - (totalMappedSellQty - consumed);
-        unmappedTrades.push({ id: t.id, date: t.date, price: t.price, quantity: partial });
-        consumed = totalMappedSellQty;
-      } else {
-        unmappedTrades.push({ id: t.id, date: t.date, price: t.price, quantity: t.quantity });
-      }
+  // ── 미분류 매도 감지 (옵션 D + 옵션 C fallback 결합) ──
+  // 1단계: consumedTradeIds 명시된 슬롯의 trade.id는 정확히 제외
+  // 2단계: consumedTradeIds 없는 slot은 수량 기반 fallback (legacy 데이터 호환)
+  const consumedIdSetFE = new Set<string>();
+  for (const sp of local.sellPlans) {
+    if (Array.isArray(sp.consumedTradeIds)) {
+      for (const id of sp.consumedTradeIds) if (id) consumedIdSetFE.add(String(id));
     }
   }
+  for (const m of local.maSells || []) {
+    if (Array.isArray(m.consumedTradeIds)) {
+      for (const id of m.consumedTradeIds) if (id) consumedIdSetFE.add(String(id));
+    }
+  }
+
+  // 옵션 C fallback 대상 수량 (consumedTradeIds 없는 filled slot)
+  const fallbackQtyFromSell = local.sellPlans.reduce((s, p) => {
+    if (p.filled && !(Array.isArray(p.consumedTradeIds) && p.consumedTradeIds.length > 0)) {
+      return s + (p.filledQuantity || 0);
+    }
+    return s;
+  }, 0);
+  const fallbackQtyFromMa = (local.maSells || []).reduce((s, m) => {
+    if (m.filled && !(Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0)) {
+      return s + (m.quantity || 0);
+    }
+    return s;
+  }, 0);
+  const fallbackTotalQty = fallbackQtyFromSell + fallbackQtyFromMa;
+
+  // 후보 trades = consumedIdSet에 없는 매도
+  const candidateSells = actualSells.filter((t) => !consumedIdSetFE.has(String(t.id)));
+
+  // 후보 trades를 정렬해서 fallback 수량만큼 흡수 시뮬레이션
+  const unmappedTrades: Array<{ id: string; date: string; price: number; quantity: number }> = [];
+  const sortedCandidates = [...candidateSells].sort((a, b) =>
+    (a.date || '').localeCompare(b.date || '') || a.price - b.price
+  );
+  let consumed = 0;
+  for (const t of sortedCandidates) {
+    if (consumed + t.quantity <= fallbackTotalQty) {
+      consumed += t.quantity; // fallback에 흡수됨
+    } else if (consumed < fallbackTotalQty) {
+      const partial = t.quantity - (fallbackTotalQty - consumed);
+      unmappedTrades.push({ id: t.id, date: t.date, price: t.price, quantity: partial });
+      consumed = fallbackTotalQty;
+    } else {
+      unmappedTrades.push({ id: t.id, date: t.date, price: t.price, quantity: t.quantity });
+    }
+  }
+  const unmappedSellQty = unmappedTrades.reduce((s, t) => s + t.quantity, 0);
 
   // 다음 매도 차수 인덱스 (manualOverride 종목은 sellPlans만 보고 판단)
   const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsByDate[i]);
