@@ -1039,11 +1039,13 @@ export default function StockDetail({
 
   // buyPlans 체결 데이터로 fallback (Kiwoom 연동 이전 종목 대응)
   // filledDate 없어도 filledPrice+filledQuantity 있으면 fallback 허용 (종가매수 등 API 날짜 미지원 대비)
+  // ⚠️ filledDate 비어있으면 빈 문자열 그대로 — updatedAt(=최근 sync 시각)을 매수일로 위장하면
+  // "1차 매수일이 오늘"처럼 오인되므로 절대 fallback 금지. UI에서 "-" 또는 "날짜미상"으로 표시.
   const syntheticBuys: Trade[] = local.buyPlans
     .filter((bp) => bp.filled && bp.filledPrice && bp.filledQuantity)
     .map((bp) => ({
       id: `synthetic-${local.id}-${bp.level}`,
-      date: bp.filledDate || new Date(local.updatedAt || Date.now()).toISOString().slice(0, 10),
+      date: bp.filledDate || '',
       stockName: local.name,
       type: 'buy' as const,
       price: bp.filledPrice!,
@@ -1830,18 +1832,21 @@ export default function StockDetail({
                             {nearInfo.gap >= 0 ? '+' : ''}{nearInfo.gap.toFixed(1)}%
                           </span>
                         )}
-                        {bp.filled && realDate && (
+                        {bp.filled && (
                           <div className={styles.dateUnder}>
                             <input
                               type="date"
                               className={styles.dateInputCompact}
                               value={realDate}
+                              placeholder="날짜 미상"
+                              title={realDate ? '' : '매수일이 기록되지 않음 — 클릭하여 입력'}
                               onChange={(e) => {
                                 const plans = [...local.buyPlans];
                                 plans[i] = { ...plans[i], filledDate: e.target.value };
                                 update({ buyPlans: plans });
                               }}
                             />
+                            {!realDate && <span style={{ color: '#aaa', fontSize: '10px', marginLeft: 4 }}>날짜 미상</span>}
                           </div>
                         )}
                         {!bp.filled && !realDate && <div className={styles.dateUnder} style={{ color: '#ccc' }}>-</div>}
