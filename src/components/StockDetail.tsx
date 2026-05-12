@@ -14,19 +14,23 @@ import styles from './StockDetail.module.css';
 
 interface Props {
   stock: Stock;
+  stocks: Stock[];
   trades: Trade[];
   snapshots: Snapshot[];
   onSave: (stock: Stock, immediate?: boolean) => void;
   onDelete: (id: string) => void;
+  onSelect: (id: string) => void;
   onSnapshot: (stockId: string, stockName: string, profit: number) => void;
 }
 
 export default function StockDetail({
   stock,
+  stocks,
   trades,
   snapshots,
   onSave,
   onDelete,
+  onSelect,
   onSnapshot,
 }: Props) {
   const [local, setLocal] = useState<Stock>(stock);
@@ -1092,8 +1096,66 @@ export default function StockDetail({
     : (firstSellPlan?.filledPrice || firstSellPlan?.price || 0);
   const firstSellRefPercent = firstSellPlan?.percent || 0;
 
+  // 종목 빠른 전환: 보유 → 매매완료 → 관찰 순으로 정렬
+  const sortedNavStocks = [...stocks]
+    .filter((s) => s.name && s.name.trim())
+    .sort((a, b) => {
+      const tierOf = (s: Stock) => {
+        if ((s.totalQuantity || 0) > 0) return 0; // 보유
+        if ((s.buyPlans || []).some((b) => b.filled)) return 1; // 매매완료
+        return 2; // 관찰
+      };
+      const ta = tierOf(a);
+      const tb = tierOf(b);
+      if (ta !== tb) return ta - tb;
+      return a.name.localeCompare(b.name, 'ko');
+    });
+  const currentNavIdx = sortedNavStocks.findIndex((s) => s.id === local.id);
+  const prevStock = currentNavIdx > 0 ? sortedNavStocks[currentNavIdx - 1] : null;
+  const nextStock = currentNavIdx >= 0 && currentNavIdx < sortedNavStocks.length - 1
+    ? sortedNavStocks[currentNavIdx + 1] : null;
+
   return (
     <div className={styles.container}>
+      {/* 종목 빠른 전환 바 */}
+      <div className={styles.navBar}>
+        <button
+          className={styles.navBtn}
+          disabled={!prevStock}
+          onClick={() => prevStock && onSelect(prevStock.id)}
+          title={prevStock ? `이전: ${prevStock.name}` : '이전 종목 없음'}
+        >
+          ◀
+        </button>
+        <select
+          className={styles.navSelect}
+          value={local.id}
+          onChange={(e) => onSelect(e.target.value)}
+        >
+          {sortedNavStocks.map((s) => {
+            const tier = (s.totalQuantity || 0) > 0
+              ? '🟢'
+              : (s.buyPlans || []).some((b) => b.filled) ? '🔵' : '⚪';
+            return (
+              <option key={s.id} value={s.id}>
+                {tier} {s.name}{s.code ? ` (${s.code.replace(/^A/, '')})` : ''}
+              </option>
+            );
+          })}
+        </select>
+        <button
+          className={styles.navBtn}
+          disabled={!nextStock}
+          onClick={() => nextStock && onSelect(nextStock.id)}
+          title={nextStock ? `다음: ${nextStock.name}` : '다음 종목 없음'}
+        >
+          ▶
+        </button>
+        <span className={styles.navCounter}>
+          {currentNavIdx + 1} / {sortedNavStocks.length}
+        </span>
+      </div>
+
       {/* 헤더 */}
       <div className={styles.header}>
         <h2 className={styles.title}>

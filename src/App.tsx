@@ -158,10 +158,12 @@ export default function App() {
             (selectedStock ? (
               <StockDetail
                 stock={selectedStock}
+                stocks={stocks}
                 trades={trades}
                 snapshots={snapshots}
                 onSave={handleSaveStock}
                 onDelete={handleDeleteStock}
+                onSelect={handleSelectStock}
                 onSnapshot={addSnapshot}
               />
             ) : (

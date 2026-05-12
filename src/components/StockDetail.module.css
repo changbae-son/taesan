@@ -57,6 +57,71 @@
   white-space: nowrap;
 }
 
+/* 종목 빠른 전환 바 */
+.navBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.navBtn {
+  padding: 4px 10px;
+  background: #fff;
+  color: #555;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.navBtn:hover:not(:disabled) {
+  background: #1565c0;
+  color: #fff;
+  border-color: #1565c0;
+}
+
+.navBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.navSelect {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  background: #fff;
+  color: #222;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+
+.navSelect:focus {
+  border-color: #1565c0;
+  box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.15);
+}
+
+.navCounter {
+  font-size: 11px;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  padding: 0 4px;
+  font-weight: 600;
+}
+
 .deleteBtn {
   margin-left: auto;
   padding: 6px 14px;
