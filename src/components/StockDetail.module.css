@@ -753,37 +753,38 @@
 }
 
 .planTableCompact td {
-  padding: 4px 1px;
+  padding: 3px 1px;
   border-bottom: 1px solid #f0f0f0;
   vertical-align: middle;
 }
 
 /* 1열(차수+날짜): 좁게 */
 .planTableCompact td:nth-child(1) {
-  width: 44px;
+  width: 40px;
 }
 
 /* 2열(목표가) */
 .planTableCompact td:nth-child(2) {
-  width: 76px;
+  width: 70px;
 }
 
 /* 3열(실제가) */
 .planTableCompact td:nth-child(3) {
-  width: 76px;
+  width: 70px;
 }
 
 /* 4열(수량) */
 .planTableCompact td:nth-child(4) {
-  width: 60px;
+  width: 54px;
 }
 
-/* 마지막 열(버튼): 가변 — 수량 바로 오른쪽에 붙도록 좌측 정렬 */
+/* 마지막 열(버튼): 가변 — 수량 바로 오른쪽에 붙도록 좌측 정렬
+   체결+MA+이동+연필 모두 들어가도 오른쪽 경계선 안쪽 유지 */
 .planTableCompact td:last-child {
   width: auto;
   min-width: 48px;
   text-align: left;
-  padding: 4px 2px 4px 4px !important;
+  padding: 3px 2px 3px 2px !important;
 }
 
 /* 셀 내 작은 라벨 */
@@ -868,7 +869,7 @@
 .btnCell {
   white-space: nowrap;
   vertical-align: middle;
-  padding: 4px 2px 4px 4px !important;
+  padding: 3px 2px 3px 2px !important;
   text-align: left;
 }
 
@@ -1317,8 +1318,8 @@
 /* 수익매도 수동 편집 버튼 */
 .sellEditBtn {
   display: inline-block;
-  margin-left: 4px;
-  padding: 3px 6px;
+  margin-left: 2px;
+  padding: 2px 5px;
   background: #f5f5f5;
   color: #555;
   border: 1px solid #ddd;
