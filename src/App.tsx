@@ -167,8 +167,42 @@ export default function App() {
                 onSnapshot={addSnapshot}
               />
             ) : (
-              <div className="empty-state">
-                <p>좌측에서 종목을 선택하세요</p>
+              <div className="detail-empty">
+                <div className="detail-empty-card">
+                  <h3>📊 종목을 선택하세요</h3>
+                  <p className="detail-empty-hint">아래에서 종목을 선택하면 상세 정보가 표시됩니다.</p>
+                  <select
+                    className="detail-empty-select"
+                    defaultValue=""
+                    onChange={(e) => e.target.value && handleSelectStock(e.target.value)}
+                  >
+                    <option value="" disabled>— 종목 선택 —</option>
+                    {[...stocks]
+                      .filter((s) => s.name && s.name.trim())
+                      .sort((a, b) => {
+                        const tierOf = (s: typeof stocks[0]) => {
+                          if ((s.totalQuantity || 0) > 0) return 0;
+                          if ((s.buyPlans || []).some((b) => b.filled)) return 1;
+                          return 2;
+                        };
+                        const ta = tierOf(a);
+                        const tb = tierOf(b);
+                        if (ta !== tb) return ta - tb;
+                        return a.name.localeCompare(b.name, 'ko');
+                      })
+                      .map((s) => {
+                        const tier = (s.totalQuantity || 0) > 0
+                          ? '🟢'
+                          : (s.buyPlans || []).some((b) => b.filled) ? '🔵' : '⚪';
+                        return (
+                          <option key={s.id} value={s.id}>
+                            {tier} {s.name}{s.code ? ` (${s.code.replace(/^A/, '')})` : ''}
+                          </option>
+                        );
+                      })}
+                  </select>
+                  <p className="detail-empty-legend">🟢 보유  ·  🔵 매매완료  ·  ⚪ 관찰</p>
+                </div>
               </div>
             ))}
           {activeTab === 'journal' && (
