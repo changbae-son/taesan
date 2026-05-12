@@ -778,12 +778,12 @@
   width: 60px;
 }
 
-/* 마지막 열(버튼): 가변 — 남은 공간 */
+/* 마지막 열(버튼): 가변 — 수량 바로 오른쪽에 붙도록 좌측 정렬 */
 .planTableCompact td:last-child {
   width: auto;
   min-width: 48px;
-  text-align: right;
-  padding: 4px 3px !important;
+  text-align: left;
+  padding: 4px 2px 4px 4px !important;
 }
 
 /* 셀 내 작은 라벨 */
@@ -864,12 +864,12 @@
   font-size: 13px;
 }
 
-/* 버튼 셀 */
+/* 버튼 셀 — 수량 바로 옆에 붙도록 좌측 정렬 */
 .btnCell {
   white-space: nowrap;
   vertical-align: middle;
-  padding: 6px 4px !important;
-  text-align: right;
+  padding: 4px 2px 4px 4px !important;
+  text-align: left;
 }
 
 /* 기존 테이블 (이동평균선 매도 등에서 여전히 사용) */
