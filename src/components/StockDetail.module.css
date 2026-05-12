@@ -753,41 +753,43 @@
 }
 
 .planTableCompact td {
-  padding: 7px 6px;
+  padding: 6px 3px;
   border-bottom: 1px solid #f0f0f0;
   vertical-align: middle;
 }
 
 /* 1열(차수+날짜): 고정 너비 */
 .planTableCompact td:first-child {
-  width: 78px;
+  width: 56px;
 }
 
-/* 마지막 열(버튼): 고정 너비 */
+/* 마지막 열(버튼): 고정 너비 — 체결+MA+이동+edit 모두 들어갈 공간 */
 .planTableCompact td:last-child {
-  width: 62px;
+  width: auto;
+  min-width: 50px;
   text-align: right;
+  padding: 6px 4px !important;
 }
 
 /* 셀 내 작은 라벨 */
 .colLabel {
   display: block;
-  font-size: 10px;
+  font-size: 9px;
   color: #666;
   font-weight: 700;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   line-height: 1;
 }
 
 /* 차수/목표% 셀 */
 .levelCell {
   vertical-align: middle;
-  padding: 7px 4px !important;
+  padding: 6px 2px !important;
 }
 
 .levelBadge {
   font-weight: 700;
-  font-size: 13px;
+  font-size: 12px;
   color: #222;
 }
 
@@ -1069,12 +1071,12 @@
 }
 
 .fillBtn {
-  padding: 4px 10px;
+  padding: 3px 8px;
   border: 1px solid #ddd;
   border-radius: 4px;
   background: #fff;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .fillBtnActive {
@@ -1426,14 +1428,14 @@
 /* ── ↕️ 이동 버튼 & 팝업 ── */
 .moveSellBtn {
   display: inline-block;
-  margin-left: 4px;
-  padding: 3px 6px;
+  margin-left: 2px;
+  padding: 2px 5px;
   background: #e8f5e9;
   color: #2e7d32;
   border: 1px solid #a5d6a7;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   vertical-align: middle;
 }
 
@@ -1524,14 +1526,14 @@
 /* ── MA 분리 버튼 & 팝업 ── */
 .splitBtn {
   display: inline-block;
-  margin-left: 4px;
-  padding: 3px 6px;
+  margin-left: 2px;
+  padding: 2px 5px;
   background: #fff3e0;
   color: #e65100;
   border: 1px solid #ffb74d;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   vertical-align: middle;
 }
 
