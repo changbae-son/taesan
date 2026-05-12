@@ -119,6 +119,8 @@ export interface Stock {
   mappingAuditAt?: number;
   // 옵션 B: filled 슬롯의 filledPrice가 percent band와 어긋난 슬롯 수
   mappingBandIssues?: number;
+  // P3: consumedTradeIds 누락 슬롯 수 (옵션 C fallback 의존 = 신뢰도 낮음)
+  mappingIntegrityIssues?: number;
   // 재진입 추적 (매매완료 후 다시 1차 매수까지)
   reentry?: ReentryTracking;
   // 사이클 history (영구 보관) - 각 매매완료 시점에 push

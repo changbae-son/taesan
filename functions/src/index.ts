@@ -1005,15 +1005,26 @@ async function syncToFirestore(
     // sellPlans 중 filled된 것이 있는지 확인
     const hasFilledSells = (data.sellPlans || []).some((sp: any) => sp.filled);
 
-    // ✅ 이미 매매완료 상태(totalQty=0 + 매도 매핑 존재)인 종목은 buyPlans/sellPlans 재계산 스킵
-    // - 사용자가 정성껏 합치기/이동한 manualOverride 슬롯을 매 sync마다 단일 1차로 무너뜨리는 버그 방지
-    // - 첫 매매완료 전환만 처리하고, 그 이후 sync는 totalQuantity만 유지
-    const alreadyCompletedStable = (data.totalQuantity || 0) === 0 &&
-      (hasFilledSells || (data.maSells || []).some((m: any) => m.filled) ||
-       (data.buyPlans || []).filter((b: any) => b.filled).length >= 2 ||
-       (data.cycles || []).length > 0);
-    if (alreadyCompletedStable) {
-      console.log(`[전량매도 스킵] ${name}: 이미 매매완료 상태 (매핑 보존)`);
+    // ✅ 매핑 보존 — 다음 조건 중 하나라도 만족하면 전량매도 destructive 경로 스킵:
+    //   1) 이미 filled sellPlan 존재 (사용자가 합치기/이동한 manual 슬롯 포함)
+    //   2) maSells에 filled 있음 (MA 매도 분류 완료)
+    //   3) 2차 이상 매수 (buyPlans 보존 필요)
+    //   4) cycles 기록 있음 (과거 매매완료 사이클)
+    //   5) 어느 slot에라도 consumedTradeIds 있음 (옵션 D 매핑 적용됨)
+    //
+    // ✅ 핵심: totalQty=0 prerequisite 제거 — totalQty 1000→0 transition 시점에도
+    // 기존 매핑이 있으면 보존. 매 sync마다 전량매도가 manualOverride를 파괴하던 버그 차단.
+    //
+    // 새 종목 (filled 슬롯 전혀 없음 + 첫 전량매도 transition)에만 destructive 경로 허용.
+    const hasExistingMappingState =
+      hasFilledSells ||
+      (data.maSells || []).some((m: any) => m.filled) ||
+      (data.buyPlans || []).filter((b: any) => b.filled).length >= 2 ||
+      (data.cycles || []).length > 0 ||
+      (data.sellPlans || []).some((sp: any) => Array.isArray(sp.consumedTradeIds) && sp.consumedTradeIds.length > 0) ||
+      (data.maSells || []).some((m: any) => Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0);
+    if (hasExistingMappingState) {
+      console.log(`[전량매도 스킵] ${name}: 기존 매핑 상태 있음 (totalQty=${data.totalQuantity}, sellFilled=${hasFilledSells}) — 매핑 보존, reconcile에 위임`);
       continue;
     }
 
@@ -3509,16 +3520,18 @@ async function reconcileStockPlans(stockName: string): Promise<{
     return 25;
   };
 
-  // non-manualOverride 슬롯의 percent → index 매핑
+  // 자동매핑 대상 슬롯: non-manualOverride AND consumedTradeIds 없는 슬롯만
+  // (consumedTradeIds 있는 슬롯은 trade.id로 자기증명 → 자동매핑 대상에서 제외)
   const slotIdxByPercent: Record<number, number> = {};
   for (let i = 0; i < sellPlans.length; i++) {
-    if (!sellPlans[i].manualOverride) {
-      slotIdxByPercent[sellPlans[i].percent] = i;
-    }
+    const sp = sellPlans[i];
+    if (sp.manualOverride) continue;
+    if (Array.isArray(sp.consumedTradeIds) && sp.consumedTradeIds.length > 0) continue;
+    slotIdxByPercent[sp.percent] = i;
   }
 
-  // band별 가중평균 그룹핑
-  const groupedByBand: Record<number, {qty: number; amt: number; date: string}> = {};
+  // band별 가중평균 그룹핑 + 흡수한 trade.id 추적 (옵션 D 일관성 보장)
+  const groupedByBand: Record<number, {qty: number; amt: number; date: string; ids: string[]}> = {};
   let unmappedCount = 0;
   let unmappedQty = 0;
 
@@ -3532,13 +3545,14 @@ async function reconcileStockPlans(stockName: string): Promise<{
       unmappedQty += tQty;
       continue;
     }
-    if (!groupedByBand[band]) groupedByBand[band] = {qty: 0, amt: 0, date: ""};
+    if (!groupedByBand[band]) groupedByBand[band] = {qty: 0, amt: 0, date: "", ids: []};
     groupedByBand[band].qty += tQty;
     groupedByBand[band].amt += tPrice * tQty;
     if ((t.date || "") > groupedByBand[band].date) groupedByBand[band].date = t.date || "";
+    if (t.id) groupedByBand[band].ids.push(String(t.id));
   }
 
-  // 각 band의 합산 결과를 해당 슬롯에 매핑
+  // 각 band의 합산 결과를 해당 슬롯에 매핑 (✅ consumedTradeIds 함께 기록 — 옵션 D 강제)
   const filledByThisReconcile = new Set<number>();
   for (const bandStr of Object.keys(groupedByBand)) {
     const band = Number(bandStr);
@@ -3551,10 +3565,11 @@ async function reconcileStockPlans(stockName: string): Promise<{
       filledDate: g.date,
       filledQuantity: g.qty,
       filledPrice: avgPrice,
+      consumedTradeIds: g.ids, // ✅ 옵션 D: trade.id 명시 기록 → 다음 reconcile에서 정확 매칭
     };
     filledByThisReconcile.add(band);
     sellFilledCount++;
-    console.log(`[reconcile/band] ${stockName} +${band}% ← ${avgPrice}원 × ${g.qty}주 (${g.date})`);
+    console.log(`[reconcile/band] ${stockName} +${band}% ← ${avgPrice}원 × ${g.qty}주 (${g.date}, ids=${g.ids.length})`);
   }
 
   // non-manual 슬롯 중 이번에 채워지지 않은 곳 = 옛 자동매핑 흔적 → 리셋
@@ -3562,6 +3577,11 @@ async function reconcileStockPlans(stockName: string): Promise<{
     const plan = sellPlans[i];
     if (plan.manualOverride) {
       console.log(`[reconcile] ${stockName} sell+${plan.percent}% manualOverride 보존`);
+      continue;
+    }
+    // ✅ consumedTradeIds 있는 슬롯은 자기증명 → 리셋 안 함 (trade.id로 매핑 보증됨)
+    if (Array.isArray(plan.consumedTradeIds) && plan.consumedTradeIds.length > 0) {
+      console.log(`[reconcile] ${stockName} sell+${plan.percent}% consumedTradeIds 보존 (${plan.consumedTradeIds.length}건)`);
       continue;
     }
     if (!plan.filled) continue;
@@ -3573,6 +3593,7 @@ async function reconcileStockPlans(stockName: string): Promise<{
       filledDate: "",
       filledQuantity: 0,
       filledPrice: 0,
+      consumedTradeIds: [], // ✅ 리셋 시 consumedTradeIds도 비움
     };
     sellFilledCount++;
   }
@@ -3613,6 +3634,28 @@ async function reconcileStockPlans(stockName: string): Promise<{
     }
   }
 
+  // ✅ P3: 매핑 신뢰도 검증 — filled 슬롯에 consumedTradeIds 없으면 옵션 C fallback에 의존 = 신뢰도 낮음
+  // 모든 슬롯이 consumedTradeIds로 trade.id를 명시하면 매핑이 100% 정확.
+  let mappingIntegrityIssues = 0;
+  for (const sp of sellPlans) {
+    if (!sp.filled) continue;
+    if (!Array.isArray(sp.consumedTradeIds) || sp.consumedTradeIds.length === 0) {
+      mappingIntegrityIssues++;
+    }
+  }
+  for (const m of maSellsArr) {
+    if (!m.filled) continue;
+    if (!Array.isArray(m.consumedTradeIds) || m.consumedTradeIds.length === 0) {
+      mappingIntegrityIssues++;
+    }
+  }
+  if (mappingIntegrityIssues > 0) {
+    console.warn(
+      `[audit/integrity] ${stockName} consumedTradeIds 누락 슬롯: ${mappingIntegrityIssues}건 ` +
+      `- 옵션 C fallback 의존 (정확도 낮음). 마이그레이션 권장.`
+    );
+  }
+
   // 변경사항이 있을 때만 업데이트
   if (buyFilledCount > 0 || sellFilledCount > 0) {
     // ✅ Race condition 방지: update 직전 latest doc 재조회 후 manualOverride 최종 보호
@@ -3643,6 +3686,7 @@ async function reconcileStockPlans(stockName: string): Promise<{
       sellPlans: finalSellPlans,
       mappingAuditDiff,
       mappingBandIssues,
+      mappingIntegrityIssues,
       mappingAuditAt: Date.now(),
       updatedAt: Date.now(),
     });
@@ -3659,12 +3703,22 @@ async function reconcileStockPlans(stockName: string): Promise<{
     };
   }
 
-  // 변경 없어도 audit diff/band issues는 최신화
+  // 변경 없어도 audit diff/band/integrity issues는 최신화
   const existingDiff = Number((stock as any).mappingAuditDiff) || 0;
   const existingBandIssues = Number((stock as any).mappingBandIssues) || 0;
-  if (existingDiff !== mappingAuditDiff || existingBandIssues !== mappingBandIssues) {
+  const existingIntegrity = Number((stock as any).mappingIntegrityIssues) || 0;
+  if (
+    existingDiff !== mappingAuditDiff ||
+    existingBandIssues !== mappingBandIssues ||
+    existingIntegrity !== mappingIntegrityIssues
+  ) {
     try {
-      await stockDoc.ref.update({mappingAuditDiff, mappingBandIssues, mappingAuditAt: Date.now()});
+      await stockDoc.ref.update({
+        mappingAuditDiff,
+        mappingBandIssues,
+        mappingIntegrityIssues,
+        mappingAuditAt: Date.now(),
+      });
     } catch (e) {
       // ignore
     }
@@ -5452,6 +5506,193 @@ export const detectSplitMerge = functions
  *
  * 적용 후 자동 reconcile 호출하여 buyPlans/sellPlans 정렬
  */
+/**
+ * 매핑 신뢰도 마이그레이션: 모든 종목의 filled 슬롯 중 consumedTradeIds 누락 건을 자동 채움
+ * POST /migrateConsumedTradeIds
+ *
+ * 알고리즘 (resolveIds): date + qty + price 정확 매칭 → 가중평균 역추적 → legacy fallback
+ * 매칭 못 한 슬롯은 audit warning에 잡혀 사용자 수동 처리.
+ *
+ * 실행 후 자동 reconcileStockPlans 호출 → 옵션 D 매핑이 정확화됨.
+ */
+export const migrateConsumedTradeIds = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 540})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const stockNameFilter = (req.query.stockName as string) || (req.body && req.body.stockName) || null;
+        const stocksSnap = stockNameFilter
+          ? await db.collection("stocks").where("name", "==", stockNameFilter).get()
+          : await db.collection("stocks").get();
+
+        const summary: any[] = [];
+        let totalMigrated = 0;
+        let totalUnresolved = 0;
+
+        for (const doc of stocksSnap.docs) {
+          const stock = doc.data();
+          const name = stock.name;
+          if (!name) continue;
+
+          const sellPlans: any[] = Array.isArray(stock.sellPlans) ? [...stock.sellPlans] : [];
+          const maSells: any[] = Array.isArray(stock.maSells) ? [...stock.maSells] : [];
+
+          // 전체 sell trades 조회
+          const tradesSnap = await db
+            .collection("trades")
+            .where("stockName", "==", name)
+            .where("type", "==", "sell")
+            .get();
+          const allSells = tradesSnap.docs.map((d) => {
+            const data = d.data() as any;
+            return {
+              id: d.id,
+              date: String(data.date || ""),
+              price: Number(data.price) || 0,
+              quantity: Number(data.quantity) || 0,
+            };
+          });
+
+          // 이미 명시된 consumedTradeIds 집합
+          const usedIds = new Set<string>();
+          for (const sp of sellPlans) {
+            if (Array.isArray(sp.consumedTradeIds)) {
+              for (const id of sp.consumedTradeIds) if (id) usedIds.add(String(id));
+            }
+          }
+          for (const m of maSells) {
+            if (Array.isArray(m.consumedTradeIds)) {
+              for (const id of m.consumedTradeIds) if (id) usedIds.add(String(id));
+            }
+          }
+
+          // resolveIds — 프론트와 동일한 알고리즘
+          const resolveIds = (date: string, qty: number, slotPrice: number): string[] => {
+            if (!date || qty <= 0) return [];
+            const candidates = allSells.filter((t) => t.date === date && !usedIds.has(t.id));
+            if (slotPrice > 0) {
+              // 1) 단일 정확 매칭
+              const exact = candidates.find((t) => t.quantity === qty && t.price === slotPrice);
+              if (exact) {
+                usedIds.add(exact.id);
+                return [exact.id];
+              }
+              // 2) 가중평균 역추적 (2^n subset)
+              const n = candidates.length;
+              if (n >= 2 && n <= 10) {
+                for (let mask = 1; mask < (1 << n); mask++) {
+                  let sumQ = 0, sumA = 0;
+                  const subset: string[] = [];
+                  for (let i = 0; i < n; i++) {
+                    if (mask & (1 << i)) {
+                      sumQ += candidates[i].quantity;
+                      sumA += candidates[i].quantity * candidates[i].price;
+                      subset.push(candidates[i].id);
+                    }
+                  }
+                  if (sumQ === qty) {
+                    const avg = sumQ > 0 ? Math.round(sumA / sumQ) : 0;
+                    if (avg === slotPrice) {
+                      subset.forEach((id) => usedIds.add(id));
+                      return subset;
+                    }
+                  }
+                }
+              }
+            }
+            // 3) legacy: date + qty (단일)
+            const exactQty = candidates.find((t) => t.quantity === qty);
+            if (exactQty) {
+              usedIds.add(exactQty.id);
+              return [exactQty.id];
+            }
+            // 4) greedy 조합 (qty 작은 것부터)
+            const sortedByQty = [...candidates].sort((a, b) => a.quantity - b.quantity);
+            let remaining = qty;
+            const ids: string[] = [];
+            for (const t of sortedByQty) {
+              if (t.quantity <= remaining) {
+                ids.push(t.id);
+                remaining -= t.quantity;
+                if (remaining === 0) break;
+              }
+            }
+            if (remaining === 0) {
+              ids.forEach((id) => usedIds.add(id));
+              return ids;
+            }
+            return [];
+          };
+
+          let migrated = 0;
+          let unresolved = 0;
+          const stockChanges: any[] = [];
+
+          // 우선순위: maSells (split된 슬롯) → sellPlans (병합 슬롯)
+          for (let i = 0; i < maSells.length; i++) {
+            const m = maSells[i];
+            if (!m.filled) continue;
+            if (Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0) continue;
+            const ids = resolveIds(m.filledDate || "", Number(m.quantity) || 0, Number(m.price) || 0);
+            if (ids.length > 0) {
+              maSells[i] = {...m, consumedTradeIds: ids};
+              migrated++;
+              stockChanges.push({type: "maSell", ma: m.ma, qty: m.quantity, price: m.price, date: m.filledDate, ids});
+            } else {
+              unresolved++;
+              stockChanges.push({type: "maSell", ma: m.ma, qty: m.quantity, price: m.price, date: m.filledDate, ids: null, unresolved: true});
+            }
+          }
+
+          for (let i = 0; i < sellPlans.length; i++) {
+            const sp = sellPlans[i];
+            if (!sp.filled) continue;
+            if (Array.isArray(sp.consumedTradeIds) && sp.consumedTradeIds.length > 0) continue;
+            const ids = resolveIds(sp.filledDate || "", Number(sp.filledQuantity) || 0, Number(sp.filledPrice) || 0);
+            if (ids.length > 0) {
+              sellPlans[i] = {...sp, consumedTradeIds: ids};
+              migrated++;
+              stockChanges.push({type: "sellPlan", percent: sp.percent, qty: sp.filledQuantity, price: sp.filledPrice, date: sp.filledDate, ids});
+            } else {
+              unresolved++;
+              stockChanges.push({type: "sellPlan", percent: sp.percent, qty: sp.filledQuantity, price: sp.filledPrice, date: sp.filledDate, ids: null, unresolved: true});
+            }
+          }
+
+          if (migrated > 0) {
+            await doc.ref.update({sellPlans, maSells, updatedAt: Date.now()});
+            // 변경 후 reconcile 자동 트리거 (옵션 D + 옵션 E 정확 적용)
+            try {
+              await reconcileStockPlans(name);
+            } catch (e: any) {
+              console.error(`[migrate] ${name} reconcile 실패: ${e.message}`);
+            }
+          }
+
+          totalMigrated += migrated;
+          totalUnresolved += unresolved;
+          if (migrated > 0 || unresolved > 0) {
+            summary.push({stockName: name, migrated, unresolved, changes: stockChanges});
+          }
+        }
+
+        console.log(`[migrate] 완료: 총 ${totalMigrated}건 마이그레이션, ${totalUnresolved}건 미해결`);
+        res.json({
+          success: true,
+          totalStocks: stocksSnap.size,
+          totalMigrated,
+          totalUnresolved,
+          affectedStocks: summary.length,
+          summary,
+        });
+      } catch (error: any) {
+        console.error("[migrate] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 export const applySplitMergeRatio = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 60})

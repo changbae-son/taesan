@@ -57,6 +57,19 @@
   white-space: nowrap;
 }
 
+.auditIntegrityBadge {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  background: #ede7f6;
+  color: #4527a0;
+  border: 1px solid #9575cd;
+  cursor: help;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
 /* 종목 빠른 전환 바 */
 .navBar {
   display: flex;

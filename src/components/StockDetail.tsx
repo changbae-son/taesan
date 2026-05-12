@@ -1271,6 +1271,15 @@ export default function StockDetail({
             🚨 슬롯-가격 불일치 {local.mappingBandIssues}건
           </span>
         )}
+        {/* ✅ P3: 매핑 신뢰도 (consumedTradeIds 누락) 경고 배지 */}
+        {(local.mappingIntegrityIssues || 0) > 0 && (
+          <span
+            className={styles.auditIntegrityBadge}
+            title={`체결된 슬롯 중 ${local.mappingIntegrityIssues}개가 trade.id 명시 매칭 없이 옵션 C fallback에 의존.\n→ 매핑 정확도가 낮을 수 있음.\n슬롯을 한 번 다시 만지거나 마이그레이션을 실행하면 자동 해소됩니다.`}
+          >
+            ⚙️ 매핑 신뢰도 낮음 {local.mappingIntegrityIssues}건
+          </span>
+        )}
         <button
           className={styles.deleteBtn}
           onClick={() => {
