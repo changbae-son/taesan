@@ -3472,51 +3472,117 @@ async function reconcileStockPlans(stockName: string): Promise<{
     );
   }
 
-  // 매핑 인덱스: manualOverride 안 된 슬롯에만 순차 매핑
-  let mapIdx = 0;
-  for (let i = 0; i < sellPlans.length; i++) {
-    const plan = sellPlans[i];
-    if (plan.manualOverride) {
-      console.log(`[reconcile] ${stockName} sell+${plan.percent}% manualOverride 보존 (${plan.filledDate} ${plan.filledPrice}원 ${plan.filledQuantity}주)`);
-      continue;
+  // ✅ 옵션 E: band(가격대) 기반 자동매핑 — trade의 실제 수익률과 슬롯 percent를 일치시킴
+  //
+  // 평단 대비 수익률로 band 분류:
+  //   profitPct < 2.5%   → null (MA 매도 후보, 손절 등 — 미분류 유지)
+  //   2.5% ≤ < 7.5%      → +5% 슬롯
+  //   7.5% ≤ < 12.5%     → +10% 슬롯
+  //   12.5% ≤ < 17.5%    → +15% 슬롯
+  //   17.5% ≤ < 22.5%    → +20% 슬롯
+  //   22.5% 이상         → +25% 슬롯
+  //
+  // 같은 band에 여러 trade → 가중평균 합산
+  // 가격대가 맞지 않으면 미분류 (디아이씨처럼 +25% 슬롯에 +11% 매도가 들어가는 일 차단)
+
+  // avgBuyPrice 계산 (buyPlans filled 가중평균, 없으면 stock.avgPrice)
+  let totalBuyAmt = 0;
+  let totalBuyQty = 0;
+  for (const bp of buyPlans) {
+    if (bp.filled) {
+      const q = Number(bp.filledQuantity) || Number(bp.quantity) || 0;
+      const p = Number(bp.filledPrice) || Number(bp.price) || 0;
+      totalBuyAmt += p * q;
+      totalBuyQty += q;
     }
-    if (mapIdx < tradesToMap.length) {
-      // 매핑할 trade 있음
-      const t = tradesToMap[mapIdx];
-      const price = Number(t.price) || 0;
-      const qty = Number(t.quantity) || 0;
-      sellPlans[i] = {
-        ...plan,
-        filled: true,
-        filledDate: t.date,
-        filledQuantity: qty,
-        filledPrice: price,
-      };
-      sellFilledCount++;
-      mapIdx++;
-    } else {
-      // 매핑할 trade 없음 → 기존 filled 데이터(자동 매핑 흔적) 리셋
-      if (plan.filled) {
-        console.log(`[reconcile] ${stockName} sell+${plan.percent}% unfilled 리셋 (manualOverride 슬롯에 흡수됨, 기존 ${plan.filledDate} ${plan.filledPrice}원 ${plan.filledQuantity}주)`);
-        sellPlans[i] = {
-          ...plan,
-          filled: false,
-          filledDate: "",
-          filledQuantity: 0,
-          filledPrice: 0,
-        };
-        sellFilledCount++;
-      }
+  }
+  const avgBuyPriceCalc = totalBuyQty > 0 ? totalBuyAmt / totalBuyQty : (Number((stock as any).avgPrice) || 0);
+
+  const classifyByBand = (price: number): number | null => {
+    if (avgBuyPriceCalc <= 0 || price <= 0) return null;
+    const profitPct = (price / avgBuyPriceCalc - 1) * 100;
+    if (profitPct < 2.5) return null;
+    if (profitPct < 7.5) return 5;
+    if (profitPct < 12.5) return 10;
+    if (profitPct < 17.5) return 15;
+    if (profitPct < 22.5) return 20;
+    return 25;
+  };
+
+  // non-manualOverride 슬롯의 percent → index 매핑
+  const slotIdxByPercent: Record<number, number> = {};
+  for (let i = 0; i < sellPlans.length; i++) {
+    if (!sellPlans[i].manualOverride) {
+      slotIdxByPercent[sellPlans[i].percent] = i;
     }
   }
 
-  // 매핑 못한 trade (계획 차수 초과)
-  if (mapIdx < tradesToMap.length) {
-    const exceedQty = tradesToMap.slice(mapIdx).reduce((s, t) => s + (Number(t.quantity) || 0), 0);
-    exceedsSell += tradesToMap.length - mapIdx;
+  // band별 가중평균 그룹핑
+  const groupedByBand: Record<number, {qty: number; amt: number; date: string}> = {};
+  let unmappedCount = 0;
+  let unmappedQty = 0;
+
+  for (const t of tradesToMap) {
+    const tQty = Number(t.quantity) || 0;
+    const tPrice = Number(t.price) || 0;
+    if (tQty <= 0 || tPrice <= 0) continue;
+    const band = classifyByBand(tPrice);
+    if (band === null || slotIdxByPercent[band] === undefined) {
+      unmappedCount++;
+      unmappedQty += tQty;
+      continue;
+    }
+    if (!groupedByBand[band]) groupedByBand[band] = {qty: 0, amt: 0, date: ""};
+    groupedByBand[band].qty += tQty;
+    groupedByBand[band].amt += tPrice * tQty;
+    if ((t.date || "") > groupedByBand[band].date) groupedByBand[band].date = t.date || "";
+  }
+
+  // 각 band의 합산 결과를 해당 슬롯에 매핑
+  const filledByThisReconcile = new Set<number>();
+  for (const bandStr of Object.keys(groupedByBand)) {
+    const band = Number(bandStr);
+    const g = groupedByBand[band];
+    const slotIdx = slotIdxByPercent[band];
+    const avgPrice = g.qty > 0 ? Math.round(g.amt / g.qty) : 0;
+    sellPlans[slotIdx] = {
+      ...sellPlans[slotIdx],
+      filled: true,
+      filledDate: g.date,
+      filledQuantity: g.qty,
+      filledPrice: avgPrice,
+    };
+    filledByThisReconcile.add(band);
+    sellFilledCount++;
+    console.log(`[reconcile/band] ${stockName} +${band}% ← ${avgPrice}원 × ${g.qty}주 (${g.date})`);
+  }
+
+  // non-manual 슬롯 중 이번에 채워지지 않은 곳 = 옛 자동매핑 흔적 → 리셋
+  for (let i = 0; i < sellPlans.length; i++) {
+    const plan = sellPlans[i];
+    if (plan.manualOverride) {
+      console.log(`[reconcile] ${stockName} sell+${plan.percent}% manualOverride 보존`);
+      continue;
+    }
+    if (!plan.filled) continue;
+    if (filledByThisReconcile.has(plan.percent)) continue;
+    console.log(`[reconcile/reset] ${stockName} sell+${plan.percent}% unfilled 리셋 (band 매핑 없음)`);
+    sellPlans[i] = {
+      ...plan,
+      filled: false,
+      filledDate: "",
+      filledQuantity: 0,
+      filledPrice: 0,
+    };
+    sellFilledCount++;
+  }
+
+  // band 분류 안 된 trade (계획 초과 또는 가격대 미정)
+  if (unmappedCount > 0) {
+    exceedsSell += unmappedCount;
     console.log(
-      `[reconcile] ${stockName} 매도 계획 초과: ${exceedQty}주 (${tradesToMap.length - mapIdx}건) ` +
-      `- 사용자 수동 분류 필요`
+      `[reconcile/band] ${stockName} 매도 ${unmappedQty}주(${unmappedCount}건) 미분류 ` +
+      `- band 매칭 실패 또는 슬롯 manualOverride. 사용자 수동 분류 필요.`
     );
   }
 
@@ -3529,6 +3595,23 @@ async function reconcileStockPlans(stockName: string): Promise<{
     .filter((m: any) => m.filled)
     .reduce((s: number, m: any) => s + (Number(m.quantity) || 0), 0);
   const mappingAuditDiff = tradeSellQtyTotal - (finalSellPlanQty + finalMaSellQty);
+
+  // ✅ 옵션 B: filled 슬롯의 filledPrice가 percent band와 일치하는지 검증
+  // 디아이씨 같은 케이스(잘못된 슬롯에 매핑) 사후 감지
+  let mappingBandIssues = 0;
+  for (const sp of sellPlans) {
+    if (!sp.filled) continue;
+    const fp = Number(sp.filledPrice) || 0;
+    if (fp <= 0) continue;
+    const expectedBand = classifyByBand(fp);
+    if (expectedBand !== null && expectedBand !== sp.percent) {
+      mappingBandIssues++;
+      console.warn(
+        `[audit/band] ${stockName} +${sp.percent}% 슬롯에 ${fp}원 매핑됨 ` +
+        `(평단 ${avgBuyPriceCalc.toFixed(0)}원 기준 실제 band: +${expectedBand}%)`
+      );
+    }
+  }
 
   // 변경사항이 있을 때만 업데이트
   if (buyFilledCount > 0 || sellFilledCount > 0) {
@@ -3559,6 +3642,7 @@ async function reconcileStockPlans(stockName: string): Promise<{
       buyPlans: finalBuyPlans,
       sellPlans: finalSellPlans,
       mappingAuditDiff,
+      mappingBandIssues,
       mappingAuditAt: Date.now(),
       updatedAt: Date.now(),
     });
@@ -3575,11 +3659,12 @@ async function reconcileStockPlans(stockName: string): Promise<{
     };
   }
 
-  // 변경 없어도 audit diff는 최신화
+  // 변경 없어도 audit diff/band issues는 최신화
   const existingDiff = Number((stock as any).mappingAuditDiff) || 0;
-  if (existingDiff !== mappingAuditDiff) {
+  const existingBandIssues = Number((stock as any).mappingBandIssues) || 0;
+  if (existingDiff !== mappingAuditDiff || existingBandIssues !== mappingBandIssues) {
     try {
-      await stockDoc.ref.update({mappingAuditDiff, mappingAuditAt: Date.now()});
+      await stockDoc.ref.update({mappingAuditDiff, mappingBandIssues, mappingAuditAt: Date.now()});
     } catch (e) {
       // ignore
     }

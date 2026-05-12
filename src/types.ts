@@ -117,6 +117,8 @@ export interface Stock {
   // tradeSellQty - (sellPlans+maSells filled 합) 값. 0이면 정상, !=0이면 mismatch.
   mappingAuditDiff?: number;
   mappingAuditAt?: number;
+  // 옵션 B: filled 슬롯의 filledPrice가 percent band와 어긋난 슬롯 수
+  mappingBandIssues?: number;
   // 재진입 추적 (매매완료 후 다시 1차 매수까지)
   reentry?: ReentryTracking;
   // 사이클 history (영구 보관) - 각 매매완료 시점에 push

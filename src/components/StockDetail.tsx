@@ -1122,6 +1122,15 @@ export default function StockDetail({
             ⚠️ 매핑 불일치 {local.mappingAuditDiff! > 0 ? '+' : ''}{local.mappingAuditDiff}주
           </span>
         )}
+        {/* ✅ 옵션 B: 슬롯-가격 band 불일치 경고 배지 */}
+        {(local.mappingBandIssues || 0) > 0 && (
+          <span
+            className={styles.auditBandBadge}
+            title={`수익% 슬롯에 가격대가 맞지 않는 매도가 매핑됨\n예: +25% 슬롯에 +11% 매도가 들어가는 케이스\n수동 정정이 필요합니다.`}
+          >
+            🚨 슬롯-가격 불일치 {local.mappingBandIssues}건
+          </span>
+        )}
         <button
           className={styles.deleteBtn}
           onClick={() => {

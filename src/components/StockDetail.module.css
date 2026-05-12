@@ -44,6 +44,19 @@
   white-space: nowrap;
 }
 
+.auditBandBadge {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  background: #ffebee;
+  color: #c62828;
+  border: 1px solid #ef5350;
+  cursor: help;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
 .deleteBtn {
   margin-left: auto;
   padding: 6px 14px;
