@@ -753,37 +753,37 @@
 }
 
 .planTableCompact td {
-  padding: 5px 2px;
+  padding: 4px 1px;
   border-bottom: 1px solid #f0f0f0;
   vertical-align: middle;
 }
 
 /* 1열(차수+날짜): 좁게 */
 .planTableCompact td:nth-child(1) {
-  width: 50px;
+  width: 44px;
 }
 
 /* 2열(목표가) */
 .planTableCompact td:nth-child(2) {
-  width: 86px;
+  width: 76px;
 }
 
 /* 3열(실제가) */
 .planTableCompact td:nth-child(3) {
-  width: 86px;
+  width: 76px;
 }
 
 /* 4열(수량) */
 .planTableCompact td:nth-child(4) {
-  width: 70px;
+  width: 60px;
 }
 
 /* 마지막 열(버튼): 가변 — 남은 공간 */
 .planTableCompact td:last-child {
   width: auto;
-  min-width: 50px;
+  min-width: 48px;
   text-align: right;
-  padding: 5px 4px !important;
+  padding: 4px 3px !important;
 }
 
 /* 셀 내 작은 라벨 */
@@ -799,7 +799,7 @@
 /* 차수/목표% 셀 */
 .levelCell {
   vertical-align: middle;
-  padding: 5px 2px !important;
+  padding: 4px 1px !important;
 }
 
 .levelBadge {
