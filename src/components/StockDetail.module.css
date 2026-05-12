@@ -1241,6 +1241,21 @@
   outline: none;
 }
 
+/* MA 체결일 입력 */
+.maDateInput {
+  padding: 4px 6px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.maDateInput:focus {
+  border-color: #ff9800;
+  outline: none;
+}
+
 /* MA매도 이동 버튼 */
 .maTransferBtn {
   display: inline-block;

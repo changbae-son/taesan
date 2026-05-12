@@ -484,7 +484,16 @@ export default function StockDetail({
 
   const toggleMAFilled = async (index: number) => {
     const ma = [...local.maSells];
-    ma[index] = { ...ma[index], filled: !ma[index].filled };
+    const today = new Date().toISOString().slice(0, 10);
+    const wasFilled = ma[index].filled;
+    ma[index] = {
+      ...ma[index],
+      filled: !wasFilled,
+      // 체결 시 날짜 없으면 오늘로, 미체결 전환 시 그대로 보존
+      filledDate: !wasFilled
+        ? (ma[index].filledDate || today)
+        : ma[index].filledDate,
+    };
     const ok = await persistSellEdit(local.sellPlans, ma);
     if (ok && ma[index].filled && local.avgPrice > 0) {
       const profit = ((ma[index].price - local.avgPrice) / local.avgPrice) * 100;
@@ -502,6 +511,12 @@ export default function StockDetail({
     const ma = [...local.maSells];
     ma[index] = { ...ma[index], quantity };
     update({ maSells: ma });
+  };
+
+  const updateMAFilledDate = async (index: number, date: string) => {
+    const ma = [...local.maSells];
+    ma[index] = { ...ma[index], filledDate: date };
+    await persistSellEdit(local.sellPlans, ma);
   };
 
   // 수익매도 수동 편집 열기
@@ -2276,8 +2291,9 @@ export default function StockDetail({
               <th>이평선</th>
               <th>가격</th>
               <th>수량</th>
-              <th>손익%</th>
+              <th style={{ textAlign: 'right' }}>손익%</th>
               <th>체결</th>
+              <th>체결일</th>
             </tr>
           </thead>
           <tbody>
@@ -2333,6 +2349,18 @@ export default function StockDetail({
                     >
                       {ms.filled ? '체결' : '미체결'}
                     </button>
+                  </td>
+                  <td>
+                    {ms.filled ? (
+                      <input
+                        type="date"
+                        className={styles.maDateInput}
+                        value={ms.filledDate || ''}
+                        onChange={(e) => updateMAFilledDate(i, e.target.value)}
+                      />
+                    ) : (
+                      <span className={styles.dashText}>-</span>
+                    )}
                   </td>
                 </tr>
               );
