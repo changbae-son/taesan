@@ -231,7 +231,6 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                     const candleRate = openPrice > 0
                       ? ((stock.currentPrice - openPrice) / openPrice) * 100
                       : 0;
-                    const barWidth = Math.min(Math.abs(candleRate) / 5 * 100, 100);
 
                     const incomplete = checkIncomplete(stock, trades);
                     const firstBuyAmt = getFirstBuyAmt(stock);
@@ -266,6 +265,17 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                             </span>
                           )}
                           <div className={styles.badges}>
+                            {hasCandle && (
+                              <span className={`${styles.candleChip} ${
+                                candleType === 'yang' ? styles.candleChipYang
+                                : candleType === 'um' ? styles.candleChipUm
+                                : styles.candleChipDoji
+                              }`}
+                              title={`시가 대비 ${candleRate >= 0 ? '+' : ''}${candleRate.toFixed(2)}%`}
+                              >
+                                {candleType === 'yang' ? '양봉' : candleType === 'um' ? '음봉' : '보합'} {candleRate >= 0 ? '+' : ''}{candleRate.toFixed(1)}%
+                              </span>
+                            )}
                             {stock.buySignal === 'signal' && (
                               <span className={styles.signalBadge}>매수신호!</span>
                             )}
@@ -333,36 +343,6 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                             </span>
                           </div>
                         </div>
-
-                        {/* 양봉/음봉 표시 (매수신호·매수대기) */}
-                        {hasCandle && (
-                          <div className={styles.candleRow}>
-                            <span className={`${styles.candleLabel} ${
-                              candleType === 'yang' ? styles.candleLabelYang
-                              : candleType === 'um' ? styles.candleLabelUm
-                              : styles.candleLabelDoji
-                            }`}>
-                              {candleType === 'yang' ? '양봉' : candleType === 'um' ? '음봉' : '보합'}
-                            </span>
-                            <div className={styles.candleBar}>
-                              <div
-                                className={`${styles.candleBarFill} ${
-                                  candleType === 'yang' ? styles.candleBarYang
-                                  : candleType === 'um' ? styles.candleBarUm
-                                  : styles.candleBarDoji
-                                }`}
-                                style={{ width: `${barWidth}%` }}
-                              />
-                            </div>
-                            <span className={`${styles.candleRate} ${
-                              candleType === 'yang' ? styles.candleRateYang
-                              : candleType === 'um' ? styles.candleRateUm
-                              : ''
-                            }`}>
-                              {candleRate >= 0 ? '+' : ''}{candleRate.toFixed(1)}%
-                            </span>
-                          </div>
-                        )}
 
                         {/* 3줄: 다음 매수/매도 (메인 강조) */}
                         <div className={styles.actionRow}>
