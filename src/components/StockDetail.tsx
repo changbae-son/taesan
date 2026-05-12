@@ -324,69 +324,80 @@ export default function StockDetail({
           if (dc !== 0) return dc;
           return (a.price || 0) - (b.price || 0);
         });
-      const usedTradeIds = new Set<string>();
+      // trade.id별 사용된 qty 추적 (부분 분할 지원: 한 trade를 여러 슬롯이 공유 가능)
+      const usedQtyByTrade: Record<string, number> = {};
+      const tradeRemain = (t: any) => (Number(t.quantity) || 0) - (usedQtyByTrade[t.id] || 0);
+
       const resolveIds = (date: string, qty: number, filledPrice?: number): string[] => {
         if (!date || qty <= 0) return [];
-        const candidates = allSells.filter((t) => t.date === date && !usedTradeIds.has(t.id));
-        // 1-A) date + qty + price 단일 정확 매칭 (최우선)
+        const candidates = allSells
+          .filter((t) => t.date === date)
+          .map((t) => ({...t, remain: tradeRemain(t)}))
+          .filter((t) => t.remain > 0);
+        // 1-A) date + qty + price 단일 정확 매칭 (remain 기준)
         if (filledPrice && filledPrice > 0) {
           const exactByPrice = candidates.find(
-            (t) => (Number(t.quantity) || 0) === qty && (Number(t.price) || 0) === filledPrice
+            (t) => t.remain === qty && (Number(t.price) || 0) === filledPrice
           );
           if (exactByPrice) {
-            usedTradeIds.add(exactByPrice.id);
+            usedQtyByTrade[exactByPrice.id] = (usedQtyByTrade[exactByPrice.id] || 0) + qty;
             return [exactByPrice.id];
           }
           // 1-B) date + qty + price (가중평균 역추적) 다중 조합
-          // 예: filledQty=144, filledPrice=12320 → 같은 날 trade 조합 중 합/평균이 일치
-          const sameDay = candidates;
-          // 조합 탐색은 비용 큼 → trade 수가 적을 때만(<=10)
-          if (sameDay.length <= 10 && sameDay.length >= 2) {
-            // 2^n subset enumeration
-            const n = sameDay.length;
+          if (candidates.length <= 10 && candidates.length >= 2) {
+            const n = candidates.length;
             for (let mask = 1; mask < (1 << n); mask++) {
               let sumQty = 0, sumAmt = 0;
               const subset: string[] = [];
               for (let i = 0; i < n; i++) {
                 if (mask & (1 << i)) {
-                  const t = sameDay[i];
-                  const tq = Number(t.quantity) || 0;
-                  const tp = Number(t.price) || 0;
-                  sumQty += tq;
-                  sumAmt += tq * tp;
+                  const t = candidates[i];
+                  sumQty += t.remain;
+                  sumAmt += t.remain * (Number(t.price) || 0);
                   subset.push(t.id);
                 }
               }
               if (sumQty === qty) {
                 const avg = sumQty > 0 ? Math.round(sumAmt / sumQty) : 0;
                 if (avg === filledPrice) {
-                  subset.forEach((id) => usedTradeIds.add(id));
+                  for (let i = 0; i < n; i++) {
+                    if (mask & (1 << i)) {
+                      const t = candidates[i];
+                      usedQtyByTrade[t.id] = (usedQtyByTrade[t.id] || 0) + t.remain;
+                    }
+                  }
                   return subset;
                 }
               }
             }
           }
+          // 1-C) ✅ 부분 매칭: 같은 가격 trade 중 remain >= qty
+          // (광전자 5/7 160주를 +5% 80 + ma20 80으로 분할 케이스)
+          const partial = candidates.find((t) => (Number(t.price) || 0) === filledPrice && t.remain >= qty);
+          if (partial) {
+            usedQtyByTrade[partial.id] = (usedQtyByTrade[partial.id] || 0) + qty;
+            return [partial.id];
+          }
         }
-        // 2) 단일 qty 정확 매칭 (가격 무시 — 1주처럼 흔한 케이스 fallback)
-        const exact = candidates.find((t) => (Number(t.quantity) || 0) === qty);
+        // 2) 단일 qty 정확 매칭 (가격 무시 — remain 기준)
+        const exact = candidates.find((t) => t.remain === qty);
         if (exact) {
-          usedTradeIds.add(exact.id);
+          usedQtyByTrade[exact.id] = (usedQtyByTrade[exact.id] || 0) + qty;
           return [exact.id];
         }
-        // 3) 그리디 조합 (qty 작은 것부터)
-        const byQtyAsc = [...candidates].sort((a, b) => (Number(a.quantity) || 0) - (Number(b.quantity) || 0));
+        // 3) 그리디 조합 (remain 작은 것부터)
+        const byQtyAsc = [...candidates].sort((a, b) => a.remain - b.remain);
         let remaining = qty;
         const ids: string[] = [];
         for (const t of byQtyAsc) {
-          const tq = Number(t.quantity) || 0;
-          if (tq <= remaining) {
+          if (t.remain <= remaining) {
             ids.push(t.id);
-            remaining -= tq;
+            usedQtyByTrade[t.id] = (usedQtyByTrade[t.id] || 0) + t.remain;
+            remaining -= t.remain;
             if (remaining === 0) break;
           }
         }
         if (remaining === 0) {
-          ids.forEach((id) => usedTradeIds.add(id));
           return ids;
         }
         return []; // 매칭 실패 → fallback
@@ -397,8 +408,13 @@ export default function StockDetail({
       // 이렇게 하면 split된 trade가 ma에 먼저 할당되어 정확
       const enrichMa = (newMaSells || []).map((m) => {
         if (!m.filled) return m;
-        if (Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0) {
-          m.consumedTradeIds.forEach((id) => usedTradeIds.add(id));
+        const existing = Array.isArray(m.consumedTradeIds) ? m.consumedTradeIds : null;
+        if (existing && existing.length > 0) {
+          // 기존 consumedTradeIds가 있으면 그 슬롯의 qty만큼 trade에서 점유한 것으로 기록
+          const perTrade = (Number(m.quantity) || 0) / existing.length;
+          existing.forEach((id) => {
+            usedQtyByTrade[id] = (usedQtyByTrade[id] || 0) + perTrade;
+          });
           return m;
         }
         const ids = resolveIds(m.filledDate || '', Number(m.quantity) || 0, Number(m.price) || 0);
@@ -406,8 +422,12 @@ export default function StockDetail({
       });
       const enrichSell = newSellPlans.map((p) => {
         if (!p.manualOverride || !p.filled) return p;
-        if (Array.isArray(p.consumedTradeIds) && p.consumedTradeIds.length > 0) {
-          p.consumedTradeIds.forEach((id) => usedTradeIds.add(id));
+        const existing = Array.isArray(p.consumedTradeIds) ? p.consumedTradeIds : null;
+        if (existing && existing.length > 0) {
+          const perTrade = (Number(p.filledQuantity) || 0) / existing.length;
+          existing.forEach((id) => {
+            usedQtyByTrade[id] = (usedQtyByTrade[id] || 0) + perTrade;
+          });
           return p;
         }
         const ids = resolveIds(p.filledDate || '', Number(p.filledQuantity) || 0, Number(p.filledPrice) || 0);

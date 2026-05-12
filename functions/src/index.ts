@@ -3429,16 +3429,40 @@ async function reconcileStockPlans(stockName: string): Promise<{
   // 3단계: maSells도 동일 (consumedTradeIds 우선, 없으면 수량 fallback)
   const maSellsArr: any[] = Array.isArray((stock as any).maSells) ? (stock as any).maSells : [];
 
-  // 1단계: 명시적 trade.id 흡수
-  const consumedIdSet = new Set<string>();
+  // 1단계: 명시적 trade.id 흡수 (qty 추적 — 부분 분할 지원)
+  // 한 trade를 여러 슬롯이 공유 가능: 광전자 5/7 160주 → +5% 80주 + ma20 80주
+  // 슬롯의 filledQuantity가 그 trade에서 차지한 점유분
+  const consumedQtyByTrade: Record<string, number> = {};
   for (const sp of sellPlans) {
-    if (Array.isArray(sp.consumedTradeIds)) {
-      for (const id of sp.consumedTradeIds) if (id) consumedIdSet.add(String(id));
+    if (Array.isArray(sp.consumedTradeIds) && sp.consumedTradeIds.length > 0) {
+      const perTradeQty = (Number(sp.filledQuantity) || 0) / sp.consumedTradeIds.length;
+      // 단일 trade 참조면 그 슬롯의 filledQuantity 전부 점유
+      // 여러 trade 참조면 (가중평균 케이스) → 각 trade의 전체 qty가 흡수됨
+      if (sp.consumedTradeIds.length === 1) {
+        // 단일 참조 (부분 분할 가능)
+        const id = String(sp.consumedTradeIds[0]);
+        consumedQtyByTrade[id] = (consumedQtyByTrade[id] || 0) + (Number(sp.filledQuantity) || 0);
+      } else {
+        // 다중 참조 (가중평균 합산) → 각 trade의 전체 qty가 이미 흡수된 것으로 간주
+        // (이전 reconcile에서 그렇게 매핑됐기 때문)
+        for (const id of sp.consumedTradeIds) {
+          consumedQtyByTrade[String(id)] = (consumedQtyByTrade[String(id)] || 0) + Infinity;
+        }
+        // perTradeQty 미사용 방지
+        void perTradeQty;
+      }
     }
   }
   for (const m of maSellsArr) {
-    if (Array.isArray(m.consumedTradeIds)) {
-      for (const id of m.consumedTradeIds) if (id) consumedIdSet.add(String(id));
+    if (Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0) {
+      if (m.consumedTradeIds.length === 1) {
+        const id = String(m.consumedTradeIds[0]);
+        consumedQtyByTrade[id] = (consumedQtyByTrade[id] || 0) + (Number(m.quantity) || 0);
+      } else {
+        for (const id of m.consumedTradeIds) {
+          consumedQtyByTrade[String(id)] = (consumedQtyByTrade[String(id)] || 0) + Infinity;
+        }
+      }
     }
   }
 
@@ -3457,8 +3481,18 @@ async function reconcileStockPlans(stockName: string): Promise<{
   }, 0);
   const consumedByManualQty = consumedByManualSell + consumedByMaSell;
 
-  // 3단계: tradesToMap 구성 — id 매칭된 건 즉시 제외, 나머지에서 수량 fallback skip
-  const remainingTrades = sortedSells.filter((t) => !consumedIdSet.has(String(t.id)));
+  // 3단계: tradesToMap 구성 — trade별 remaining qty 계산 후 fallback skip
+  // remaining = trade.quantity - consumedQtyByTrade[id]
+  const remainingTrades: any[] = [];
+  for (const t of sortedSells) {
+    const tQty = Number(t.quantity) || 0;
+    const consumed = consumedQtyByTrade[String(t.id)] || 0;
+    const remain = tQty - consumed;
+    if (remain > 0) {
+      remainingTrades.push({...t, quantity: remain});
+    }
+  }
+
   let skipped = 0;
   const tradesToMap: any[] = [];
   for (const t of remainingTrades) {
@@ -3476,9 +3510,10 @@ async function reconcileStockPlans(stockName: string): Promise<{
     }
   }
 
-  if (consumedIdSet.size > 0 || consumedByManualQty > 0) {
+  const consumedIdCount = Object.keys(consumedQtyByTrade).length;
+  if (consumedIdCount > 0 || consumedByManualQty > 0) {
     console.log(
-      `[reconcile] ${stockName} 흡수: id매칭 ${consumedIdSet.size}건 + 수량fallback ${consumedByManualQty}주 / ` +
+      `[reconcile] ${stockName} 흡수: id매칭 ${consumedIdCount}건 + 수량fallback ${consumedByManualQty}주 / ` +
       `자동매핑 대상: ${tradesToMap.reduce((s, t) => s + (Number(t.quantity) || 0), 0)}주`
     );
   }
@@ -5554,31 +5589,45 @@ export const migrateConsumedTradeIds = functions
             };
           });
 
-          // 이미 명시된 consumedTradeIds 집합
-          const usedIds = new Set<string>();
+          // 이미 사용된 trade.id별 qty 추적 (부분 분할 지원)
+          // 한 trade를 여러 슬롯이 공유 가능 (예: 광전자 5/7 160주 → +5% 80 + ma20 80)
+          const usedQtyByTrade: Record<string, number> = {};
           for (const sp of sellPlans) {
             if (Array.isArray(sp.consumedTradeIds)) {
-              for (const id of sp.consumedTradeIds) if (id) usedIds.add(String(id));
+              for (const id of sp.consumedTradeIds) {
+                if (!id) continue;
+                // 슬롯이 같은 trade를 참조하면 그 trade의 filledQuantity만큼 점유
+                usedQtyByTrade[String(id)] = (usedQtyByTrade[String(id)] || 0) + (Number(sp.filledQuantity) || 0);
+              }
             }
           }
           for (const m of maSells) {
             if (Array.isArray(m.consumedTradeIds)) {
-              for (const id of m.consumedTradeIds) if (id) usedIds.add(String(id));
+              for (const id of m.consumedTradeIds) {
+                if (!id) continue;
+                usedQtyByTrade[String(id)] = (usedQtyByTrade[String(id)] || 0) + (Number(m.quantity) || 0);
+              }
             }
           }
 
-          // resolveIds — 프론트와 동일한 알고리즘
+          const tradeRemaining = (t: {id: string; quantity: number}) =>
+            t.quantity - (usedQtyByTrade[t.id] || 0);
+
+          // resolveIds — 부분 분할 지원 강화
           const resolveIds = (date: string, qty: number, slotPrice: number): string[] => {
             if (!date || qty <= 0) return [];
-            const candidates = allSells.filter((t) => t.date === date && !usedIds.has(t.id));
+            const candidates = allSells
+              .filter((t) => t.date === date)
+              .map((t) => ({...t, remaining: tradeRemaining(t)}))
+              .filter((t) => t.remaining > 0);
             if (slotPrice > 0) {
-              // 1) 단일 정확 매칭
-              const exact = candidates.find((t) => t.quantity === qty && t.price === slotPrice);
+              // 1) 단일 정확 매칭 (remaining qty 기준)
+              const exact = candidates.find((t) => t.remaining === qty && t.price === slotPrice);
               if (exact) {
-                usedIds.add(exact.id);
+                usedQtyByTrade[exact.id] = (usedQtyByTrade[exact.id] || 0) + qty;
                 return [exact.id];
               }
-              // 2) 가중평균 역추적 (2^n subset)
+              // 2) 가중평균 역추적 (2^n subset, n<=10)
               const n = candidates.length;
               if (n >= 2 && n <= 10) {
                 for (let mask = 1; mask < (1 << n); mask++) {
@@ -5586,40 +5635,52 @@ export const migrateConsumedTradeIds = functions
                   const subset: string[] = [];
                   for (let i = 0; i < n; i++) {
                     if (mask & (1 << i)) {
-                      sumQ += candidates[i].quantity;
-                      sumA += candidates[i].quantity * candidates[i].price;
+                      sumQ += candidates[i].remaining;
+                      sumA += candidates[i].remaining * candidates[i].price;
                       subset.push(candidates[i].id);
                     }
                   }
                   if (sumQ === qty) {
                     const avg = sumQ > 0 ? Math.round(sumA / sumQ) : 0;
                     if (avg === slotPrice) {
-                      subset.forEach((id) => usedIds.add(id));
+                      for (let i = 0; i < n; i++) {
+                        if (mask & (1 << i)) {
+                          const id = candidates[i].id;
+                          usedQtyByTrade[id] = (usedQtyByTrade[id] || 0) + candidates[i].remaining;
+                        }
+                      }
                       return subset;
                     }
                   }
                 }
               }
-            }
-            // 3) legacy: date + qty (단일)
-            const exactQty = candidates.find((t) => t.quantity === qty);
-            if (exactQty) {
-              usedIds.add(exactQty.id);
-              return [exactQty.id];
-            }
-            // 4) greedy 조합 (qty 작은 것부터)
-            const sortedByQty = [...candidates].sort((a, b) => a.quantity - b.quantity);
-            let remaining = qty;
-            const ids: string[] = [];
-            for (const t of sortedByQty) {
-              if (t.quantity <= remaining) {
-                ids.push(t.id);
-                remaining -= t.quantity;
-                if (remaining === 0) break;
+              // 3) ✅ 부분 매칭: 같은 가격 trade 중 remaining qty >= 필요 qty
+              //    (광전자 5/7 160주를 +5% 80 + ma20 80 공유 케이스)
+              const partial = candidates.find((t) => t.price === slotPrice && t.remaining >= qty);
+              if (partial) {
+                usedQtyByTrade[partial.id] = (usedQtyByTrade[partial.id] || 0) + qty;
+                return [partial.id];
               }
             }
-            if (remaining === 0) {
-              ids.forEach((id) => usedIds.add(id));
+            // 5) legacy: date + qty (단일, remaining 기준)
+            const exactQty = candidates.find((t) => t.remaining === qty);
+            if (exactQty) {
+              usedQtyByTrade[exactQty.id] = (usedQtyByTrade[exactQty.id] || 0) + qty;
+              return [exactQty.id];
+            }
+            // 6) greedy 조합 (remaining 작은 것부터)
+            const sortedByQty = [...candidates].sort((a, b) => a.remaining - b.remaining);
+            let remainingQty = qty;
+            const ids: string[] = [];
+            for (const t of sortedByQty) {
+              if (t.remaining <= remainingQty) {
+                ids.push(t.id);
+                usedQtyByTrade[t.id] = (usedQtyByTrade[t.id] || 0) + t.remaining;
+                remainingQty -= t.remaining;
+                if (remainingQty === 0) break;
+              }
+            }
+            if (remainingQty === 0) {
               return ids;
             }
             return [];
