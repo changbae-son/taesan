@@ -1040,6 +1040,32 @@ export default function StockDetail({
       ? (local.currentPrice - local.avgPrice) * local.totalQuantity
       : 0;
 
+  // ✅ 매매완료 종목: 실현손익 계산 (총 매도금액 - 총 매수금액 - 키움 수수료/세금 추정)
+  // 키움 표준 수수료 추정:
+  //   매수: 0.015% (수수료)
+  //   매도: 0.015% (수수료) + 0.18% (거래세, 코스닥) 또는 0.20% (코스피 거래세 + 농특세)
+  //   대표값으로 매도 0.20% 적용 (시장 구분 정보 불완전한 경우 안전 추정)
+  const isTradeCompleted = local.totalQuantity === 0 && local.sellCount > 0;
+  let realizedProfit = 0;
+  let realizedProfitPct = 0;
+  let realizedFees = 0;
+  let realizedBuyAmt = 0;
+  let realizedSellAmt = 0;
+  if (isTradeCompleted) {
+    for (const t of trades) {
+      if (t.stockName !== local.name) continue;
+      const amt = (t.price || 0) * (t.quantity || 0);
+      if (t.type === 'buy') realizedBuyAmt += amt;
+      else if (t.type === 'sell') realizedSellAmt += amt;
+    }
+    const buyFee = realizedBuyAmt * 0.00015;
+    const sellFee = realizedSellAmt * 0.00015;
+    const sellTax = realizedSellAmt * 0.0020; // 거래세 0.18~0.20% (코스닥/코스피 평균)
+    realizedFees = buyFee + sellFee + sellTax;
+    realizedProfit = realizedSellAmt - realizedBuyAmt - realizedFees;
+    realizedProfitPct = realizedBuyAmt > 0 ? (realizedProfit / realizedBuyAmt) * 100 : 0;
+  }
+
   const filledBuys = local.buyPlans.filter((b) => b.filled).length;
   const stockSnapshots = snapshots.filter((s) => s.stockId === local.id);
 
@@ -1507,23 +1533,48 @@ export default function StockDetail({
           </span>
         </div>
         <div className={styles.summaryItem}>
-          <span className={styles.summaryLabel}>평가손익</span>
-          <span
-            className={styles.summaryValue}
-            style={{ color: profitPercent >= 0 ? '#d32f2f' : '#1565c0' }}
-          >
-            {profitPercent >= 0 ? '+' : ''}{profitPercent.toFixed(2)}%
-          </span>
-          {profitAmount !== 0 && (
-            <span className={styles.summarySubValue}
-              style={{ color: profitAmount >= 0 ? '#d32f2f' : '#1565c0' }}>
-              {profitAmount >= 0 ? '+' : ''}{Math.round(profitAmount).toLocaleString()}원
-            </span>
-          )}
-          {avgPriceDiffers && (
-            <span className={styles.summarySubValue} style={{ color: '#888', fontSize: '10px' }}>
-              실제 {actualProfitPercent >= 0 ? '+' : ''}{actualProfitPercent.toFixed(1)}%
-            </span>
+          {isTradeCompleted ? (
+            <>
+              <span className={styles.summaryLabel} title="총 매도금액 - 총 매수금액 - 키움 표준 수수료/세금 추정">
+                실현손익
+              </span>
+              <span
+                className={styles.summaryValue}
+                style={{ color: realizedProfit >= 0 ? '#d32f2f' : '#1565c0' }}
+              >
+                {realizedProfit >= 0 ? '+' : ''}{realizedProfitPct.toFixed(2)}%
+              </span>
+              <span className={styles.summarySubValue}
+                style={{ color: realizedProfit >= 0 ? '#d32f2f' : '#1565c0' }}>
+                {realizedProfit >= 0 ? '+' : ''}{Math.round(realizedProfit).toLocaleString()}원
+              </span>
+              <span className={styles.summarySubValue}
+                style={{ color: '#aaa', fontSize: '9px' }}
+                title={`매수 ${Math.round(realizedBuyAmt).toLocaleString()}원\n매도 ${Math.round(realizedSellAmt).toLocaleString()}원\n수수료/세금 추정 -${Math.round(realizedFees).toLocaleString()}원`}>
+                수수료 추정 차감 (-{Math.round(realizedFees).toLocaleString()}원)
+              </span>
+            </>
+          ) : (
+            <>
+              <span className={styles.summaryLabel}>평가손익</span>
+              <span
+                className={styles.summaryValue}
+                style={{ color: profitPercent >= 0 ? '#d32f2f' : '#1565c0' }}
+              >
+                {profitPercent >= 0 ? '+' : ''}{profitPercent.toFixed(2)}%
+              </span>
+              {profitAmount !== 0 && (
+                <span className={styles.summarySubValue}
+                  style={{ color: profitAmount >= 0 ? '#d32f2f' : '#1565c0' }}>
+                  {profitAmount >= 0 ? '+' : ''}{Math.round(profitAmount).toLocaleString()}원
+                </span>
+              )}
+              {avgPriceDiffers && (
+                <span className={styles.summarySubValue} style={{ color: '#888', fontSize: '10px' }}>
+                  실제 {actualProfitPercent >= 0 ? '+' : ''}{actualProfitPercent.toFixed(1)}%
+                </span>
+              )}
+            </>
           )}
         </div>
         <div className={styles.summaryItem}>
