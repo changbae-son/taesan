@@ -204,24 +204,24 @@
 .ruleToggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 6px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
 }
 
 .ruleLabel {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
   color: #555;
 }
 
 .ruleBtn {
-  padding: 6px 14px;
+  padding: 4px 11px;
   border: 1px solid #ddd;
-  border-radius: 6px;
+  border-radius: 5px;
   background: #fff;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   transition: all 0.15s;
 }
 
@@ -642,31 +642,33 @@
 /* 요약바 */
 .summary {
   display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 5px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
 }
 
 .summaryItem {
   flex: 1;
-  min-width: 100px;
+  min-width: 90px;
   background: #fff;
-  border-radius: 8px;
+  border-radius: 6px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  padding: 12px;
+  padding: 6px 8px;
   text-align: center;
 }
 
 .summaryLabel {
   display: block;
-  font-size: 11px;
+  font-size: 10px;
   color: #888;
-  margin-bottom: 4px;
+  margin-bottom: 1px;
+  line-height: 1.2;
 }
 
 .summaryValue {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
+  line-height: 1.2;
 }
 
 /* 이동평균선 바 */
@@ -2027,16 +2029,17 @@
 /* 요약바 값/서브값 */
 .summaryValueSmall {
   display: block;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1.15;
 }
 
 .summarySubValue {
   display: block;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  margin-top: 2px;
+  margin-top: 0;
+  line-height: 1.2;
 }
 
 /* 다음 매수/매도 가격 강조 */
