@@ -1030,9 +1030,10 @@ async function syncToFirestore(
         // 첫 매매완료 전환 — totalQty 업데이트 + 첫 사이클 처리
         const wasActive = true;
         const alreadyCompleted = (data.cycles?.length || 0) > 0;
+        // ✅ currentPrice는 보존 (재진입 추적, 시각화에 필요)
+        // 매매완료 후에도 현재가는 키움 sync로 계속 업데이트되어야 함
         const completionUpdate: any = {
           totalQuantity: 0,
-          currentPrice: 0,
           updatedAt: now,
         };
         // 첫 매매완료라면 cycles + reentry 추적 시작

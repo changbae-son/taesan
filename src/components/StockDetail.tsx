@@ -1028,13 +1028,15 @@ export default function StockDetail({
     await persistSellEdit(plans, maList);
   };
 
+  // 평가손익: 보유 0주(매매완료) 또는 currentPrice=0이면 0%로 표시
+  // (잔고 0인 종목에 -100% 표시되던 버그 차단)
   const profitPercent =
-    local.avgPrice > 0
+    local.avgPrice > 0 && local.totalQuantity > 0 && local.currentPrice > 0
       ? ((local.currentPrice - local.avgPrice) / local.avgPrice) * 100
       : 0;
 
   const profitAmount =
-    local.avgPrice > 0 && local.totalQuantity > 0
+    local.avgPrice > 0 && local.totalQuantity > 0 && local.currentPrice > 0
       ? (local.currentPrice - local.avgPrice) * local.totalQuantity
       : 0;
 
