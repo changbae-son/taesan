@@ -1024,7 +1024,44 @@ async function syncToFirestore(
       (data.sellPlans || []).some((sp: any) => Array.isArray(sp.consumedTradeIds) && sp.consumedTradeIds.length > 0) ||
       (data.maSells || []).some((m: any) => Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0);
     if (hasExistingMappingState) {
-      console.log(`[전량매도 스킵] ${name}: 기존 매핑 상태 있음 (totalQty=${data.totalQuantity}, sellFilled=${hasFilledSells}) — 매핑 보존, reconcile에 위임`);
+      // ✅ 매핑은 보존하되 잔고(totalQuantity)는 0으로 동기화
+      // 디아이씨처럼 100% 매도 완료한 종목의 보유수량/평가손익이 stale 상태로 남는 버그 차단
+      if ((data.totalQuantity || 0) > 0) {
+        // 첫 매매완료 전환 — totalQty 업데이트 + 첫 사이클 처리
+        const wasActive = true;
+        const alreadyCompleted = (data.cycles?.length || 0) > 0;
+        const completionUpdate: any = {
+          totalQuantity: 0,
+          currentPrice: 0,
+          updatedAt: now,
+        };
+        // 첫 매매완료라면 cycles + reentry 추적 시작
+        if (wasActive && !alreadyCompleted) {
+          const cycleNo = (data.cycles?.length || 0) + 1;
+          try {
+            const cycle = buildTradingCycle(data as any, cycleNo);
+            completionUpdate.cycles = admin.firestore.FieldValue.arrayUnion(cycle);
+            if (config && token && data.code) {
+              const reentryInit = await initializeReentryTracking(config, token, {
+                ...data,
+                code: data.code,
+                name,
+              } as any);
+              if (reentryInit) {
+                completionUpdate.reentry = reentryInit;
+                console.log(`[재진입] ${name} 추적 시작: 최저가 ${reentryInit.lowPrice.toLocaleString()}원 (${reentryInit.lowPriceDate})`);
+              }
+            }
+          } catch (err: any) {
+            console.warn(`[전량매도 스킵] ${name} cycle/reentry 초기화 실패:`, err.message);
+          }
+        }
+        await db.collection("stocks").doc(docId).update(completionUpdate);
+        console.log(`[전량매도 스킵] ${name}: 매핑 보존 + totalQty ${data.totalQuantity}→0 동기화 (cycle=${alreadyCompleted ? "기존" : "신규"})`);
+        soldOutStocks.push(`${name}(매핑보존)`);
+      } else {
+        console.log(`[전량매도 스킵] ${name}: 기존 매핑 보존 (totalQty 이미 0)`);
+      }
       continue;
     }
 
