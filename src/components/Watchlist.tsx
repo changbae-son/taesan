@@ -33,6 +33,9 @@ export default function Watchlist({ items, onAdd, onRemove }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ watching: true });
   const [showAddForm, setShowAddForm] = useState(false);
 
+  // 관심종목 리스트 내 검색 (실시간 필터)
+  const [filterQuery, setFilterQuery] = useState('');
+
   // 정적 종목 리스트 로드 (한 번만)
   const stockListRef = useRef<[string, string, string][]>([]);
   const [stockListLoaded, setStockListLoaded] = useState(false);
@@ -143,9 +146,19 @@ export default function Watchlist({ items, onAdd, onRemove }: Props) {
     setTimeout(() => setRefreshMsg(''), 4000);
   };
 
+  // 검색 필터 적용
+  const filterQ = filterQuery.trim().toLowerCase();
+  const filteredItems = filterQ
+    ? items.filter((it) => {
+        const nameMatch = it.name.toLowerCase().includes(filterQ);
+        const codeMatch = (it.code || '').toLowerCase().includes(filterQ);
+        return nameMatch || codeMatch;
+      })
+    : items;
+
   // 그룹별 분류 + 하락률 기준 정렬
   const grouped: Record<GroupKey, WatchItem[]> = { ready: [], approaching: [], watching: [] };
-  for (const item of items) {
+  for (const item of filteredItems) {
     const key = item.status === 'ready' ? 'ready'
       : item.status === 'approaching' ? 'approaching'
       : 'watching';
@@ -155,6 +168,9 @@ export default function Watchlist({ items, onAdd, onRemove }: Props) {
   for (const key of Object.keys(grouped) as GroupKey[]) {
     grouped[key].sort((a, b) => getDropPercent(a) - getDropPercent(b));
   }
+
+  // 검색 중에는 매칭된 그룹 모두 자동 펼침
+  const effectiveCollapsed = filterQ ? {} : collapsed;
 
   const groupConfig: { key: GroupKey; label: string; icon: string; color: string }[] = [
     { key: 'ready', label: '매수준비', icon: '!', color: '#c62828' },
@@ -189,6 +205,33 @@ export default function Watchlist({ items, onAdd, onRemove }: Props) {
       </div>
 
       {refreshMsg && <div className={styles.refreshMsg}>{refreshMsg}</div>}
+
+      {/* 관심종목 검색 바 (등록된 종목 중 빠른 필터) */}
+      {items.length > 0 && (
+        <div className={styles.searchBar}>
+          <input
+            className={styles.searchInput}
+            type="text"
+            placeholder="🔍 등록된 종목명 또는 코드로 검색..."
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+          />
+          {filterQuery && (
+            <>
+              <span className={styles.searchCount}>
+                {filteredItems.length}/{items.length}
+              </span>
+              <button
+                className={styles.searchClear}
+                onClick={() => setFilterQuery('')}
+                title="검색 초기화"
+              >
+                ✕
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* 추가 폼 (접기/펼치기) */}
       {showAddForm && (
@@ -277,12 +320,17 @@ export default function Watchlist({ items, onAdd, onRemove }: Props) {
           관심종목을 추가해주세요.<br />
           매일 15:10에 자동으로 매수 조건을 체크합니다.
         </div>
+      ) : filteredItems.length === 0 ? (
+        <div className={styles.empty}>
+          "<strong>{filterQuery}</strong>"에 일치하는 등록 종목이 없습니다.<br />
+          <span style={{ fontSize: 13, color: '#aaa' }}>종목명 또는 코드를 확인해주세요.</span>
+        </div>
       ) : (
         <div className={styles.groups}>
           {groupConfig.map(({ key, label, color }) => {
             const group = grouped[key];
             if (group.length === 0) return null;
-            const isCollapsed = collapsed[key] || false;
+            const isCollapsed = effectiveCollapsed[key] || false;
 
             return (
               <div key={key} className={styles.group}>

@@ -2,6 +2,62 @@
   padding: 20px;
 }
 
+/* ─── 검색 바 (관심종목 내 필터) ─── */
+.searchBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  background: #fff;
+  border: 1.5px solid #c5cae9;
+  border-radius: 8px;
+  padding: 4px 12px;
+}
+
+.searchInput {
+  flex: 1;
+  border: none;
+  outline: none;
+  padding: 8px 4px;
+  font-size: 13px;
+  background: transparent;
+}
+
+.searchInput:focus {
+  outline: none;
+}
+
+.searchCount {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1565c0;
+  background: #e8f0fe;
+  padding: 2px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.searchClear {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #f5f5f5;
+  color: #666;
+  border: 1px solid #ddd;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.searchClear:hover {
+  background: #ef5350;
+  color: #fff;
+  border-color: #ef5350;
+}
+
 /* ─── 헤더 ─── */
 .header {
   display: flex;
