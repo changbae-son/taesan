@@ -1941,6 +1941,7 @@ export default function StockDetail({
           <div className={styles.planCardHeader}>
             <h3 className={styles.cardTitle} style={{ color: '#1565c0', margin: 0 }}>수익 매도 계획</h3>
             {(() => {
+              // ✅ 수익매도 + MA매도 통합 합산 (같은 카드에 모두 표시되므로 헤더도 통합)
               let cnt = 0, qty = 0, amt = 0;
               local.sellPlans.forEach((sp, i) => {
                 const act = sellsByDate[i];
@@ -1949,9 +1950,15 @@ export default function StockDetail({
                 const p = act ? Math.round(act.amt / act.qty) : (sp.filledPrice || sp.price);
                 cnt++; qty += q; amt += q * p;
               });
+              // MA 매도도 포함 (수익 매도 계획 카드 본문에 같이 표시됨)
+              local.maSells.forEach((m) => {
+                if (!m.filled) return;
+                cnt++;
+                qty += m.quantity || 0;
+                amt += (m.price || 0) * (m.quantity || 0);
+              });
               const totalBoughtH = local.buyPlans.reduce((s, bp) => bp.filled ? s + (bp.filledQuantity || bp.quantity) : s, 0);
-              const maSoldH = local.maSells.reduce((s, ms) => ms.filled ? s + ms.quantity : s, 0);
-              const remQty = Math.max(0, totalBoughtH - qty - maSoldH);
+              const remQty = Math.max(0, totalBoughtH - qty);
               return (
                 <span className={styles.planStatsSell}>
                   {cnt > 0 ? `${cnt}회 · ${qty.toLocaleString()}주 · ${Math.round(amt / 10000).toLocaleString()}만원 회수` : '매도 없음'}
