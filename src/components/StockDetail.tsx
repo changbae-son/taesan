@@ -636,7 +636,8 @@ export default function StockDetail({
 
   // ── 미분류 매도 이동 ──
   // 매핑 안 된 trade를 sellPlans 또는 maSells로 수동 이동
-  const moveUnmappedToSell = async (t: { date: string; price: number; quantity: number }) => {
+  // ✅ Phase 1: t.id를 받아서 consumedTradeIds에 누적 → 이중 처리 차단
+  const moveUnmappedToSell = async (t: { id: string; date: string; price: number; quantity: number }) => {
     const percentStr = prompt('어느 차수로 이동? (5 / 10 / 15 / 20 / 25)', '25');
     if (!percentStr) return;
     const percent = parseInt(percentStr.replace(/\D/g, ''));
@@ -661,12 +662,15 @@ export default function StockDetail({
         `결과: ${newP.toLocaleString()}원 (가중평균) × ${newQ}주`
       );
       if (!ok) return;
+      const existingIds = Array.isArray(plans[idx].consumedTradeIds) ? plans[idx].consumedTradeIds : [];
       plans[idx] = {
         ...plans[idx],
         filledDate: t.date > (plans[idx].filledDate || '') ? t.date : (plans[idx].filledDate || ''),
         filledPrice: newP,
         filledQuantity: newQ,
         manualOverride: true,
+        // ✅ trade.id 누적 (중복 방지)
+        consumedTradeIds: existingIds.includes(t.id) ? existingIds : [...existingIds, t.id],
       };
     } else {
       plans[idx] = {
@@ -676,12 +680,13 @@ export default function StockDetail({
         filledPrice: t.price,
         filledQuantity: t.quantity,
         manualOverride: true,
+        consumedTradeIds: [t.id],
       };
     }
     await persistSellEdit(plans, local.maSells);
   };
 
-  const moveUnmappedToMa = async (t: { date: string; price: number; quantity: number }) => {
+  const moveUnmappedToMa = async (t: { id: string; date: string; price: number; quantity: number }) => {
     const maStr = prompt('어느 이동평균선으로? (20 / 60 / 120)', '20');
     if (!maStr) return;
     const ma = parseInt(maStr.replace(/\D/g, ''));
@@ -723,12 +728,15 @@ export default function StockDetail({
         `결과: ${newP.toLocaleString()}원 (가중평균) × ${newQ}주`
       );
       if (!ok) return;
+      const existingIds = Array.isArray(maList[idx].consumedTradeIds) ? maList[idx].consumedTradeIds! : [];
       maList[idx] = {
         ...maList[idx],
         price: newP,
         quantity: newQ,
         filledDate: t.date > (maList[idx].filledDate || '') ? t.date : (maList[idx].filledDate || ''),
         insertAfterPercent: insertAfter,
+        // ✅ trade.id 누적 (이중 처리 차단)
+        consumedTradeIds: existingIds.includes(t.id) ? existingIds : [...existingIds, t.id],
       };
     } else {
       maList[idx] = {
@@ -738,6 +746,7 @@ export default function StockDetail({
         quantity: t.quantity,
         filledDate: t.date,
         insertAfterPercent: insertAfter,
+        consumedTradeIds: [t.id],
       };
     }
     await persistSellEdit(local.sellPlans, maList);

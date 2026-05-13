@@ -3531,7 +3531,48 @@ async function reconcileStockPlans(stockName: string): Promise<{
   // 같은 band에 여러 trade → 가중평균 합산
   // 가격대가 맞지 않으면 미분류 (디아이씨처럼 +25% 슬롯에 +11% 매도가 들어가는 일 차단)
 
-  // avgBuyPrice 계산 (buyPlans filled 가중평균, 없으면 stock.avgPrice)
+  // ✅ Phase 2: 매도 시점 historical avgPrice 기반 band 분류
+  // 4/30 19,240×20처럼 1차 매수만 했을 때의 매도는 1차 매수가(18,350) 기준 +5%로 분류되어야 함.
+  // 시스템이 현재 평단(2차 매수 후 16,500)으로 분류하면 +15%로 잘못 매핑됨.
+  // buyPlans.filledDate 기반으로 매도일까지의 누적 매수 평단을 계산.
+
+  // 매수 이벤트 (filledDate 기준 정렬)
+  const buyEvents: Array<{date: string; qty: number; price: number}> = buyPlans
+    .filter((bp: any) => bp.filled && bp.filledDate)
+    .map((bp: any) => ({
+      date: String(bp.filledDate),
+      qty: Number(bp.filledQuantity) || Number(bp.quantity) || 0,
+      price: Number(bp.filledPrice) || Number(bp.price) || 0,
+    }))
+    .filter((b) => b.qty > 0 && b.price > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  // 매도 시점까지의 누적 평단
+  const avgPriceAtTime = (sellDate: string): number => {
+    let amt = 0;
+    let qty = 0;
+    for (const b of buyEvents) {
+      if (b.date <= sellDate) {
+        amt += b.price * b.qty;
+        qty += b.qty;
+      }
+    }
+    if (qty > 0) return amt / qty;
+    // fallback: 전체 buyPlans 평단 또는 stock.avgPrice
+    let totalAmt = 0;
+    let totalQty = 0;
+    for (const bp of buyPlans) {
+      if (bp.filled) {
+        const q = Number(bp.filledQuantity) || Number(bp.quantity) || 0;
+        const p = Number(bp.filledPrice) || Number(bp.price) || 0;
+        totalAmt += p * q;
+        totalQty += q;
+      }
+    }
+    return totalQty > 0 ? totalAmt / totalQty : (Number((stock as any).avgPrice) || 0);
+  };
+
+  // 전체 평단 (audit/band 검증용 — 현재 평단)
   let totalBuyAmt = 0;
   let totalBuyQty = 0;
   for (const bp of buyPlans) {
@@ -3544,9 +3585,11 @@ async function reconcileStockPlans(stockName: string): Promise<{
   }
   const avgBuyPriceCalc = totalBuyQty > 0 ? totalBuyAmt / totalBuyQty : (Number((stock as any).avgPrice) || 0);
 
-  const classifyByBand = (price: number): number | null => {
-    if (avgBuyPriceCalc <= 0 || price <= 0) return null;
-    const profitPct = (price / avgBuyPriceCalc - 1) * 100;
+  // band 분류 — sellDate에 따라 historical avg 사용
+  const classifyByBand = (price: number, sellDate?: string): number | null => {
+    const refAvg = sellDate ? avgPriceAtTime(sellDate) : avgBuyPriceCalc;
+    if (refAvg <= 0 || price <= 0) return null;
+    const profitPct = (price / refAvg - 1) * 100;
     if (profitPct < 2.5) return null;
     if (profitPct < 7.5) return 5;
     if (profitPct < 12.5) return 10;
@@ -3574,7 +3617,8 @@ async function reconcileStockPlans(stockName: string): Promise<{
     const tQty = Number(t.quantity) || 0;
     const tPrice = Number(t.price) || 0;
     if (tQty <= 0 || tPrice <= 0) continue;
-    const band = classifyByBand(tPrice);
+    // ✅ Phase 2: 매도 시점 평단 기준 band 분류
+    const band = classifyByBand(tPrice, String(t.date || ""));
     if (band === null || slotIdxByPercent[band] === undefined) {
       unmappedCount++;
       unmappedQty += tQty;
@@ -3654,17 +3698,20 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   // ✅ 옵션 B: filled 슬롯의 filledPrice가 percent band와 일치하는지 검증
   // 디아이씨 같은 케이스(잘못된 슬롯에 매핑) 사후 감지
+  // ✅ Phase 2: 매도 시점 평단(historical) 기준으로 검증 — 시점별 평단 변화 반영
   let mappingBandIssues = 0;
   for (const sp of sellPlans) {
     if (!sp.filled) continue;
     const fp = Number(sp.filledPrice) || 0;
     if (fp <= 0) continue;
-    const expectedBand = classifyByBand(fp);
+    const sellDate = String(sp.filledDate || "");
+    const expectedBand = classifyByBand(fp, sellDate);
+    const refAvg = sellDate ? avgPriceAtTime(sellDate) : avgBuyPriceCalc;
     if (expectedBand !== null && expectedBand !== sp.percent) {
       mappingBandIssues++;
       console.warn(
         `[audit/band] ${stockName} +${sp.percent}% 슬롯에 ${fp}원 매핑됨 ` +
-        `(평단 ${avgBuyPriceCalc.toFixed(0)}원 기준 실제 band: +${expectedBand}%)`
+        `(${sellDate} 시점 평단 ${refAvg.toFixed(0)}원 기준 실제 band: +${expectedBand}%)`
       );
     }
   }
