@@ -70,6 +70,25 @@
   white-space: nowrap;
 }
 
+.auditMismatchBadge {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  background: #fff3e0;
+  color: #bf360c;
+  border: 1px solid #ff6d00;
+  cursor: help;
+  margin-left: 4px;
+  white-space: nowrap;
+  animation: mismatchPulse 2s infinite;
+}
+
+@keyframes mismatchPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
 /* 종목 빠른 전환 바 */
 .navBar {
   display: flex;

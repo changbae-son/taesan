@@ -3738,6 +3738,187 @@ async function reconcileStockPlans(stockName: string): Promise<{
     );
   }
 
+  // ✅ Option B: 정합성 검증 — consumedTradeIds ↔ filled 데이터 일관성 체크 + 자동 정정
+  // 디아이씨 +15% 같은 케이스: filledPrice=8810 vs consumedTradeIds=[8700 trade] = 불일치
+  // 자동으로 올바른 trade 찾아서 교체. 못 찾으면 카운터에 기록.
+  const tradeById = new Map<string, {id: string; date: string; price: number; quantity: number}>();
+  for (const t of sortedSells) {
+    tradeById.set(String(t.id), {
+      id: String(t.id),
+      date: String(t.date || ""),
+      price: Number(t.price) || 0,
+      quantity: Number(t.quantity) || 0,
+    });
+  }
+
+  let mappingConsumedMismatch = 0;
+  let autoCorrected = 0;
+
+  // 모든 슬롯의 consumedTradeIds qty 합산 (자동 정정 시 used 추적용)
+  const trackUsedQty: Record<string, number> = {};
+
+  const validateSlot = (
+    slot: any,
+    slotLabel: string,
+    slotQty: number,
+    slotPrice: number,
+    slotDate: string
+  ): {fixed: boolean; newIds: string[] | null} => {
+    if (!Array.isArray(slot.consumedTradeIds) || slot.consumedTradeIds.length === 0) {
+      return {fixed: false, newIds: null}; // mappingIntegrityIssues에 이미 잡힘
+    }
+    // 합산 계산
+    let cQty = 0, cAmt = 0;
+    let validIdCount = 0;
+    for (const id of slot.consumedTradeIds) {
+      const t = tradeById.get(String(id));
+      if (!t) continue;
+      validIdCount++;
+      // 단일 참조면 slot의 filledQuantity를 그 trade에서 점유한 양으로 간주
+      // 다중 참조면 각 trade의 전체 qty 합산
+      if (slot.consumedTradeIds.length === 1) {
+        cQty += slotQty;
+        cAmt += slotQty * t.price;
+      } else {
+        cQty += t.quantity;
+        cAmt += t.quantity * t.price;
+      }
+    }
+    const cAvg = cQty > 0 ? Math.round(cAmt / cQty) : 0;
+    // 단일 참조의 경우 qty는 slot.filledQuantity와 자동 일치
+    // 핵심 검증: price 일치 여부 + 모든 ID가 trades에 존재
+    const priceMismatch = Math.abs(cAvg - slotPrice) > 1;
+    const idMissing = validIdCount < slot.consumedTradeIds.length;
+
+    if (!priceMismatch && !idMissing && cQty === slotQty) {
+      return {fixed: false, newIds: null}; // 정합성 OK
+    }
+
+    // 불일치 감지 — 자동 정정 시도
+    console.warn(
+      `[audit/mismatch] ${stockName} ${slotLabel} 정합성 위반: ` +
+      `slot(qty=${slotQty}, price=${slotPrice}) vs consumed(qty=${cQty}, avg=${cAvg}, validIds=${validIdCount}/${slot.consumedTradeIds.length})`
+    );
+    mappingConsumedMismatch++;
+
+    // resolveIds로 올바른 매칭 시도
+    if (!slotDate || slotQty <= 0) return {fixed: false, newIds: null};
+    const candidates = sortedSells
+      .filter((t) => String(t.date) === slotDate)
+      .map((t) => ({
+        id: String(t.id),
+        price: Number(t.price) || 0,
+        quantity: Number(t.quantity) || 0,
+        remain: (Number(t.quantity) || 0) - (trackUsedQty[String(t.id)] || 0),
+      }))
+      .filter((t) => t.remain > 0);
+    // 1) date + qty + price 정확 매칭
+    const exact = candidates.find((t) => t.remain === slotQty && t.price === slotPrice);
+    if (exact) {
+      trackUsedQty[exact.id] = (trackUsedQty[exact.id] || 0) + slotQty;
+      autoCorrected++;
+      console.log(`[audit/autofix] ${stockName} ${slotLabel} → ${exact.id} (단일 정확 매칭)`);
+      return {fixed: true, newIds: [exact.id]};
+    }
+    // 2) 같은 가격 부분 매칭
+    const partial = candidates.find((t) => t.price === slotPrice && t.remain >= slotQty);
+    if (partial) {
+      trackUsedQty[partial.id] = (trackUsedQty[partial.id] || 0) + slotQty;
+      autoCorrected++;
+      console.log(`[audit/autofix] ${stockName} ${slotLabel} → ${partial.id} (부분 매칭)`);
+      return {fixed: true, newIds: [partial.id]};
+    }
+    // 3) 가중평균 역추적 (2^n subset)
+    if (candidates.length >= 2 && candidates.length <= 10) {
+      const n = candidates.length;
+      for (let mask = 1; mask < (1 << n); mask++) {
+        let sumQ = 0, sumA = 0;
+        const subset: string[] = [];
+        for (let i = 0; i < n; i++) {
+          if (mask & (1 << i)) {
+            sumQ += candidates[i].remain;
+            sumA += candidates[i].remain * candidates[i].price;
+            subset.push(candidates[i].id);
+          }
+        }
+        if (sumQ === slotQty) {
+          const avg = sumQ > 0 ? Math.round(sumA / sumQ) : 0;
+          if (avg === slotPrice) {
+            for (let i = 0; i < n; i++) {
+              if (mask & (1 << i)) {
+                trackUsedQty[candidates[i].id] = (trackUsedQty[candidates[i].id] || 0) + candidates[i].remain;
+              }
+            }
+            autoCorrected++;
+            console.log(`[audit/autofix] ${stockName} ${slotLabel} → ${subset.join(',')} (가중평균)`);
+            return {fixed: true, newIds: subset};
+          }
+        }
+      }
+    }
+    console.warn(`[audit/autofix-fail] ${stockName} ${slotLabel} 자동 정정 실패 — 수동 정정 필요`);
+    return {fixed: false, newIds: null};
+  };
+
+  // 먼저 정합성 OK 슬롯들의 trackUsedQty 누적 (이후 검증 시 그 trades는 제외)
+  for (const sp of sellPlans) {
+    if (sp.filled && Array.isArray(sp.consumedTradeIds) && sp.consumedTradeIds.length > 0) {
+      const cQty = Number(sp.filledQuantity) || 0;
+      if (sp.consumedTradeIds.length === 1) {
+        const t = tradeById.get(String(sp.consumedTradeIds[0]));
+        if (t && t.price === Number(sp.filledPrice) && cQty <= t.quantity) {
+          trackUsedQty[t.id] = (trackUsedQty[t.id] || 0) + cQty;
+        }
+      } else {
+        for (const id of sp.consumedTradeIds) {
+          const t = tradeById.get(String(id));
+          if (t) trackUsedQty[t.id] = (trackUsedQty[t.id] || 0) + t.quantity;
+        }
+      }
+    }
+  }
+  for (const m of maSellsArr) {
+    if (m.filled && Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0) {
+      const cQty = Number(m.quantity) || 0;
+      if (m.consumedTradeIds.length === 1) {
+        const t = tradeById.get(String(m.consumedTradeIds[0]));
+        if (t && t.price === Number(m.price) && cQty <= t.quantity) {
+          trackUsedQty[t.id] = (trackUsedQty[t.id] || 0) + cQty;
+        }
+      } else {
+        for (const id of m.consumedTradeIds) {
+          const t = tradeById.get(String(id));
+          if (t) trackUsedQty[t.id] = (trackUsedQty[t.id] || 0) + t.quantity;
+        }
+      }
+    }
+  }
+
+  // 슬롯 검증 + 자동 정정
+  for (let i = 0; i < sellPlans.length; i++) {
+    const sp = sellPlans[i];
+    if (!sp.filled || !Array.isArray(sp.consumedTradeIds) || sp.consumedTradeIds.length === 0) continue;
+    const res = validateSlot(sp, `sell+${sp.percent}%`, Number(sp.filledQuantity) || 0, Number(sp.filledPrice) || 0, String(sp.filledDate || ""));
+    if (res.fixed && res.newIds) {
+      sellPlans[i] = {...sp, consumedTradeIds: res.newIds};
+      sellFilledCount++;
+    }
+  }
+  for (let i = 0; i < maSellsArr.length; i++) {
+    const m = maSellsArr[i];
+    if (!m.filled || !Array.isArray(m.consumedTradeIds) || m.consumedTradeIds.length === 0) continue;
+    const res = validateSlot(m, `ma${m.ma}`, Number(m.quantity) || 0, Number(m.price) || 0, String(m.filledDate || ""));
+    if (res.fixed && res.newIds) {
+      maSellsArr[i] = {...m, consumedTradeIds: res.newIds};
+      sellFilledCount++;
+    }
+  }
+  if (mappingConsumedMismatch > 0) {
+    console.warn(
+      `[audit/mismatch] ${stockName} 정합성 위반 ${mappingConsumedMismatch}건 (자동 정정 ${autoCorrected}건, 수동 필요 ${mappingConsumedMismatch - autoCorrected}건)`
+    );
+  }
+
   // 변경사항이 있을 때만 업데이트
   if (buyFilledCount > 0 || sellFilledCount > 0) {
     // ✅ Race condition 방지: update 직전 latest doc 재조회 후 manualOverride 최종 보호
@@ -3750,6 +3931,12 @@ async function reconcileStockPlans(stockName: string): Promise<{
       const latest = latestSellPlans[i];
       if (latest?.manualOverride) {
         console.log(`[reconcile race 보호] ${stockName} sell+${latest.percent}% latest manualOverride 유지`);
+        // ✅ consumedTradeIds는 system field이므로 auto-fix 반영 허용 (잘못된 매핑 자동 정정)
+        const newIds = newPlan.consumedTradeIds;
+        if (Array.isArray(newIds) && JSON.stringify(newIds.sort()) !== JSON.stringify((latest.consumedTradeIds || []).slice().sort())) {
+          console.log(`[reconcile race 보호] ${stockName} sell+${latest.percent}% consumedTradeIds 자동정정 반영`);
+          return {...latest, consumedTradeIds: newIds};
+        }
         return latest;
       }
       return newPlan;
@@ -3766,9 +3953,11 @@ async function reconcileStockPlans(stockName: string): Promise<{
     await stockDoc.ref.update({
       buyPlans: finalBuyPlans,
       sellPlans: finalSellPlans,
+      maSells: maSellsArr,
       mappingAuditDiff,
       mappingBandIssues,
       mappingIntegrityIssues,
+      mappingConsumedMismatch: Math.max(0, mappingConsumedMismatch - autoCorrected),
       mappingAuditAt: Date.now(),
       updatedAt: Date.now(),
     });
@@ -3785,20 +3974,24 @@ async function reconcileStockPlans(stockName: string): Promise<{
     };
   }
 
-  // 변경 없어도 audit diff/band/integrity issues는 최신화
+  // 변경 없어도 audit diff/band/integrity/consumed mismatch는 최신화
   const existingDiff = Number((stock as any).mappingAuditDiff) || 0;
   const existingBandIssues = Number((stock as any).mappingBandIssues) || 0;
   const existingIntegrity = Number((stock as any).mappingIntegrityIssues) || 0;
+  const existingMismatch = Number((stock as any).mappingConsumedMismatch) || 0;
+  const newMismatch = Math.max(0, mappingConsumedMismatch - autoCorrected);
   if (
     existingDiff !== mappingAuditDiff ||
     existingBandIssues !== mappingBandIssues ||
-    existingIntegrity !== mappingIntegrityIssues
+    existingIntegrity !== mappingIntegrityIssues ||
+    existingMismatch !== newMismatch
   ) {
     try {
       await stockDoc.ref.update({
         mappingAuditDiff,
         mappingBandIssues,
         mappingIntegrityIssues,
+        mappingConsumedMismatch: newMismatch,
         mappingAuditAt: Date.now(),
       });
     } catch (e) {

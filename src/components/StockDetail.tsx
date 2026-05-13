@@ -1311,6 +1311,15 @@ export default function StockDetail({
             ⚙️ 매핑 신뢰도 낮음 {local.mappingIntegrityIssues}건
           </span>
         )}
+        {/* ✅ Option B: consumedTradeIds 불일치 경고 배지 (가장 심각) */}
+        {(local.mappingConsumedMismatch || 0) > 0 && (
+          <span
+            className={styles.auditMismatchBadge}
+            title={`체결된 슬롯의 consumedTradeIds가 슬롯 데이터(가격/수량)와 일치하지 않음 ${local.mappingConsumedMismatch}건.\n자동 정정 시도 후에도 해소 안 된 케이스 — 수동 정정 필요.\n같은 trade가 미분류에도 노출될 수 있음 (짬뽕 위험).`}
+          >
+            🔥 정합성 위반 {local.mappingConsumedMismatch}건
+          </span>
+        )}
         <button
           className={styles.deleteBtn}
           onClick={() => {
