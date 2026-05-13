@@ -905,6 +905,20 @@
   text-align: left;
 }
 
+/* 매수 row 금액 표시 (체결 버튼 옆) */
+.buyRowAmt {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 7px;
+  background: #ffebee;
+  color: #c62828;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  vertical-align: middle;
+}
+
 /* 기존 테이블 (이동평균선 매도 등에서 여전히 사용) */
 .planTable {
   width: 100%;

@@ -1919,7 +1919,7 @@ export default function StockDetail({
                           {bp.filled ? `누적 ${cumQty.toLocaleString()}주` : `전체 ${cumQty.toLocaleString()}주`}
                         </span>
                       </td>
-                      {/* 체결 버튼 */}
+                      {/* 체결 버튼 + 금액 */}
                       <td className={styles.btnCell}>
                         <button
                           className={`${styles.fillBtn} ${bp.filled ? styles.fillBtnActive : ''}`}
@@ -1927,6 +1927,16 @@ export default function StockDetail({
                         >
                           {bp.filled ? '체결' : '미체결'}
                         </button>
+                        {bp.filled && (() => {
+                          const buyQty = realQty || bp.quantity || 0;
+                          const buyPrice = realPrice || bp.filledPrice || bp.price || 0;
+                          const buyAmt = buyQty * buyPrice;
+                          return buyAmt > 0 ? (
+                            <span className={styles.buyRowAmt} title="이 차수 매수 금액">
+                              {buyAmt.toLocaleString()}원
+                            </span>
+                          ) : null;
+                        })()}
                       </td>
                     </tr>
                   );
