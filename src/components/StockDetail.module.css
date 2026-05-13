@@ -907,6 +907,22 @@
   text-align: left;
 }
 
+/* 버튼 2단 스택 (MA+이동 / 연필+수동) */
+.btnVStack {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  vertical-align: middle;
+  margin-left: 2px;
+  align-items: stretch;
+}
+
+.btnVStack > button,
+.btnVStack > span {
+  margin-left: 0 !important;
+  text-align: center;
+}
+
 /* 매수 row 금액 표시 (체결 버튼 옆) */
 .buyRowAmt {
   display: inline-block;

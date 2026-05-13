@@ -2244,17 +2244,21 @@ export default function StockDetail({
                         >
                           {isFilled ? '체결' : '미체결'}
                         </button>
+                        {/* MA + 이동 2단 스택 (체결된 슬롯만) */}
                         {isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
-                          <button className={styles.splitBtn} onClick={() => openSplitToMA(i)} title="이 차수의 일부/전체를 MA 매도로 분리">🔀 MA</button>
+                          <span className={styles.btnVStack}>
+                            <button className={styles.splitBtn} onClick={() => openSplitToMA(i)} title="이 차수의 일부/전체를 MA 매도로 분리">🔀 MA</button>
+                            <button className={styles.moveSellBtn} onClick={() => openMoveSell(i)} title="이 체결을 다른 차수로 이동">↕️ 이동</button>
+                          </span>
                         )}
-                        {isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
-                          <button className={styles.moveSellBtn} onClick={() => openMoveSell(i)} title="이 체결을 다른 차수로 이동">↕️ 이동</button>
-                        )}
+                        {/* 연필 + 수동 2단 스택 */}
                         {sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
-                          <button className={styles.sellEditBtn} onClick={() => openSellEdit(i)}>✏️</button>
-                        )}
-                        {sp.manualOverride && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
-                          <span className={styles.manualOverrideBadge} title="수동 편집됨 (sync 보호)">수동</span>
+                          <span className={styles.btnVStack}>
+                            <button className={styles.sellEditBtn} onClick={() => openSellEdit(i)}>✏️</button>
+                            {sp.manualOverride && (
+                              <span className={styles.manualOverrideBadge} title="수동 편집됨 (sync 보호)">수동</span>
+                            )}
+                          </span>
                         )}
                         {moveSellIdx === i && (
                           <div className={styles.moveSellPopup}>
