@@ -3642,7 +3642,18 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   // 매도 차수 갱신: 개별 체결을 순차 슬롯에 매핑 (manualOverride 보존)
   // ✅ 보너스: sellPlans price(목표가) + quantity(계획수량) 자동 재계산 (기존 데이터 오염 자동 보정)
-  const stockAvg = Number(stock.avgPrice) || 0;
+  // buyPlans 기반으로 평단 직접 계산 (액면병합 후 stock.avgPrice 미갱신 대비)
+  const stockAvgFromBuyPlans = (() => {
+    let amt = 0; let qty = 0;
+    for (const bp of buyPlans) {
+      if (bp.filled) {
+        amt += (Number(bp.filledPrice) || Number(bp.price) || 0) * (Number(bp.filledQuantity) || Number(bp.quantity) || 0);
+        qty += Number(bp.filledQuantity) || Number(bp.quantity) || 0;
+      }
+    }
+    return qty > 0 ? Math.round(amt / qty) : 0;
+  })();
+  const stockAvg = stockAvgFromBuyPlans > 0 ? stockAvgFromBuyPlans : (Number(stock.avgPrice) || 0);
   // buyPlans filled 합계 (계획수량 = 매수합계 × 20%)
   const totalFilledBuyQty = buyPlans.reduce((sum: number, bp: any) =>
     bp.filled ? sum + ((bp.filledQuantity as number) || (bp.quantity as number) || 0) : sum, 0);
@@ -4228,7 +4239,7 @@ async function reconcileStockPlans(stockName: string): Promise<{
       return newPlan;
     });
 
-    await stockDoc.ref.update({
+    const reconcileUpdate: Record<string, any> = {
       buyPlans: finalBuyPlans,
       sellPlans: finalSellPlans,
       maSells: maSellsArr,
@@ -4238,7 +4249,13 @@ async function reconcileStockPlans(stockName: string): Promise<{
       mappingConsumedMismatch: Math.max(0, mappingConsumedMismatch - autoCorrected),
       mappingAuditAt: Date.now(),
       updatedAt: Date.now(),
-    });
+    };
+    // buyPlans 기반 평단이 stock.avgPrice와 다를 때만 갱신 (액면병합 후 미갱신 보정)
+    if (stockAvg > 0 && stockAvg !== (Number(stock.avgPrice) || 0)) {
+      reconcileUpdate.avgPrice = stockAvg;
+      console.log(`[reconcile] ${stockName} avgPrice 보정: ${stock.avgPrice} → ${stockAvg}`);
+    }
+    await stockDoc.ref.update(reconcileUpdate);
     console.log(
       `[reconcile] ${stockName} 갱신: 매수 ${buyFilledCount}차, 매도 ${sellFilledCount}차` +
         (exceedsBuy + exceedsSell > 0 ? ` (초과 매수 ${exceedsBuy}, 매도 ${exceedsSell})` : "")
