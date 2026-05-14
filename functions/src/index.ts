@@ -965,6 +965,23 @@ async function syncToFirestore(
         filled: false,
       }));
 
+      // ✅ 새 종목 매수 즉시 MA20/60/120 계산 (다음 15:24 사이클까지 기다리지 않음)
+      // 매수신호 텔레그램 알림 발송에 필요 (ma값 없으면 알림 발송 못함)
+      let initialMa: {ma20: number; ma60: number; ma120: number; candles: number} | null = null;
+      if (config && token && h.code) {
+        try {
+          initialMa = await fetchAndCalcMA(config, token, h.code);
+          if (initialMa) {
+            console.log(`[신규MA] ${h.name}(${h.code}): MA20=${initialMa.ma20} MA60=${initialMa.ma60} MA120=${initialMa.ma120} (${initialMa.candles}봉)`);
+          }
+        } catch (err: any) {
+          console.warn(`[신규MA] ${h.name} 계산 실패: ${err.message}`);
+        }
+      }
+
+      const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+      const todayStr = `${kstNow.getFullYear()}-${String(kstNow.getMonth() + 1).padStart(2, "0")}-${String(kstNow.getDate()).padStart(2, "0")}`;
+
       await db.collection("stocks").doc(docId).set({
         name: h.name,
         code: h.code || "",
@@ -978,6 +995,14 @@ async function syncToFirestore(
         sellPlans: mapped.sellPlans,
         maSells,
         sellCount: mapped.sellCount,
+        // ✅ MA 즉시 반영 (있으면)
+        ...(initialMa ? {
+          ma20: initialMa.ma20,
+          ma60: initialMa.ma60,
+          ma120: initialMa.ma120,
+          maCalcDate: todayStr,
+          maCandles: initialMa.candles,
+        } : {}),
         createdAt: now,
         updatedAt: now,
       });
@@ -2237,6 +2262,63 @@ export const kiwoomPriceUpdate = functions
           time: new Date().toISOString(),
         });
       } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 특정 종목 또는 전체 보유 종목의 MA 즉시 계산 (강제 트리거)
+ * POST /forceMAUpdate
+ * body: { stockNames?: string[] }  - 비어있으면 전체 보유 종목
+ *
+ * 새 매수 종목이 MA 사이클(15:24)을 놓친 경우 즉시 갱신용.
+ */
+export const forceMAUpdate = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 300})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const stockNames: string[] | null = req.body?.stockNames || null;
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const stockDocs = await db.collection("stocks").get();
+        const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const today = `${kst.getFullYear()}-${String(kst.getMonth() + 1).padStart(2, "0")}-${String(kst.getDate()).padStart(2, "0")}`;
+
+        const results: any[] = [];
+        for (const doc of stockDocs.docs) {
+          const s = doc.data();
+          if (!s.code || (s.totalQuantity || 0) <= 0) continue;
+          if (stockNames && stockNames.length > 0 && !stockNames.includes(s.name)) continue;
+
+          const ma = await fetchAndCalcMA(config, token, s.code);
+          if (!ma) {
+            results.push({stockName: s.name, ok: false, error: "no candle data"});
+            continue;
+          }
+          await db.collection("stocks").doc(doc.id).update({
+            ma20: ma.ma20,
+            ma60: ma.ma60,
+            ma120: ma.ma120,
+            maCalcDate: today,
+            maCandles: ma.candles,
+          });
+          results.push({
+            stockName: s.name,
+            ok: true,
+            ma20: ma.ma20,
+            ma60: ma.ma60,
+            ma120: ma.ma120,
+            candles: ma.candles,
+          });
+          await new Promise((r) => setTimeout(r, 300));
+        }
+
+        res.json({success: true, count: results.length, results});
+      } catch (error: any) {
+        console.error("[forceMAUpdate] 오류:", error.message);
         res.status(500).json({success: false, error: error.message});
       }
     });
