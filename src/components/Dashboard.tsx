@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   BarChart,
   Bar,
@@ -24,11 +24,45 @@ interface Props {
 const COLORS = ['#4caf50', '#ff9800', '#f44336', '#4a90d9', '#9c27b0'];
 const SYSTEM_TAGS = new Set(['#키움동기화', '#단위의심', '키움동기화', '단위의심']);
 
+// 키움 표준 수수료/세금 (StockDetail과 동일 기준)
+const BUY_FEE_RATE = 0.00015;  // 매수 수수료 0.015%
+const SELL_FEE_RATE = 0.00015; // 매도 수수료 0.015%
+const SELL_TAX_RATE = 0.0020;  // 매도 거래세 0.18~0.20% (평균 0.20%)
+
+type Period = 'all' | 'year' | 'month' | 'week';
+
 const fmt = (n: number) => Math.round(n).toLocaleString();
 const fmtSign = (n: number) => (n >= 0 ? `+${fmt(n)}` : fmt(n));
 const colorOf = (n: number) => (n >= 0 ? '#4caf50' : '#f44336');
 
+function getPeriodStart(period: Period): Date {
+  const now = new Date();
+  if (period === 'year') return new Date(now.getFullYear(), 0, 1);
+  if (period === 'month') return new Date(now.getFullYear(), now.getMonth(), 1);
+  if (period === 'week') {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 7);
+    return d;
+  }
+  return new Date(0);
+}
+
 export default function Dashboard({ stocks, trades, snapshots }: Props) {
+  // ─── A. 수수료/세금 표시 토글 + B. 기간 필터 ───
+  const [showNet, setShowNet] = useState(false);
+  const [period, setPeriod] = useState<Period>('all');
+
+  // 기간 필터 적용된 trades
+  const filteredTrades = useMemo(() => {
+    if (period === 'all') return trades;
+    const start = getPeriodStart(period);
+    return trades.filter((t) => {
+      if (!t.date) return false;
+      const d = new Date(t.date);
+      return d >= start;
+    });
+  }, [trades, period]);
+
   // ─── 종목별 매수/매도 집계 (trades 기반 정확 계산) ───
   const perStock = useMemo(() => {
     const map: Record<
@@ -40,14 +74,16 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
         soldAmt: number;
         soldQty: number;
         avgBuyPrice: number;
-        realized: number;
+        realized: number;     // gross
+        realizedNet: number;  // net (수수료/세금 차감)
+        fees: number;
       }
     > = {};
-    for (const t of trades) {
+    for (const t of filteredTrades) {
       if (!t.stockName) continue;
       const k = t.stockName;
       if (!map[k]) {
-        map[k] = { name: k, boughtAmt: 0, boughtQty: 0, soldAmt: 0, soldQty: 0, avgBuyPrice: 0, realized: 0 };
+        map[k] = { name: k, boughtAmt: 0, boughtQty: 0, soldAmt: 0, soldQty: 0, avgBuyPrice: 0, realized: 0, realizedNet: 0, fees: 0 };
       }
       const price = Number(t.price) || 0;
       const qty = Number(t.quantity) || 0;
@@ -63,9 +99,15 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
     Object.values(map).forEach((s) => {
       s.avgBuyPrice = s.boughtQty > 0 ? s.boughtAmt / s.boughtQty : 0;
       s.realized = s.soldAmt - s.soldQty * s.avgBuyPrice;
+      // 수수료/세금: 매수 0.015% + 매도 0.015% + 매도 거래세 0.20%
+      const buyFee = s.boughtAmt * BUY_FEE_RATE;
+      const sellFee = s.soldAmt * SELL_FEE_RATE;
+      const sellTax = s.soldAmt * SELL_TAX_RATE;
+      s.fees = buyFee + sellFee + sellTax;
+      s.realizedNet = s.realized - s.fees;
     });
     return map;
-  }, [trades]);
+  }, [filteredTrades]);
 
   // ─── 전체 KPI ───
   const kpi = useMemo(() => {
@@ -75,11 +117,16 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
     );
 
     let totalBoughtAmt = 0;
-    let totalRealized = 0;
+    let totalRealizedGross = 0;
+    let totalRealizedNet = 0;
+    let totalFees = 0;
     for (const ps of Object.values(perStock)) {
       totalBoughtAmt += ps.boughtAmt;
-      totalRealized += ps.realized;
+      totalRealizedGross += ps.realized;
+      totalRealizedNet += ps.realizedNet;
+      totalFees += ps.fees;
     }
+    const totalRealized = showNet ? totalRealizedNet : totalRealizedGross;
 
     let unrealized = 0;
     let holdingMarketValue = 0;
@@ -104,13 +151,83 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
       totalCount: stocks.length,
       totalBoughtAmt,
       totalRealized,
+      totalRealizedGross,
+      totalRealizedNet,
+      totalFees,
       realizedPct,
       unrealized,
       unrealizedPct,
       holdingMarketValue,
       holdingCostBasis,
     };
-  }, [stocks, perStock]);
+  }, [stocks, perStock, showNet]);
+
+  // ─── D. 매수 trade 누락 경고 (감자/합병 보정 이력 있는 종목은 정상으로 간주, 제외) ───
+  const stocksWithCorporateActions = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of stocks) {
+      if (Array.isArray(s.corporateActions) && s.corporateActions.length > 0) {
+        set.add(s.name);
+      }
+    }
+    return set;
+  }, [stocks]);
+
+  const missingBuyStocks = useMemo(() => {
+    const issues: { name: string; boughtQty: number; soldQty: number; gap: number; soldAmt: number }[] = [];
+    for (const ps of Object.values(perStock)) {
+      if (ps.soldQty > 0 && ps.boughtQty < ps.soldQty) {
+        // 감자/합병 보정 이력이 있는 종목은 정상 가능성 → 경고에서 제외
+        if (stocksWithCorporateActions.has(ps.name)) continue;
+        issues.push({
+          name: ps.name,
+          boughtQty: ps.boughtQty,
+          soldQty: ps.soldQty,
+          gap: ps.soldQty - ps.boughtQty,
+          soldAmt: ps.soldAmt,
+        });
+      }
+    }
+    return issues.sort((a, b) => b.gap - a.gap);
+  }, [perStock, stocksWithCorporateActions]);
+
+  // ─── 월별 실현손익 (전체 trades 기준, 기간 필터 무시) ───
+  const monthlyRealized = useMemo(() => {
+    // 1) 전체 기간 stock별 평균 매수단가 계산
+    const stockBoughtAmt: Record<string, number> = {};
+    const stockBoughtQty: Record<string, number> = {};
+    for (const t of trades) {
+      if (t.type !== 'buy' || !t.stockName) continue;
+      const price = Number(t.price) || 0;
+      const qty = Number(t.quantity) || 0;
+      if (price <= 0 || qty <= 0) continue;
+      stockBoughtAmt[t.stockName] = (stockBoughtAmt[t.stockName] || 0) + price * qty;
+      stockBoughtQty[t.stockName] = (stockBoughtQty[t.stockName] || 0) + qty;
+    }
+    const stockAvgBuy: Record<string, number> = {};
+    for (const name of Object.keys(stockBoughtAmt)) {
+      const q = stockBoughtQty[name];
+      stockAvgBuy[name] = q > 0 ? stockBoughtAmt[name] / q : 0;
+    }
+    // 2) 월별 sell trade 집계
+    const monthMap: Record<string, { month: string; gross: number; net: number }> = {};
+    for (const t of trades) {
+      if (t.type !== 'sell' || !t.stockName || !t.date) continue;
+      const m = t.date.slice(0, 7);
+      const price = Number(t.price) || 0;
+      const qty = Number(t.quantity) || 0;
+      const avgBuy = stockAvgBuy[t.stockName] || 0;
+      if (avgBuy <= 0 || qty <= 0 || price <= 0) continue;
+      const gross = (price - avgBuy) * qty;
+      const sellAmt = price * qty;
+      const fees = avgBuy * qty * BUY_FEE_RATE + sellAmt * (SELL_FEE_RATE + SELL_TAX_RATE);
+      const net = gross - fees;
+      if (!monthMap[m]) monthMap[m] = { month: m, gross: 0, net: 0 };
+      monthMap[m].gross += gross;
+      monthMap[m].net += net;
+    }
+    return Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
+  }, [trades]);
 
   // ─── 종목별 손익% (보유 종목만) ───
   const profitData = useMemo(
@@ -129,7 +246,7 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
   const topGainers = useMemo(() => profitData.slice(0, 3), [profitData]);
   const topLosers = useMemo(() => [...profitData].reverse().slice(0, 3), [profitData]);
 
-  // ─── 월별 매수/매도 횟수 ───
+  // ─── 월별 매수/매도 횟수 (전체 기간 — 추세 시각화용) ───
   const monthlyTrades = useMemo(() => {
     const monthMap: Record<string, { month: string; buy: number; sell: number; buyAmt: number; sellAmt: number }> = {};
     for (const t of trades) {
@@ -255,6 +372,58 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
     <div className={styles.container}>
       <h2 className={styles.title}>통계 대시보드</h2>
 
+      {/* 기간 필터 + Net/Gross 토글 */}
+      <div className={styles.controlsRow}>
+        <div className={styles.periodTabs}>
+          {([
+            { key: 'all', label: '전체' },
+            { key: 'year', label: '올해' },
+            { key: 'month', label: '이번달' },
+            { key: 'week', label: '최근 7일' },
+          ] as { key: Period; label: string }[]).map((p) => (
+            <button
+              key={p.key}
+              className={`${styles.periodTab} ${period === p.key ? styles.periodTabActive : ''}`}
+              onClick={() => setPeriod(p.key)}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <label className={styles.netToggle} title="키움 표준 수수료 0.015% + 매도 거래세 0.20% 차감">
+          <input
+            type="checkbox"
+            checked={showNet}
+            onChange={(e) => setShowNet(e.target.checked)}
+          />
+          수수료/세금 반영 (Net)
+        </label>
+      </div>
+
+      {/* D. 매수 trade 누락 경고 */}
+      {missingBuyStocks.length > 0 && (
+        <div className={styles.warningCard}>
+          <h3 className={styles.warningTitle}>⚠️ 매수 trade 누락 경고 ({missingBuyStocks.length}건)</h3>
+          <p className={styles.warningHint}>
+            매도수량 &gt; 매수수량인 종목입니다. 실현손익이 과대계상될 수 있어요. 종목 상세에서 매수 trade를 보강하거나 수동 입력해주세요.
+          </p>
+          <ul className={styles.warningList}>
+            {missingBuyStocks.slice(0, 10).map((s) => (
+              <li key={s.name} className={styles.warningItem}>
+                <span className={styles.warningName}>{s.name}</span>
+                <span className={styles.warningDetail}>
+                  매수 {s.boughtQty.toLocaleString()}주 / 매도 {s.soldQty.toLocaleString()}주
+                  <span className={styles.warningGap}> · 누락 {s.gap.toLocaleString()}주</span>
+                </span>
+              </li>
+            ))}
+            {missingBuyStocks.length > 10 && (
+              <li className={styles.warningMore}>...외 {missingBuyStocks.length - 10}건</li>
+            )}
+          </ul>
+        </div>
+      )}
+
       {/* KPI */}
       <div className={styles.kpiGrid}>
         <div className={styles.kpiCard}>
@@ -274,13 +443,19 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
           </span>
         </div>
         <div className={styles.kpiCard}>
-          <span className={styles.kpiLabel}>실현손익 (누적)</span>
+          <span className={styles.kpiLabel}>
+            실현손익 {period === 'all' ? '(누적)' : period === 'year' ? '(올해)' : period === 'month' ? '(이번달)' : '(최근 7일)'}
+            <span className={styles.kpiBadge}>{showNet ? 'Net' : 'Gross'}</span>
+          </span>
           <span className={styles.kpiValue} style={{ color: colorOf(kpi.totalRealized) }}>
             {fmtSign(kpi.totalRealized)}원
           </span>
           <span className={styles.kpiSub} style={{ color: colorOf(kpi.realizedPct) }}>
             {kpi.realizedPct >= 0 ? '+' : ''}
             {kpi.realizedPct.toFixed(2)}%
+            {showNet && kpi.totalFees > 0 && (
+              <span className={styles.kpiFeeNote}> · 차감 −{fmt(kpi.totalFees)}원</span>
+            )}
           </span>
         </div>
         <div className={styles.kpiCard}>
@@ -369,6 +544,39 @@ export default function Dashboard({ stocks, trades, snapshots }: Props) {
               <Legend formatter={(v) => (v === 'buy' ? '매수' : '매도')} />
               <Bar dataKey="buy" fill="#4a90d9" />
               <Bar dataKey="sell" fill="#ff9800" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* B. 월별 실현손익 (전체 기간, gross/net 토글 반영) */}
+      {monthlyRealized.length > 0 && (
+        <div className={styles.chartCard}>
+          <h3 className={styles.chartTitle}>
+            월별 실현손익
+            <span className={styles.kpiBadge}>{showNet ? 'Net' : 'Gross'}</span>
+          </h3>
+          <p className={styles.chartHint}>
+            매도 trade를 월별로 집계 · 종목별 전체 기간 평균매수가 기준
+            {showNet && ' · 수수료/세금 차감'}
+          </p>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={monthlyRealized}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="month" fontSize={11} />
+              <YAxis
+                fontSize={12}
+                tickFormatter={(v) => `${(v / 10000).toFixed(0)}만`}
+              />
+              <Tooltip
+                formatter={(v: any) => [`${fmtSign(Number(v))}원`, showNet ? 'Net 실현손익' : 'Gross 실현손익']}
+              />
+              <Bar dataKey={showNet ? 'net' : 'gross'}>
+                {monthlyRealized.map((entry, i) => {
+                  const v = showNet ? entry.net : entry.gross;
+                  return <Cell key={i} fill={v >= 0 ? '#4caf50' : '#f44336'} />;
+                })}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>

@@ -64,6 +64,25 @@ export interface ReentryTracking {
   startedAt: number;                   // 추적 시작 시각 (매매완료 일자 timestamp)
 }
 
+// 감자/액면분할/액면합병/합병 보정 이력
+// ratio 적용 공식: quantity *= ratio, price /= ratio
+//   - 10:1 감자          → ratio = 0.1  (수량↓ 가격↑)
+//   - 1:10 액면분할      → ratio = 10   (수량↑ 가격↓)
+//   - 5:1 액면합병       → ratio = 0.2
+//   - 합병(주식교환비율) → ratio = 비율 (예: 1주당 0.7주 → ratio = 0.7)
+export interface CorporateAction {
+  id: string;                  // 'ca_20260514_001' 형식
+  date: string;                // 효력 발생일 YYYY-MM-DD
+  ratio: number;               // quantity 배율 (price는 1/ratio 적용)
+  type: 'reverseSplit' | 'forwardSplit' | 'capitalReduction' | 'merger';
+  note?: string;
+  appliedAt: number;           // 보정 실행 timestamp
+  affectedTradeIds: string[];  // 보정된 trade IDs (롤백용)
+  // 보정 전 firstBuyPrice/firstBuyQuantity 백업 (롤백용)
+  backupFirstBuyPrice?: number;
+  backupFirstBuyQuantity?: number;
+}
+
 // 한 사이클 매매 기록 (매매완료 시점에 영구 보관)
 export interface TradingCycle {
   cycleNo: number;                     // 1, 2, 3 ...
@@ -129,6 +148,8 @@ export interface Stock {
   reentry?: ReentryTracking;
   // 사이클 history (영구 보관) - 각 매매완료 시점에 push
   cycles?: TradingCycle[];
+  // 감자/분할/합병 보정 이력 (Option 1)
+  corporateActions?: CorporateAction[];
   createdAt: number;
   updatedAt: number;
 }

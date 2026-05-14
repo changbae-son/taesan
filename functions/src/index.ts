@@ -6278,7 +6278,7 @@ export const applySplitMergeRatio = functions
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
-        const {stockName, ratio, splitDate, preview} = req.body || {};
+        const {stockName, ratio, splitDate, preview, type, note} = req.body || {};
         if (!stockName || !ratio || !splitDate) {
           res.status(400).json({success: false, error: "stockName/ratio/splitDate 필수"});
           return;
@@ -6301,12 +6301,12 @@ export const applySplitMergeRatio = functions
           targets.push({id: d.id, data});
         });
 
-        if (targets.length === 0) {
-          res.json({success: true, message: "정정 대상 trade 없음", preview: preview === true, changes: []});
-          return;
-        }
+        // stock 문서 조회 (firstBuyPrice/Quantity 보정 + filled 슬롯 직접 보정 + 이력 기록)
+        const stockSnap = await db.collection("stocks").where("name", "==", stockName).limit(1).get();
+        const stockDoc = stockSnap.empty ? null : stockSnap.docs[0];
+        const stockData = stockDoc ? stockDoc.data() : null;
 
-        // 정정 계산
+        // 정정 계산 (trade)
         const changes = targets.map(({id, data}) => {
           const oldPrice = Number(data.price) || 0;
           const oldQty = Number(data.quantity) || 0;
@@ -6323,23 +6323,177 @@ export const applySplitMergeRatio = functions
           };
         });
 
+        // stock의 firstBuyPrice/Quantity 보정 변화 계산 (효력일 이전이면)
+        let firstBuyBackup: {price?: number; quantity?: number} | null = null;
+        const stockUpdate: Record<string, any> = {};
+        if (stockData) {
+          // firstBuy 정보가 효력일 이전 1차 매수 데이터라고 가정
+          // 1차 매수 trade가 splitDate 이전이면 보정 필요
+          const firstBuy = (stockData.buyPlans || []).find((b: any) => b.level === 1);
+          if (firstBuy && firstBuy.filledDate && firstBuy.filledDate < splitDate) {
+            const oldP = Number(stockData.firstBuyPrice) || 0;
+            const oldQ = Number(stockData.firstBuyQuantity) || 0;
+            if (oldP > 0 || oldQ > 0) {
+              firstBuyBackup = {price: oldP, quantity: oldQ};
+              stockUpdate.firstBuyPrice = Math.round(oldP * ratio);
+              stockUpdate.firstBuyQuantity = Math.round(oldQ / ratio);
+            }
+          }
+        }
+
+        // filled 슬롯 보정 변화 계산 (효력일 이전 filledDate)
+        const slotChanges: Array<{kind: string; key: string | number; before: any; after: any}> = [];
+        const newBuyPlans = Array.isArray(stockData?.buyPlans) ? stockData!.buyPlans.map((b: any) => {
+          if (b.filled && b.filledDate && b.filledDate < splitDate) {
+            const oldP = Number(b.filledPrice) || 0;
+            const oldQ = Number(b.filledQuantity) || 0;
+            const newP = Math.round(oldP * ratio);
+            const newQ = Math.round(oldQ / ratio);
+            slotChanges.push({
+              kind: "buyPlan",
+              key: b.level,
+              before: {price: oldP, quantity: oldQ},
+              after: {price: newP, quantity: newQ},
+            });
+            return {...b, filledPrice: newP, filledQuantity: newQ, price: newP, quantity: newQ};
+          }
+          return b;
+        }) : null;
+
+        const newSellPlans = Array.isArray(stockData?.sellPlans) ? stockData!.sellPlans.map((s: any) => {
+          if (s.filled && s.filledDate && s.filledDate < splitDate) {
+            const oldP = Number(s.filledPrice) || 0;
+            const oldQ = Number(s.filledQuantity) || 0;
+            const newP = Math.round(oldP * ratio);
+            const newQ = Math.round(oldQ / ratio);
+            slotChanges.push({
+              kind: "sellPlan",
+              key: s.percent,
+              before: {price: oldP, quantity: oldQ},
+              after: {price: newP, quantity: newQ},
+            });
+            return {...s, filledPrice: newP, filledQuantity: newQ};
+          }
+          return s;
+        }) : null;
+
+        const newMaSells = Array.isArray(stockData?.maSells) ? stockData!.maSells.map((m: any) => {
+          if (m.filled && m.filledDate && m.filledDate < splitDate) {
+            const oldP = Number(m.price) || 0;
+            const oldQ = Number(m.quantity) || 0;
+            const newP = Math.round(oldP * ratio);
+            const newQ = Math.round(oldQ / ratio);
+            slotChanges.push({
+              kind: "maSell",
+              key: m.ma,
+              before: {price: oldP, quantity: oldQ},
+              after: {price: newP, quantity: newQ},
+            });
+            return {...m, price: newP, quantity: newQ};
+          }
+          return m;
+        }) : null;
+
         if (preview === true) {
-          res.json({success: true, preview: true, ratio, splitDate, total: targets.length, changes});
+          res.json({
+            success: true,
+            preview: true,
+            ratio,
+            splitDate,
+            total: targets.length,
+            changes,
+            slotChanges,
+            firstBuyChange: firstBuyBackup ? {
+              before: firstBuyBackup,
+              after: {price: stockUpdate.firstBuyPrice, quantity: stockUpdate.firstBuyQuantity},
+            } : null,
+          });
           return;
         }
 
-        // 실제 적용 (batch update)
-        const batch = db.batch();
+        if (targets.length === 0 && slotChanges.length === 0 && !firstBuyBackup) {
+          res.json({success: true, message: "정정 대상 trade/슬롯 없음", preview: false, changes: []});
+          return;
+        }
+
+        // action ID 생성 (timestamp 기반)
+        const actionId = `ca_${splitDate.replace(/-/g, "")}_${Date.now()}`;
+
+        // 1) 보정 전 trade 백업 (롤백용)
+        const backupBatch = db.batch();
         for (const c of changes) {
-          batch.update(db.collection("trades").doc(c.tradeId), {
+          backupBatch.set(
+            db.collection("trades_backup_corporate_action").doc(`${actionId}_${c.tradeId}`),
+            {
+              actionId,
+              stockName,
+              tradeId: c.tradeId,
+              before: c.before,
+              type: c.type,
+              date: c.date,
+              backedUpAt: Date.now(),
+            }
+          );
+        }
+        if (changes.length > 0) await backupBatch.commit();
+
+        // 2) trade 일괄 update
+        const updateBatch = db.batch();
+        for (const c of changes) {
+          updateBatch.update(db.collection("trades").doc(c.tradeId), {
             price: c.after.price,
             quantity: c.after.quantity,
           });
         }
-        await batch.commit();
-        console.log(`[applySplitMergeRatio] ${stockName} ratio=${ratio} splitDate=${splitDate}: ${changes.length}건 정정`);
+        if (changes.length > 0) await updateBatch.commit();
 
-        // 자동 reconcile (buyPlans/sellPlans 재정렬)
+        // 3) stock 보정 (firstBuyPrice/Quantity + filled 슬롯 + corporateActions 이력)
+        if (stockDoc && (Object.keys(stockUpdate).length > 0 || slotChanges.length > 0)) {
+          const corporateAction = {
+            id: actionId,
+            date: splitDate,
+            ratio,
+            type: type || (ratio > 1 ? "reverseSplit" : "forwardSplit"),
+            note: note || "",
+            appliedAt: Date.now(),
+            affectedTradeIds: changes.map((c) => c.tradeId),
+            backupFirstBuyPrice: firstBuyBackup?.price,
+            backupFirstBuyQuantity: firstBuyBackup?.quantity,
+            slotChanges,
+          };
+          if (newBuyPlans) stockUpdate.buyPlans = newBuyPlans;
+          if (newSellPlans) stockUpdate.sellPlans = newSellPlans;
+          if (newMaSells) stockUpdate.maSells = newMaSells;
+          stockUpdate.corporateActions = [
+            ...(Array.isArray(stockData?.corporateActions) ? stockData!.corporateActions : []),
+            corporateAction,
+          ];
+          stockUpdate.updatedAt = Date.now();
+          await stockDoc.ref.update(stockUpdate);
+        } else if (stockDoc) {
+          // 슬롯 변경 없어도 이력은 기록
+          const corporateAction = {
+            id: actionId,
+            date: splitDate,
+            ratio,
+            type: type || (ratio > 1 ? "reverseSplit" : "forwardSplit"),
+            note: note || "",
+            appliedAt: Date.now(),
+            affectedTradeIds: changes.map((c) => c.tradeId),
+            slotChanges: [],
+          };
+          await stockDoc.ref.update({
+            corporateActions: [
+              ...(Array.isArray(stockData?.corporateActions) ? stockData!.corporateActions : []),
+              corporateAction,
+            ],
+            updatedAt: Date.now(),
+          });
+        }
+
+        console.log(`[applySplitMergeRatio] ${stockName} ratio=${ratio} splitDate=${splitDate}: ${changes.length}건 trade + ${slotChanges.length}건 슬롯 정정 (action=${actionId})`);
+
+        // 4) 자동 reconcile (buyPlans/sellPlans 재정렬 — manualOverride 보호됨)
         const reconcileResult = await reconcileStockPlans(stockName);
 
         res.json({
@@ -6347,12 +6501,144 @@ export const applySplitMergeRatio = functions
           preview: false,
           ratio,
           splitDate,
+          actionId,
           appliedCount: changes.length,
+          slotChangedCount: slotChanges.length,
           changes,
+          slotChanges,
           reconcile: reconcileResult,
         });
       } catch (error: any) {
         console.error("[applySplitMergeRatio] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 감자/분할/합병 보정 되돌리기
+ * POST /revertCorporateAction
+ * body: { stockName, actionId }
+ *
+ * trades_backup_corporate_action에서 백업된 데이터로 trade 복구하고,
+ * stock의 corporateActions 배열에서 해당 action 제거,
+ * firstBuyPrice/Quantity도 백업값으로 복구.
+ */
+export const revertCorporateAction = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {stockName, actionId} = req.body || {};
+        if (!stockName || !actionId) {
+          res.status(400).json({success: false, error: "stockName/actionId 필수"});
+          return;
+        }
+
+        const stockSnap = await db.collection("stocks").where("name", "==", stockName).limit(1).get();
+        if (stockSnap.empty) {
+          res.status(404).json({success: false, error: `${stockName} 종목 없음`});
+          return;
+        }
+        const stockDoc = stockSnap.docs[0];
+        const stockData = stockDoc.data();
+        const actions = Array.isArray(stockData.corporateActions) ? stockData.corporateActions : [];
+        const action = actions.find((a: any) => a.id === actionId);
+        if (!action) {
+          res.status(404).json({success: false, error: `보정 이력 ${actionId} 없음`});
+          return;
+        }
+
+        // 백업된 trade 데이터 조회
+        const backupSnap = await db.collection("trades_backup_corporate_action")
+          .where("actionId", "==", actionId).get();
+
+        // trade 복구
+        const restoreBatch = db.batch();
+        let restored = 0;
+        backupSnap.forEach((d) => {
+          const bk = d.data();
+          if (bk.tradeId && bk.before) {
+            restoreBatch.update(db.collection("trades").doc(bk.tradeId), {
+              price: bk.before.price,
+              quantity: bk.before.quantity,
+            });
+            restored++;
+          }
+        });
+        if (restored > 0) await restoreBatch.commit();
+
+        // 백업 doc 삭제
+        const deleteBatch = db.batch();
+        backupSnap.forEach((d) => deleteBatch.delete(d.ref));
+        if (!backupSnap.empty) await deleteBatch.commit();
+
+        // stock 복구
+        const stockUpdate: Record<string, any> = {
+          corporateActions: actions.filter((a: any) => a.id !== actionId),
+          updatedAt: Date.now(),
+        };
+
+        // firstBuy 복구
+        if (typeof action.backupFirstBuyPrice === "number") {
+          stockUpdate.firstBuyPrice = action.backupFirstBuyPrice;
+        }
+        if (typeof action.backupFirstBuyQuantity === "number") {
+          stockUpdate.firstBuyQuantity = action.backupFirstBuyQuantity;
+        }
+
+        // 슬롯 변경 복구
+        const slotChanges = Array.isArray(action.slotChanges) ? action.slotChanges : [];
+        if (slotChanges.length > 0) {
+          const buyPlans = Array.isArray(stockData.buyPlans) ? [...stockData.buyPlans] : [];
+          const sellPlans = Array.isArray(stockData.sellPlans) ? [...stockData.sellPlans] : [];
+          const maSells = Array.isArray(stockData.maSells) ? [...stockData.maSells] : [];
+
+          for (const sc of slotChanges) {
+            if (sc.kind === "buyPlan") {
+              const idx = buyPlans.findIndex((b: any) => b.level === sc.key);
+              if (idx >= 0) {
+                buyPlans[idx] = {
+                  ...buyPlans[idx],
+                  filledPrice: sc.before.price,
+                  filledQuantity: sc.before.quantity,
+                  price: sc.before.price,
+                  quantity: sc.before.quantity,
+                };
+              }
+            } else if (sc.kind === "sellPlan") {
+              const idx = sellPlans.findIndex((s: any) => s.percent === sc.key);
+              if (idx >= 0) {
+                sellPlans[idx] = {...sellPlans[idx], filledPrice: sc.before.price, filledQuantity: sc.before.quantity};
+              }
+            } else if (sc.kind === "maSell") {
+              const idx = maSells.findIndex((m: any) => m.ma === sc.key);
+              if (idx >= 0) {
+                maSells[idx] = {...maSells[idx], price: sc.before.price, quantity: sc.before.quantity};
+              }
+            }
+          }
+          stockUpdate.buyPlans = buyPlans;
+          stockUpdate.sellPlans = sellPlans;
+          stockUpdate.maSells = maSells;
+        }
+
+        await stockDoc.ref.update(stockUpdate);
+        console.log(`[revertCorporateAction] ${stockName} ${actionId} 복구: trade ${restored}건 + 슬롯 ${slotChanges.length}건`);
+
+        // reconcile (전체 재정렬)
+        const reconcileResult = await reconcileStockPlans(stockName);
+
+        res.json({
+          success: true,
+          actionId,
+          restoredTrades: restored,
+          restoredSlots: slotChanges.length,
+          reconcile: reconcileResult,
+        });
+      } catch (error: any) {
+        console.error("[revertCorporateAction] 오류:", error.message);
         res.status(500).json({success: false, error: error.message});
       }
     });

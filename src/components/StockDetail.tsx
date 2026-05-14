@@ -221,19 +221,25 @@ export default function StockDetail({
   const MANUAL_SELL_EDIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/manualSellEdit';
   const MANUAL_BUY_EDIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/manualBuyEdit';
   const APPLY_SPLIT_MERGE_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/applySplitMergeRatio';
+  const REVERT_CORPORATE_ACTION_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/revertCorporateAction';
 
-  // ── 액면분할/병합 처리 ──
+  // ── 감자/액면분할/액면합병 보정 ──
   const [showSplitMerge, setShowSplitMerge] = useState(false);
   const [splitMergeDraft, setSplitMergeDraft] = useState<{
     date: string;
     ratioPreset: string; // "5", "0.2", "custom"
     customRatio: number;
+    type: 'reverseSplit' | 'forwardSplit' | 'capitalReduction' | 'merger';
+    note: string;
   }>({
     date: new Date().toISOString().slice(0, 10),
     ratioPreset: '5',
     customRatio: 5,
+    type: 'reverseSplit',
+    note: '',
   });
   const [splitMergePreview, setSplitMergePreview] = useState<any[] | null>(null);
+  const [slotChangesPreview, setSlotChangesPreview] = useState<any[] | null>(null);
 
   const getEffectiveRatio = () => {
     if (splitMergeDraft.ratioPreset === 'custom') return splitMergeDraft.customRatio;
@@ -254,6 +260,8 @@ export default function StockDetail({
           stockName: local.name,
           ratio,
           splitDate: splitMergeDraft.date,
+          type: splitMergeDraft.type,
+          note: splitMergeDraft.note,
           preview: true,
         }),
       });
@@ -263,8 +271,9 @@ export default function StockDetail({
         return;
       }
       setSplitMergePreview(data.changes || []);
-      if ((data.changes || []).length === 0) {
-        alert('정정 대상 trade 없음 (분할일 이전 매수/매도 trade 없음)');
+      setSlotChangesPreview(data.slotChanges || []);
+      if ((data.changes || []).length === 0 && (data.slotChanges || []).length === 0) {
+        alert('정정 대상 trade/슬롯 없음 (효력일 이전 데이터 없음)');
       }
     } catch (e: any) {
       alert(`네트워크 오류: ${e.message}`);
@@ -272,17 +281,25 @@ export default function StockDetail({
   };
 
   const applySplitMerge = async () => {
-    if (!splitMergePreview || splitMergePreview.length === 0) {
+    if ((!splitMergePreview || splitMergePreview.length === 0) && (!slotChangesPreview || slotChangesPreview.length === 0)) {
       alert('먼저 미리보기를 실행해주세요.');
       return;
     }
     const ratio = getEffectiveRatio();
-    const direction = ratio > 1 ? `${ratio}:1 병합` : `1:${Math.round(1 / ratio)} 분할`;
+    const typeLabel = splitMergeDraft.type === 'reverseSplit' ? '액면병합'
+      : splitMergeDraft.type === 'forwardSplit' ? '액면분할'
+      : splitMergeDraft.type === 'capitalReduction' ? '감자'
+      : '합병';
+    const direction = ratio > 1 ? `${ratio}:1 ${typeLabel}` : `1:${Math.round(1 / ratio)} ${typeLabel}`;
+    const tradeCount = (splitMergePreview || []).length;
+    const slotCount = (slotChangesPreview || []).length;
     if (!confirm(
       `${local.name}에 ${direction} 비율을 적용하시겠습니까?\n\n` +
-      `${splitMergePreview.length}건의 trade가 정정됩니다.\n` +
-      `(${splitMergeDraft.date} 이전 매수/매도 trade 대상)\n\n` +
-      `* 매수/매도 총액은 그대로 보존됩니다.`
+      `• Trade ${tradeCount}건 정정\n` +
+      `• 슬롯 ${slotCount}건 보정\n` +
+      `• 효력일: ${splitMergeDraft.date} (이전 데이터만 대상)\n\n` +
+      `* 매수/매도 총액은 보존됨\n` +
+      `* 보정 이력 저장됨 — 나중에 되돌리기 가능`
     )) return;
 
     setPersistBusy(true);
@@ -294,6 +311,8 @@ export default function StockDetail({
           stockName: local.name,
           ratio,
           splitDate: splitMergeDraft.date,
+          type: splitMergeDraft.type,
+          note: splitMergeDraft.note,
           preview: false,
         }),
       });
@@ -302,9 +321,38 @@ export default function StockDetail({
         alert(`적용 실패: ${data.error}`);
         return;
       }
-      alert(`✅ ${data.appliedCount}건 정정 완료\n곧 buyPlans/sellPlans 자동 갱신됩니다.`);
+      alert(`✅ ${data.appliedCount}건 trade + ${data.slotChangedCount}건 슬롯 정정 완료\nactionId: ${data.actionId}`);
       setShowSplitMerge(false);
       setSplitMergePreview(null);
+      setSlotChangesPreview(null);
+      lastUserActionRef.current = Date.now();
+    } catch (e: any) {
+      alert(`네트워크 오류: ${e.message}`);
+    } finally {
+      setPersistBusy(false);
+    }
+  };
+
+  const revertCorporateAction = async (actionId: string, label: string) => {
+    if (!confirm(
+      `${local.name}의 보정 이력 [${label}]을 되돌리시겠습니까?\n\n` +
+      `• 보정된 trade가 원래 값으로 복구됩니다\n` +
+      `• firstBuyPrice/Quantity도 복구됩니다\n` +
+      `• 보정 이력에서 제거됩니다`
+    )) return;
+    setPersistBusy(true);
+    try {
+      const res = await fetch(REVERT_CORPORATE_ACTION_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ stockName: local.name, actionId }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(`되돌리기 실패: ${data.error}`);
+        return;
+      }
+      alert(`✅ ${data.restoredTrades}건 trade + ${data.restoredSlots}건 슬롯 복구 완료`);
       lastUserActionRef.current = Date.now();
     } catch (e: any) {
       alert(`네트워크 오류: ${e.message}`);
@@ -1838,23 +1886,40 @@ export default function StockDetail({
               <button
                 className={styles.splitMergeBtn}
                 onClick={() => setShowSplitMerge(true)}
-                title="액면분할 또는 액면병합 발생 시 trade 일괄 정정"
+                title="감자/액면분할/액면합병/합병 발생 시 trade + 슬롯 일괄 정정 (되돌리기 가능)"
               >
-                🔄 액면분할/병합 처리
+                🔄 감자/합병 보정
+                {Array.isArray(local.corporateActions) && local.corporateActions.length > 0 && (
+                  <span className={styles.caBadge}>{local.corporateActions.length}</span>
+                )}
               </button>
             </div>
 
-            {/* 액면분할/병합 처리 모달 */}
+            {/* 감자/액면분할/액면합병/합병 보정 모달 */}
             {showSplitMerge && (
               <div className={styles.splitMergePanel}>
-                <h4 className={styles.splitMergeTitle}>🔄 액면분할/병합 처리</h4>
+                <h4 className={styles.splitMergeTitle}>🔄 감자/액면분할/합병 보정</h4>
                 <p className={styles.splitMergeHint}>
-                  분할/병합 일자 이전 trade의 (가격, 수량)을 비율에 맞게 정정합니다.<br/>
-                  매수/매도 총액은 보존됩니다.
+                  효력일 이전 trade와 filled 슬롯의 (가격, 수량)을 비율에 맞게 정정합니다.<br/>
+                  매수/매도 총액은 보존되고, 보정 이력이 저장되어 나중에 되돌릴 수 있어요.
                 </p>
 
                 <div className={styles.splitMergeRow}>
-                  <label>분할/병합 일자</label>
+                  <label>종류</label>
+                  <select
+                    className={styles.splitMergeInput}
+                    value={splitMergeDraft.type}
+                    onChange={(e) => setSplitMergeDraft({...splitMergeDraft, type: e.target.value as any})}
+                  >
+                    <option value="reverseSplit">액면병합 (ratio &gt; 1)</option>
+                    <option value="forwardSplit">액면분할 (ratio &lt; 1)</option>
+                    <option value="capitalReduction">감자 (보통 ratio &gt; 1)</option>
+                    <option value="merger">합병 (주식교환비율)</option>
+                  </select>
+                </div>
+
+                <div className={styles.splitMergeRow}>
+                  <label>효력 발생일</label>
                   <input
                     type="date"
                     className={styles.splitMergeInput}
@@ -1862,6 +1927,7 @@ export default function StockDetail({
                     onChange={(e) => {
                       setSplitMergeDraft({...splitMergeDraft, date: e.target.value});
                       setSplitMergePreview(null);
+                      setSlotChangesPreview(null);
                     }}
                   />
                 </div>
@@ -1874,11 +1940,12 @@ export default function StockDetail({
                     onChange={(e) => {
                       setSplitMergeDraft({...splitMergeDraft, ratioPreset: e.target.value});
                       setSplitMergePreview(null);
+                      setSlotChangesPreview(null);
                     }}
                   >
-                    <option value="2">2:1 병합 (2주→1주, 가격×2)</option>
-                    <option value="5">5:1 병합 (5주→1주, 가격×5) ⭐</option>
-                    <option value="10">10:1 병합 (10주→1주, 가격×10)</option>
+                    <option value="2">2:1 병합/감자 (2주→1주, 가격×2)</option>
+                    <option value="5">5:1 병합/감자 (5주→1주, 가격×5) ⭐</option>
+                    <option value="10">10:1 병합/감자 (10주→1주, 가격×10)</option>
                     <option value="0.5">1:2 분할 (1주→2주, 가격÷2)</option>
                     <option value="0.2">1:5 분할 (1주→5주, 가격÷5)</option>
                     <option value="0.1">1:10 분할 (1주→10주, 가격÷10)</option>
@@ -1899,16 +1966,28 @@ export default function StockDetail({
                       onChange={(e) => {
                         setSplitMergeDraft({...splitMergeDraft, customRatio: parseFloat(e.target.value) || 0});
                         setSplitMergePreview(null);
+                        setSlotChangesPreview(null);
                       }}
-                      placeholder=">1: 병합, <1: 분할"
+                      placeholder=">1: 병합/감자, <1: 분할"
                     />
                   </div>
                 )}
 
-                {/* 미리보기 결과 */}
+                <div className={styles.splitMergeRow}>
+                  <label>메모 (선택)</label>
+                  <input
+                    type="text"
+                    className={styles.splitMergeInput}
+                    value={splitMergeDraft.note}
+                    onChange={(e) => setSplitMergeDraft({...splitMergeDraft, note: e.target.value})}
+                    placeholder="예: 무상감자 10:1, 합병 0.7배 등"
+                  />
+                </div>
+
+                {/* 미리보기 결과 - trade */}
                 {splitMergePreview && splitMergePreview.length > 0 && (
                   <div className={styles.splitMergePreview}>
-                    <strong>📋 미리보기 ({splitMergePreview.length}건):</strong>
+                    <strong>📋 Trade 정정 ({splitMergePreview.length}건):</strong>
                     {splitMergePreview.map((c: any, i: number) => (
                       <div key={i} className={styles.splitMergePreviewRow}>
                         {c.date} [{c.type === 'buy' ? '매수' : '매도'}]
@@ -1924,22 +2003,75 @@ export default function StockDetail({
                   </div>
                 )}
 
+                {/* 미리보기 결과 - 슬롯 */}
+                {slotChangesPreview && slotChangesPreview.length > 0 && (
+                  <div className={styles.splitMergePreview}>
+                    <strong>📊 슬롯 보정 ({slotChangesPreview.length}건):</strong>
+                    {slotChangesPreview.map((sc: any, i: number) => (
+                      <div key={i} className={styles.splitMergePreviewRow}>
+                        {sc.kind === 'buyPlan' ? `매수 ${sc.key}차`
+                          : sc.kind === 'sellPlan' ? `매도 +${sc.key}%`
+                          : `MA${sc.key} 매도`}
+                        <span className={styles.smPreviewBefore}>
+                          {sc.before.price.toLocaleString()}×{sc.before.quantity}
+                        </span>
+                        →
+                        <span className={styles.smPreviewAfter}>
+                          {sc.after.price.toLocaleString()}×{sc.after.quantity}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className={styles.splitMergeActions}>
                   <button className={styles.smPreviewBtn} onClick={previewSplitMerge}>📋 미리보기</button>
                   <button
                     className={styles.smApplyBtn}
                     onClick={applySplitMerge}
-                    disabled={!splitMergePreview || splitMergePreview.length === 0}
+                    disabled={(!splitMergePreview || splitMergePreview.length === 0) && (!slotChangesPreview || slotChangesPreview.length === 0)}
                   >
                     ✅ 적용
                   </button>
                   <button
                     className={styles.smCancelBtn}
-                    onClick={() => { setShowSplitMerge(false); setSplitMergePreview(null); }}
+                    onClick={() => { setShowSplitMerge(false); setSplitMergePreview(null); setSlotChangesPreview(null); }}
                   >
                     취소
                   </button>
                 </div>
+
+                {/* 보정 이력 + 되돌리기 */}
+                {Array.isArray(local.corporateActions) && local.corporateActions.length > 0 && (
+                  <div className={styles.corporateActionHistory}>
+                    <strong>📜 보정 이력 ({local.corporateActions.length}건):</strong>
+                    {local.corporateActions.slice().reverse().map((ca) => {
+                      const typeLabel = ca.type === 'reverseSplit' ? '액면병합'
+                        : ca.type === 'forwardSplit' ? '액면분할'
+                        : ca.type === 'capitalReduction' ? '감자'
+                        : '합병';
+                      const direction = ca.ratio > 1
+                        ? `${ca.ratio}:1`
+                        : `1:${Math.round(1 / ca.ratio)}`;
+                      return (
+                        <div key={ca.id} className={styles.corporateActionItem}>
+                          <div className={styles.caInfo}>
+                            <span className={styles.caDate}>{ca.date}</span>
+                            <span className={styles.caType}>[{typeLabel} {direction}]</span>
+                            <span className={styles.caTrades}>trade {ca.affectedTradeIds?.length || 0}건</span>
+                            {ca.note && <span className={styles.caNote}>· {ca.note}</span>}
+                          </div>
+                          <button
+                            className={styles.caRevertBtn}
+                            onClick={() => revertCorporateAction(ca.id, `${ca.date} ${typeLabel} ${direction}`)}
+                          >
+                            ↩ 되돌리기
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2375,11 +2507,11 @@ export default function StockDetail({
                         <span className={styles.colLabel}>수량</span>
                         {isFilled
                           ? <span className={styles.filledQty}>{(realQty || sp.quantity).toLocaleString()}</span>
-                          : <span className={styles.plannedQty}>{sp.quantity.toLocaleString()}</span>}
+                          : <span className={styles.dashText}>-</span>}
                         <span className={styles.cumulativeQty} style={{ color: remainingAfter <= 0 && isFilled ? '#f44336' : '#888' }}>
                           {isFilled
                             ? `잔여 ${remainingAfter.toLocaleString()}`
-                            : (remaining + soldThisRound > 0 ? `잔여 ${(remaining + soldThisRound).toLocaleString()}` : '-')}
+                            : (remaining > 0 ? `잔여 ${remaining.toLocaleString()}` : '-')}
                         </span>
                       </td>
                       {/* 체결 + MA버튼 + 수동편집 */}

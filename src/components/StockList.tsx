@@ -308,17 +308,6 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                             </span>
                           )}
                           <div className={styles.badges}>
-                            {hasCandle && (
-                              <span className={`${styles.candleChip} ${
-                                candleType === 'yang' ? styles.candleChipYang
-                                : candleType === 'um' ? styles.candleChipUm
-                                : styles.candleChipDoji
-                              }`}
-                              title={`시가 대비 ${candleRate >= 0 ? '+' : ''}${candleRate.toFixed(2)}%`}
-                              >
-                                {candleType === 'yang' ? '양봉' : candleType === 'um' ? '음봉' : '보합'} {candleRate >= 0 ? '+' : ''}{candleRate.toFixed(1)}%
-                              </span>
-                            )}
                             {stock.buySignal === 'signal' && (
                               <span className={styles.signalBadge}>매수신호!</span>
                             )}
@@ -403,6 +392,17 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                                     {buyGap >= 0 ? '+' : ''}{buyGap.toFixed(1)}%
                                   </span>
                                 )}
+                                {hasCandle && !nextSell && (
+                                  <span className={`${styles.candleChip} ${styles.candleChipRight} ${
+                                    candleType === 'yang' ? styles.candleChipYang
+                                    : candleType === 'um' ? styles.candleChipUm
+                                    : styles.candleChipDoji
+                                  }`}
+                                  title={`시가 대비 ${candleRate >= 0 ? '+' : ''}${candleRate.toFixed(2)}%`}
+                                  >
+                                    {candleType === 'yang' ? '양봉' : candleType === 'um' ? '음봉' : '보합'} {candleRate >= 0 ? '+' : ''}{candleRate.toFixed(1)}%
+                                  </span>
+                                )}
                               </div>
                               <div className={styles.actionPrice}>
                                 {nextBuy.price.toLocaleString()}
@@ -424,6 +424,17 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                                     : styles.gapBadgeFar
                                   }`}>
                                     {sellGap >= 0 ? '+' : ''}{sellGap.toFixed(1)}%
+                                  </span>
+                                )}
+                                {hasCandle && (
+                                  <span className={`${styles.candleChip} ${styles.candleChipRight} ${
+                                    candleType === 'yang' ? styles.candleChipYang
+                                    : candleType === 'um' ? styles.candleChipUm
+                                    : styles.candleChipDoji
+                                  }`}
+                                  title={`시가 대비 ${candleRate >= 0 ? '+' : ''}${candleRate.toFixed(2)}%`}
+                                  >
+                                    {candleType === 'yang' ? '양봉' : candleType === 'um' ? '음봉' : '보합'} {candleRate >= 0 ? '+' : ''}{candleRate.toFixed(1)}%
                                   </span>
                                 )}
                               </div>

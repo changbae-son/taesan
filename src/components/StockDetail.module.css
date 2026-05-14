@@ -633,6 +633,92 @@
   font-size: 12px;
 }
 
+/* 보정 이력 배지 (버튼 옆) */
+.caBadge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: #fff;
+  color: #e65100;
+  border: 1px solid #ffb74d;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
+/* 보정 이력 섹션 */
+.corporateActionHistory {
+  margin-top: 14px;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid #ffd54f;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.corporateActionHistory > strong {
+  display: block;
+  font-size: 12px;
+  color: #e65100;
+  margin-bottom: 6px;
+}
+
+.corporateActionItem {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  background: #fffdf5;
+  border: 1px solid #f0e0a0;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.caInfo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.caDate {
+  font-weight: 700;
+  color: #333;
+}
+
+.caType {
+  color: #e65100;
+  font-weight: 700;
+}
+
+.caTrades {
+  color: #777;
+  font-size: 10px;
+}
+
+.caNote {
+  color: #888;
+  font-style: italic;
+  font-size: 10px;
+}
+
+.caRevertBtn {
+  padding: 3px 10px;
+  background: #fff;
+  color: #c62828;
+  border: 1px solid #ef9a9a;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.caRevertBtn:hover {
+  background: #ffebee;
+}
+
 .editConfirmBtn {
   padding: 8px 20px;
   background: #1565c0;
