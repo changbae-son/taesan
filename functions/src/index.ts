@@ -7020,3 +7020,86 @@ export const purgeExpiredTrash = functions
 
     return null;
   });
+
+/**
+ * 재영솔루텍 5:1 병합 이중보정 원상복구
+ * POST /fixJaeyoungMerge
+ * 이 함수는 수정 완료 후 삭제할 것
+ */
+export const fixJaeyoungMerge = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const STOCK_NAME = "재영솔루텍";
+        const TRADE_ID = "trade_kiwoom_sell_20260311_049630_3355_200_049630";
+
+        // 1) trade: 83,875원×8주 → 16,775원×40주 (5:1 기준)
+        const tradeRef = db.collection("trades").doc(TRADE_ID);
+        const tradeDoc = await tradeRef.get();
+        if (!tradeDoc.exists) {
+          res.status(404).json({success: false, error: "trade 없음"});
+          return;
+        }
+        const tradeBefore = tradeDoc.data();
+        await tradeRef.update({price: 16775, quantity: 40});
+
+        // 2) stock 문서: buyPlan, sellPlan, avgPrice 수정
+        const stockSnap = await db.collection("stocks").where("name", "==", STOCK_NAME).limit(1).get();
+        if (stockSnap.empty) {
+          res.status(404).json({success: false, error: "stock 없음"});
+          return;
+        }
+        const stockDoc = stockSnap.docs[0];
+        const stock = stockDoc.data();
+
+        const buyPlans = Array.isArray(stock.buyPlans) ? [...stock.buyPlans] : [];
+        const sellPlans = Array.isArray(stock.sellPlans) ? [...stock.sellPlans] : [];
+
+        // buyPlan 1차: 3,170원×1,000주 → 15,850원×200주
+        const bp0 = buyPlans.findIndex((b: any) => b.level === 1);
+        if (bp0 >= 0) {
+          buyPlans[bp0] = {
+            ...buyPlans[bp0],
+            filledPrice: 15850,
+            filledQuantity: 200,
+            price: 15850,
+            quantity: 200,
+          };
+        }
+
+        // sellPlan +5%: 3,355원×200주 → 16,775원×40주
+        const sp0 = sellPlans.findIndex((s: any) => s.percent === 5);
+        if (sp0 >= 0) {
+          sellPlans[sp0] = {
+            ...sellPlans[sp0],
+            filledPrice: 16775,
+            filledQuantity: 40,
+          };
+        }
+
+        await stockDoc.ref.update({
+          avgPrice: 15850,
+          buyPlans,
+          sellPlans,
+          updatedAt: Date.now(),
+        });
+
+        // 3) reconcile로 미체결 목표가 재계산
+        const reconcileResult = await reconcileStockPlans(STOCK_NAME);
+
+        res.json({
+          success: true,
+          tradeBefore: {price: tradeBefore?.price, quantity: tradeBefore?.quantity},
+          tradeAfter: {price: 16775, quantity: 40},
+          buyPlanFixed: bp0 >= 0,
+          sellPlanFixed: sp0 >= 0,
+          reconcile: reconcileResult,
+        });
+      } catch (error: any) {
+        console.error("[fixJaeyoungMerge] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
