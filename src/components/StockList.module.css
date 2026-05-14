@@ -215,6 +215,18 @@
   font-weight: 400;
 }
 
+.creditBadge {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-right: 5px;
+  background: #c62828;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  vertical-align: middle;
+}
+
 .incompleteBadge {
   font-size: 12px;
   margin-left: 5px;

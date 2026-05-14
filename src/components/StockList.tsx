@@ -286,6 +286,9 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                         {/* 1줄: 종목명 + 금액 + 상태 */}
                         <div className={styles.cardRow1}>
                           <span className={styles.stockName}>
+                            {stock.isCreditTrade && (
+                              <span className={styles.creditBadge} title="신용/융자거래 종목">신</span>
+                            )}
                             {stock.name}
                             {stock.code && <span className={styles.stockCode}>{stock.code.replace(/^A/, '')}</span>}
                             {incomplete && (

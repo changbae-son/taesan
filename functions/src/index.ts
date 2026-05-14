@@ -114,16 +114,23 @@ async function fetchHoldings(
 
   return stockList
     .filter((item: any) => parseInt(item.cur_qty || "0") > 0)
-    .map((item: any) => ({
-      name: cleanKiwoomField(item.stk_nm),
-      code: cleanKiwoomField(item.stk_cd),
-      quantity: parseInt(item.cur_qty || "0"),
-      avgPrice: parseInt(item.buy_uv || "0"),
-      currentPrice: parseInt(item.cur_prc || "0"),
-      profitRate: parseFloat(item.pl_rt || "0"),
-      profitAmount: parseInt(item.evltv_prft || "0"),
-      totalBuyAmount: parseInt(item.pur_amt || "0"),
-    }));
+    .map((item: any) => {
+      // ✅ 신용/융자거래 감지: stk_nm 또는 stk_cd에 별표(*) prefix 있으면 신용거래
+      const rawName = (item.stk_nm || "").trim();
+      const rawCode = (item.stk_cd || "").trim();
+      const isCreditTrade = rawName.startsWith("*") || rawCode.startsWith("*");
+      return {
+        name: cleanKiwoomField(item.stk_nm),
+        code: cleanKiwoomField(item.stk_cd),
+        quantity: parseInt(item.cur_qty || "0"),
+        avgPrice: parseInt(item.buy_uv || "0"),
+        currentPrice: parseInt(item.cur_prc || "0"),
+        profitRate: parseFloat(item.pl_rt || "0"),
+        profitAmount: parseInt(item.evltv_prft || "0"),
+        totalBuyAmount: parseInt(item.pur_amt || "0"),
+        isCreditTrade,
+      };
+    });
 }
 
 // ─── 당일 체결 내역 조회 (ka10076 체결요청) ───
@@ -888,6 +895,8 @@ async function syncToFirestore(
 
       const updateData: any = {
         currentPrice: h.currentPrice,
+        // ✅ 신용/융자거래 여부 매 sync 시 갱신 (현재 holdings 응답 기준)
+        isCreditTrade: h.isCreditTrade === true,
         updatedAt: now,
       };
       // code 필드 마이그레이션 (기존 데이터에 code 없으면 주입)
@@ -1079,6 +1088,8 @@ async function syncToFirestore(
         currentPrice: h.currentPrice,
         avgPrice: h.avgPrice,
         totalQuantity: h.quantity,
+        // ✅ 신용/융자거래 여부
+        isCreditTrade: h.isCreditTrade === true,
         buyPlans: mapped.buyPlans,
         sellPlans: mapped.sellPlans,
         maSells,
@@ -2288,6 +2299,8 @@ export const kiwoomAutoSync = functions
             currentPrice: h.currentPrice,
             avgPrice: h.avgPrice,
             totalQuantity: h.quantity,
+            // ✅ 신용/융자거래 여부
+            isCreditTrade: h.isCreditTrade === true,
             updatedAt: Date.now(),
           };
           // code 필드 마이그레이션
@@ -3853,8 +3866,14 @@ async function reconcileStockPlans(stockName: string): Promise<{
     slotIdxByPercent[sp.percent] = i;
   }
 
-  // band별 가중평균 그룹핑 + 흡수한 trade.id 추적 (옵션 D 일관성 보장)
-  const groupedByBand: Record<number, {qty: number; amt: number; date: string; ids: string[]}> = {};
+  // ✅ 신중 모드 (Option B): 각 band에서 *가장 가까운* trade 1건만 자동 매핑.
+  // 같은 band에 다중 trade일 때 가중평균으로 합치면 사용자 의도와 어긋날 수 있음.
+  // (MA 매도였는지, 손절이었는지, 추가 +N% 매도였는지 시스템이 모름)
+  // → band 중심(5/10/15/20/25%)과의 distance 최소인 1건만 자동, 나머지는 미분류로 노출.
+
+  // 1단계: 각 trade의 band + distance 계산
+  type TradeBandInfo = {trade: any; band: number; distance: number};
+  const tradesByBand: Record<number, TradeBandInfo[]> = {};
   let unmappedCount = 0;
   let unmappedQty = 0;
 
@@ -3862,38 +3881,52 @@ async function reconcileStockPlans(stockName: string): Promise<{
     const tQty = Number(t.quantity) || 0;
     const tPrice = Number(t.price) || 0;
     if (tQty <= 0 || tPrice <= 0) continue;
-    // ✅ Phase 2: 매도 시점 평단 기준 band 분류
-    const band = classifyByBand(tPrice, String(t.date || ""));
+    const sellDate = String(t.date || "");
+    const band = classifyByBand(tPrice, sellDate);
     if (band === null || slotIdxByPercent[band] === undefined) {
       unmappedCount++;
       unmappedQty += tQty;
       continue;
     }
-    if (!groupedByBand[band]) groupedByBand[band] = {qty: 0, amt: 0, date: "", ids: []};
-    groupedByBand[band].qty += tQty;
-    groupedByBand[band].amt += tPrice * tQty;
-    if ((t.date || "") > groupedByBand[band].date) groupedByBand[band].date = t.date || "";
-    if (t.id) groupedByBand[band].ids.push(String(t.id));
+    // distance: |profit% - band 중심%|
+    const refAvg = avgPriceAtTime(sellDate);
+    const profitPct = refAvg > 0 ? (tPrice / refAvg - 1) * 100 : 0;
+    const distance = Math.abs(profitPct - band);
+    if (!tradesByBand[band]) tradesByBand[band] = [];
+    tradesByBand[band].push({trade: t, band, distance});
   }
 
-  // 각 band의 합산 결과를 해당 슬롯에 매핑 (✅ consumedTradeIds 함께 기록 — 옵션 D 강제)
+  // 2단계: 각 band에서 distance 최소 1건만 자동 매핑, 나머지는 unmapped
   const filledByThisReconcile = new Set<number>();
-  for (const bandStr of Object.keys(groupedByBand)) {
+  for (const bandStr of Object.keys(tradesByBand)) {
     const band = Number(bandStr);
-    const g = groupedByBand[band];
+    const candidates = tradesByBand[band];
+    // distance 오름차순 정렬 → 첫 번째가 자동 매핑 후보
+    candidates.sort((a, b) => a.distance - b.distance);
+    const best = candidates[0];
+    const t = best.trade;
     const slotIdx = slotIdxByPercent[band];
-    const avgPrice = g.qty > 0 ? Math.round(g.amt / g.qty) : 0;
+    const tQty = Number(t.quantity) || 0;
+    const tPrice = Number(t.price) || 0;
     sellPlans[slotIdx] = {
       ...sellPlans[slotIdx],
       filled: true,
-      filledDate: g.date,
-      filledQuantity: g.qty,
-      filledPrice: avgPrice,
-      consumedTradeIds: g.ids, // ✅ 옵션 D: trade.id 명시 기록 → 다음 reconcile에서 정확 매칭
+      filledDate: String(t.date || ""),
+      filledQuantity: tQty,
+      filledPrice: tPrice,
+      consumedTradeIds: t.id ? [String(t.id)] : [],
     };
     filledByThisReconcile.add(band);
     sellFilledCount++;
-    console.log(`[reconcile/band] ${stockName} +${band}% ← ${avgPrice}원 × ${g.qty}주 (${g.date}, ids=${g.ids.length})`);
+    console.log(
+      `[reconcile/band] ${stockName} +${band}% ← ${tPrice}원 × ${tQty}주 (${t.date}, distance=${best.distance.toFixed(2)}%)` +
+      (candidates.length > 1 ? ` — 추가 ${candidates.length - 1}건은 미분류로 분리` : "")
+    );
+    // 나머지는 unmapped
+    for (let i = 1; i < candidates.length; i++) {
+      unmappedCount++;
+      unmappedQty += Number(candidates[i].trade.quantity) || 0;
+    }
   }
 
   // non-manual 슬롯 중 이번에 채워지지 않은 곳 = 옛 자동매핑 흔적 → 리셋

@@ -113,6 +113,8 @@ export interface Stock {
   maAlertDate?: string;    // 마지막 MA 근접 알림 발송일
   maCandles?: number;      // 계산에 사용된 봉 수
   profitAlertDate?: string; // 마지막 23%+ 수익 알림 발송일
+  // ✅ 신용/융자거래 종목 여부 (키움 응답의 별표 prefix로 감지)
+  isCreditTrade?: boolean;
   // ✅ 매도 매핑 정합성 audit 결과 (auditSellMapping이 백그라운드로 갱신)
   // tradeSellQty - (sellPlans+maSells filled 합) 값. 0이면 정상, !=0이면 mismatch.
   mappingAuditDiff?: number;

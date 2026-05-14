@@ -1354,6 +1354,9 @@ export default function StockDetail({
       {/* 헤더 */}
       <div className={styles.header}>
         <h2 className={styles.title}>
+          {local.isCreditTrade && (
+            <span className={styles.creditBadge} title="신용/융자거래 종목">신</span>
+          )}
           {local.name}
           {local.code && <span className={styles.codeLabel}>({local.code})</span>}
         </h2>
