@@ -22,7 +22,7 @@ export default function App() {
   const { trades, addTrade, updateTrade, removeTrade } = useTrades();
   const { snapshots, addSnapshot } = useSnapshots();
   const { visible, message, showToast } = useToast();
-  const { items: watchItems, addItem: addWatchItem, removeItem: removeWatchItem } = useWatchlist();
+  const { items: watchItems, addItem: addWatchItem, removeItem: removeWatchItem, updateItem: updateWatchItem } = useWatchlist();
 
   const getTabFromHash = (): TabType => {
     const hash = window.location.hash.replace('#', '') || 'list';
@@ -237,6 +237,10 @@ export default function App() {
               items={watchItems}
               onAdd={addWatchItem}
               onRemove={removeWatchItem}
+              onUpdatePeakPrice={async (id, peakPrice) => {
+                const item = watchItems.find((w) => w.id === id);
+                if (item) await updateWatchItem({ ...item, peakPrice });
+              }}
             />
           )}
           {activeTab === 'kiwoom' && <KiwoomSettings />}

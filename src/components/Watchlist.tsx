@@ -12,6 +12,7 @@ interface Props {
   items: WatchItem[];
   onAdd: (name: string, code: string, peakPrice: number) => Promise<string>;
   onRemove: (id: string) => void;
+  onUpdatePeakPrice: (id: string, peakPrice: number) => Promise<void>;
 }
 
 function getDropPercent(item: WatchItem): number {
@@ -21,7 +22,7 @@ function getDropPercent(item: WatchItem): number {
 
 type GroupKey = 'ready' | 'approaching' | 'watching';
 
-export default function Watchlist({ items, onAdd, onRemove }: Props) {
+export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }: Props) {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [peakPrice, setPeakPrice] = useState('');
@@ -120,6 +121,22 @@ export default function Watchlist({ items, onAdd, onRemove }: Props) {
     setDupWarning('');
     setSearchResults([]);
     setShowAddForm(false);
+  };
+
+  const [editingPeakId, setEditingPeakId] = useState<string | null>(null);
+  const [editingPeakValue, setEditingPeakValue] = useState('');
+
+  const handlePeakClick = (item: WatchItem) => {
+    setEditingPeakId(item.id);
+    setEditingPeakValue(String(item.peakPrice));
+  };
+
+  const handlePeakSave = async (id: string) => {
+    const val = parseInt(editingPeakValue);
+    if (!isNaN(val) && val > 0) {
+      await onUpdatePeakPrice(id, val);
+    }
+    setEditingPeakId(null);
   };
 
   const [refreshing, setRefreshing] = useState(false);
@@ -415,7 +432,30 @@ export default function Watchlist({ items, onAdd, onRemove }: Props) {
                                 </div>
                               )}
                             </td>
-                            <td className={styles.tdNum}>{item.peakPrice.toLocaleString()}</td>
+                            <td className={styles.tdNum}>
+                              {editingPeakId === item.id ? (
+                                <div className={styles.peakEditWrap}>
+                                  <input
+                                    className={styles.peakInput}
+                                    type="number"
+                                    value={editingPeakValue}
+                                    onChange={(e) => setEditingPeakValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') handlePeakSave(item.id);
+                                      if (e.key === 'Escape') setEditingPeakId(null);
+                                    }}
+                                    autoFocus
+                                  />
+                                  <button className={styles.saveBtn} onClick={() => handlePeakSave(item.id)}>저장</button>
+                                  <button className={styles.cancelBtn} onClick={() => setEditingPeakId(null)}>취소</button>
+                                </div>
+                              ) : (
+                                <div className={styles.peakCell}>
+                                  <span>{item.peakPrice.toLocaleString()}</span>
+                                  <button className={styles.editBtn} onClick={() => handlePeakClick(item)}>수정</button>
+                                </div>
+                              )}
+                            </td>
                             <td className={styles.tdNum}>{(item.prevClose || 0) > 0 ? item.prevClose.toLocaleString() : '-'}</td>
                             <td className={styles.tdNum}>
                               <strong>{item.currentPrice > 0 ? item.currentPrice.toLocaleString() : '-'}</strong>
