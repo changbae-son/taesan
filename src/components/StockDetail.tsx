@@ -42,6 +42,12 @@ export default function StockDetail({
     date: string; price: number; qty: number;
   } | null>(null);
 
+  // ── MA 매도 수동 편집 (수익매도계획 인라인) ──
+  const [maEditIdx, setMaEditIdx] = useState<number | null>(null);
+  const [maEditDraft, setMaEditDraft] = useState<{
+    date: string; price: number; qty: number;
+  } | null>(null);
+
   // ── 기본 정보 수정 draft ──
   const [editDraft, setEditDraft] = useState<{
     prices: number[];
@@ -606,6 +612,58 @@ export default function StockDetail({
     if (ok) {
       setSellEditIdx(null);
       setSellEditDraft(null);
+    }
+  };
+
+  // MA 매도 수동 편집 열기 (수익매도계획 인라인)
+  const openMAEdit = (mi: number) => {
+    const m = local.maSells[mi];
+    if (!m) return;
+    setMaEditIdx(mi);
+    setMaEditDraft({
+      date: m.filledDate || '',
+      price: m.price || 0,
+      qty: m.quantity || 0,
+    });
+    setSellEditIdx(null);
+    setSplitIdx(null);
+    setMoveSellIdx(null);
+  };
+
+  // MA 매도 수동 편집 저장
+  const confirmMAEdit = async () => {
+    if (maEditIdx === null || !maEditDraft) return;
+    const maList = [...local.maSells];
+    maList[maEditIdx] = {
+      ...maList[maEditIdx],
+      filled: maEditDraft.qty > 0,
+      filledDate: maEditDraft.date,
+      price: maEditDraft.price,
+      quantity: maEditDraft.qty,
+    };
+    const ok = await persistSellEdit(local.sellPlans, maList);
+    if (ok) {
+      setMaEditIdx(null);
+      setMaEditDraft(null);
+    }
+  };
+
+  // MA 매도 슬롯 비우기 (체결 해제)
+  const clearMAEdit = async () => {
+    if (maEditIdx === null) return;
+    const maList = [...local.maSells];
+    maList[maEditIdx] = {
+      ...maList[maEditIdx],
+      filled: false,
+      filledDate: '',
+      price: 0,
+      quantity: 0,
+      consumedTradeIds: [],
+    };
+    const ok = await persistSellEdit(local.sellPlans, maList);
+    if (ok) {
+      setMaEditIdx(null);
+      setMaEditDraft(null);
     }
   };
 
@@ -2086,7 +2144,7 @@ export default function StockDetail({
                         <span className={styles.cumulativeQty}>MA 매도</span>
                       </td>
                       <td className={styles.btnCell}>
-                        {typeof m.splitFromPercent === 'number' && m.splitFromPercent > 0 && (
+                        {typeof m.splitFromPercent === 'number' && m.splitFromPercent > 0 && maEditIdx !== mi && (
                           <button
                             className={styles.maRestoreBtn}
                             onClick={() => restoreMAToSell(mi)}
@@ -2094,6 +2152,74 @@ export default function StockDetail({
                           >
                             ↩️
                           </button>
+                        )}
+                        {maEditIdx !== mi && (
+                          <button
+                            className={styles.sellEditBtn}
+                            onClick={() => openMAEdit(mi)}
+                            title="MA 매도 가격/수량/날짜 편집"
+                          >
+                            ✏️
+                          </button>
+                        )}
+                        {maEditIdx === mi && maEditDraft && (
+                          <div className={styles.sellEditPopup}>
+                            <div className={styles.sellEditTitle}>
+                              ✏️ MA{m.ma} 편집
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>가격</label>
+                              <input
+                                type="number"
+                                className={styles.sellEditInput}
+                                value={maEditDraft.price || ''}
+                                onChange={(e) =>
+                                  setMaEditDraft({ ...maEditDraft, price: Number(e.target.value) })
+                                }
+                                placeholder="MA 가격"
+                              />
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>수량</label>
+                              <input
+                                type="number"
+                                className={styles.sellEditInput}
+                                value={maEditDraft.qty || ''}
+                                onChange={(e) =>
+                                  setMaEditDraft({ ...maEditDraft, qty: Number(e.target.value) })
+                                }
+                                placeholder="매도 수량"
+                              />
+                            </div>
+                            <div className={styles.sellEditRow}>
+                              <label className={styles.sellEditLabel}>날짜</label>
+                              <input
+                                type="date"
+                                className={styles.sellEditInput}
+                                value={maEditDraft.date}
+                                onChange={(e) =>
+                                  setMaEditDraft({ ...maEditDraft, date: e.target.value })
+                                }
+                              />
+                            </div>
+                            <div className={styles.sellEditActions}>
+                              <button className={styles.sellEditSave} onClick={confirmMAEdit}>
+                                저장
+                              </button>
+                              <button className={styles.sellEditCancel} onClick={clearMAEdit} title="MA 매도 비우기">
+                                비우기
+                              </button>
+                              <button
+                                className={styles.sellEditCancel}
+                                onClick={() => {
+                                  setMaEditIdx(null);
+                                  setMaEditDraft(null);
+                                }}
+                              >
+                                취소
+                              </button>
+                            </div>
+                          </div>
                         )}
                       </td>
                     </tr>

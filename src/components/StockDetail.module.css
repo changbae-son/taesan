@@ -1436,6 +1436,15 @@
   min-width: 180px;
 }
 
+.sellEditTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: #3949ab;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed #c5cae9;
+}
+
 .sellEditRow {
   display: flex;
   align-items: center;
