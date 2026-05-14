@@ -105,9 +105,49 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
     grouped[getGroup(stock)].push(stock);
   }
 
-  // 정렬: 신호/대기는 매수가 근접 순
-  grouped.signal.sort((a, b) => (getNextBuyGap(a) ?? 999) - (getNextBuyGap(b) ?? 999));
-  grouped.waiting.sort((a, b) => (getNextBuyGap(a) ?? 999) - (getNextBuyGap(b) ?? 999));
+  // 양봉/음봉/보합 분류 (캔들 타입과 변동률 반환)
+  // 양봉 = 시가 < 현재가, 매수 신호 가능성 높음
+  // 음봉 = 시가 > 현재가, 하락 추세
+  const getCandleInfo = (stock: Stock): { type: 'yang' | 'um' | 'doji' | 'none'; rate: number } => {
+    const openPrice = stock.buySignalOpen || 0;
+    if (openPrice <= 0 || !stock.currentPrice || stock.currentPrice <= 0) {
+      return { type: 'none', rate: 0 };
+    }
+    const rate = ((stock.currentPrice - openPrice) / openPrice) * 100;
+    if (stock.currentPrice > openPrice) return { type: 'yang', rate };
+    if (stock.currentPrice < openPrice) return { type: 'um', rate };
+    return { type: 'doji', rate: 0 };
+  };
+
+  // 캔들 우선순위 점수 (낮을수록 위에 표시):
+  //   양봉 = 0 (강한 상승 = 매수 타이밍 ↑)
+  //   보합/none = 1
+  //   음봉 = 2 (하락 추세 = 매수 타이밍 ↓)
+  const getCandlePriority = (stock: Stock): number => {
+    const info = getCandleInfo(stock);
+    if (info.type === 'yang') return 0;
+    if (info.type === 'um') return 2;
+    return 1;
+  };
+
+  // 매수신호: 양봉 우선 → 같은 캔들 그룹 내에서는 매수가 근접 순
+  grouped.signal.sort((a, b) => {
+    const pA = getCandlePriority(a);
+    const pB = getCandlePriority(b);
+    if (pA !== pB) return pA - pB;
+    // 같은 캔들 그룹: 양봉이면 상승률 큰 순, 음봉/보합이면 매수가 근접 순
+    if (pA === 0) return getCandleInfo(b).rate - getCandleInfo(a).rate;
+    return (getNextBuyGap(a) ?? 999) - (getNextBuyGap(b) ?? 999);
+  });
+
+  // 매수대기: 양봉이 위로 (사용자 요청)
+  grouped.waiting.sort((a, b) => {
+    const pA = getCandlePriority(a);
+    const pB = getCandlePriority(b);
+    if (pA !== pB) return pA - pB;
+    if (pA === 0) return getCandleInfo(b).rate - getCandleInfo(a).rate;
+    return (getNextBuyGap(a) ?? 999) - (getNextBuyGap(b) ?? 999);
+  });
 
   // 보유중: 3단계 액션 중심 정렬
   // [Tier 0] 매도 임박 → sellGap 오름차순 (목표가에 가장 가까운 것 먼저)
