@@ -2086,7 +2086,7 @@ export default function StockDetail({
                         <span className={styles.cumulativeQty}>MA 매도</span>
                       </td>
                       <td className={styles.btnCell}>
-                        {m.splitFromPercent !== undefined && (
+                        {typeof m.splitFromPercent === 'number' && m.splitFromPercent > 0 && (
                           <button
                             className={styles.maRestoreBtn}
                             onClick={() => restoreMAToSell(mi)}
@@ -2503,7 +2503,7 @@ export default function StockDetail({
                         {maNearInfo.gap >= 0 ? '+' : ''}{maNearInfo.gap.toFixed(1)}%
                       </span>
                     )}
-                    {ms.fromSellPlan && (
+                    {typeof ms.fromSellPlan === 'number' && ms.fromSellPlan > 0 && local.sellPlans[ms.fromSellPlan - 1]?.percent !== undefined && (
                       <span className={styles.maFromBadge}>+{local.sellPlans[ms.fromSellPlan - 1]?.percent}%에서 이동</span>
                     )}
                   </td>
