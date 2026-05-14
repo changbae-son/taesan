@@ -742,6 +742,81 @@ function mapTradesToPlans(
   return {buyPlans, sellPlans, sellCount, firstBuyPrice, firstBuyQty};
 }
 
+// ─── 키움 trade 배열을 trades 컬렉션에 저장 (백필용 헬퍼) ───
+// 기존 syncToFirestore 안의 trade 저장 로직과 동일 (dedup + sanity check):
+//   1) tradeId = trade_kiwoom_${orderKey}_${code}로 이미 있으면 skip
+//   2) (code, date, type, price, quantity) 조합으로 이미 있으면 skip (cross-dedup)
+//   3) 단위 sanity check (avgPrice 대비 50배 이상/이하면 #단위의심 태그)
+//   4) docRef.set
+// 반환: 실제로 저장된 trade 수
+async function saveKiwoomTradesBackfill(trades: any[]): Promise<number> {
+  let saved = 0;
+  const now = Date.now();
+  for (const t of trades) {
+    const orderKey = t.orderNo && String(t.orderNo).trim() !== ""
+      ? String(t.orderNo)
+      : `fb_${t.date || ""}${t.time || ""}_${t.quantity || 0}`;
+    const tradeId = `trade_kiwoom_${orderKey}_${t.code}`;
+    const docRef = db.collection("trades").doc(tradeId);
+    const doc = await docRef.get();
+    if (doc.exists) continue;
+
+    const formattedDate = t.date
+      ? `${t.date.slice(0, 4)}-${t.date.slice(4, 6)}-${t.date.slice(6, 8)}`
+      : new Date().toISOString().slice(0, 10);
+
+    // Cross-dedup: 같은 (code, date, type, price, quantity) 조합 trade가 이미 있으면 skip
+    const dupQuery = await db.collection("trades")
+      .where("code", "==", t.code || "")
+      .where("date", "==", formattedDate)
+      .where("type", "==", t.type)
+      .where("price", "==", t.price)
+      .where("quantity", "==", t.quantity)
+      .limit(1)
+      .get();
+    if (!dupQuery.empty) {
+      const existingId = dupQuery.docs[0].id;
+      console.log(`[중복방지/백필] ${t.name} ${formattedDate} ${t.type} ${t.price}x${t.quantity} 이미 있음 (${existingId}) - 스킵`);
+      continue;
+    }
+
+    // 단위 sanity check
+    const tags: string[] = ["#키움동기화", "#백필"];
+    try {
+      let avgPriceForCheck = 0;
+      if (t.code) {
+        const stockByCode = await db.collection("stocks").where("code", "==", t.code).limit(1).get();
+        if (!stockByCode.empty) avgPriceForCheck = Number(stockByCode.docs[0].data().avgPrice) || 0;
+      }
+      const tradePrice = Number(t.price) || 0;
+      if (avgPriceForCheck > 0 && tradePrice > 0) {
+        const ratio = tradePrice / avgPriceForCheck;
+        if (ratio >= 50 || ratio <= 0.02) {
+          tags.push("#단위의심");
+          console.warn(`[단위경고/백필] ${t.name} ${formattedDate} ${t.type} ${tradePrice}원×${t.quantity}주 (평단 ${avgPriceForCheck}원, 비율 ${ratio.toFixed(2)}x)`);
+        }
+      }
+    } catch (e: any) {
+      console.error(`[단위경고/백필] sanity check 실패: ${e.message}`);
+    }
+
+    await docRef.set({
+      date: formattedDate,
+      stockName: t.name,
+      code: t.code || "",
+      orderNo: orderKey,
+      type: t.type,
+      price: t.price,
+      quantity: t.quantity,
+      memo: `키움 백필 (${t.time || ""})`,
+      tags,
+      createdAt: now,
+    });
+    saved++;
+  }
+  return saved;
+}
+
 // ─── Firestore에 동기화 ───
 async function syncToFirestore(
   holdings: any[],
@@ -2117,8 +2192,8 @@ export const kiwoomAutoSync = functions
     const day = kst.getDay();
     const timeNum = hour * 100 + min;
 
-    // 평일 장중(09:00~15:30)만 실행
-    if (day === 0 || day === 6 || timeNum < 900 || timeNum > 1530) {
+    // 평일 09:00~15:50 실행 (15:35~15:45 trade 백필 포함)
+    if (day === 0 || day === 6 || timeNum < 900 || timeNum > 1550) {
       console.log(`장외 시간 (${hour}:${min}, 요일:${day}) - 스킵`);
       return;
     }
@@ -2132,6 +2207,43 @@ export const kiwoomAutoSync = functions
       const transferred = await checkWatchlistBought(holdings);
       if (transferred > 0) {
         console.log(`[자동동기화] 관심종목 → 실제매수 전환: ${transferred}종목`);
+        // ✅ Option A: 매수 전환 시 즉시 오늘 trade 백필
+        // (이렇게 안 하면 trades 컬렉션에 매수 trade가 빠져서 매매일지/통계에서 누락됨)
+        try {
+          const todayApi = `${kst.getFullYear()}${String(kst.getMonth() + 1).padStart(2, "0")}${String(kst.getDate()).padStart(2, "0")}`;
+          const todayTrades = await fetchTradeHistory(config, token, todayApi, todayApi);
+          const saved = await saveKiwoomTradesBackfill(todayTrades);
+          console.log(`[전환후백필] 오늘(${todayApi}) trade ${saved}건 저장`);
+        } catch (err: any) {
+          console.warn(`[전환후백필] 실패: ${err.message}`);
+        }
+      }
+
+      // ✅ Option B: 15:35~15:45 KST 1일 1회 오늘 trade 자동 백필
+      // 장 마감 후 ka10076 응답이 안정화된 시점에 그날의 매수/매도 trade 일괄 저장
+      // (수동 "키움 데이터 받기" 안 눌러도 자동으로 매매 기록 보존)
+      if (timeNum >= 1535 && timeNum < 1545) {
+        const todayKstStr = `${kst.getFullYear()}-${String(kst.getMonth() + 1).padStart(2, "0")}-${String(kst.getDate()).padStart(2, "0")}`;
+        try {
+          const lastBackfillDoc = await db.collection("settings").doc("lastTradeBackfill").get();
+          const lastBackfillDate = lastBackfillDoc.exists ? lastBackfillDoc.data()?.date : "";
+          if (lastBackfillDate !== todayKstStr) {
+            const todayApi = todayKstStr.replace(/-/g, "");
+            const todayTrades = await fetchTradeHistory(config, token, todayApi, todayApi);
+            const saved = await saveKiwoomTradesBackfill(todayTrades);
+            await db.collection("settings").doc("lastTradeBackfill").set({
+              date: todayKstStr,
+              savedCount: saved,
+              fetchedCount: todayTrades.length,
+              timestamp: Date.now(),
+            });
+            console.log(`[자동백필/15:40] ${saved}/${todayTrades.length}건 trade 저장 (date=${todayKstStr})`);
+          } else {
+            console.log(`[자동백필/15:40] 이미 ${todayKstStr} 백필 완료 — 스킵`);
+          }
+        } catch (err: any) {
+          console.warn(`[자동백필/15:40] 실패: ${err.message}`);
+        }
       }
 
       // 자동동기화: 현재가 + 잔고만 업데이트 (buyPlans/sellPlans 보존)

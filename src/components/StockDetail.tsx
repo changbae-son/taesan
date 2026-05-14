@@ -1406,6 +1406,23 @@ export default function StockDetail({
             🔥 정합성 위반 {local.mappingConsumedMismatch}건
           </span>
         )}
+        {/* ✅ Option C: trades 컬렉션에 매수 trade 누락 경고 */}
+        {(() => {
+          const buyTradesCount = trades.filter(
+            (t) => t.stockName === local.name && t.type === 'buy'
+          ).length;
+          const filledBuysCount = local.buyPlans.filter((b) => b.filled).length;
+          const hasMissingBuyTrades = filledBuysCount > 0 && buyTradesCount === 0;
+          if (!hasMissingBuyTrades) return null;
+          return (
+            <span
+              className={styles.missingTradeBadge}
+              title={`매수 ${filledBuysCount}차 체결되었지만 trades 컬렉션에 매수 기록 없음.\n매매일지/통계에 누락.\n자동 백필이 다음 15:40 KST에 시도되며, 즉시 받으려면 "키움 데이터 받기" 클릭.`}
+            >
+              📋 매수 trade 누락 — 키움 데이터 받기 필요
+            </span>
+          );
+        })()}
         <button
           className={styles.deleteBtn}
           onClick={() => {

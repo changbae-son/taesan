@@ -84,6 +84,19 @@
   animation: mismatchPulse 2s infinite;
 }
 
+.missingTradeBadge {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  background: #e3f2fd;
+  color: #1565c0;
+  border: 1px solid #64b5f6;
+  cursor: help;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
 @keyframes mismatchPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.65; }
