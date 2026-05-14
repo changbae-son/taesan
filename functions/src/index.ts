@@ -77,6 +77,15 @@ async function getAccessToken(config: KiwoomConfig): Promise<string> {
   return data.token;
 }
 
+// ─── 키움 종목명/코드 정리 헬퍼 ───
+// 신용/융자거래 종목은 키움 API에서 "*종목명" / "*A012345" 형태로 prefix 별표 반환됨.
+// ka10072(매도), ka10076(매수) 등에서 응답된 stk_nm/stk_cd에 별표 붙으면
+// stocks 컬렉션의 정규 종목명/코드와 매칭 안 됨 → trade 매핑 실패.
+// 모든 키움 응답에서 leading * 제거.
+function cleanKiwoomField(s: string): string {
+  return (s || "").trim().replace(/^\*+/, "");
+}
+
 // ─── 잔고 조회 (kt00005 체결잔고요청) ───
 async function fetchHoldings(
   config: KiwoomConfig,
@@ -106,8 +115,8 @@ async function fetchHoldings(
   return stockList
     .filter((item: any) => parseInt(item.cur_qty || "0") > 0)
     .map((item: any) => ({
-      name: (item.stk_nm || "").trim(),
-      code: (item.stk_cd || "").trim(),
+      name: cleanKiwoomField(item.stk_nm),
+      code: cleanKiwoomField(item.stk_cd),
       quantity: parseInt(item.cur_qty || "0"),
       avgPrice: parseInt(item.buy_uv || "0"),
       currentPrice: parseInt(item.cur_prc || "0"),
@@ -222,20 +231,19 @@ async function fetchTradeHistory(
         for (const item of valid) {
           const qty = parseInt(item.cntr_qty || "0");
           if (qty <= 0) continue;
-          const code72 = (item.stk_cd || "").trim();
+          // ✅ 신용/융자거래 별표(*) prefix 제거
+          const code72 = cleanKiwoomField(item.stk_cd);
+          const name72 = cleanKiwoomField(item.stk_nm);
           const price72 = parseInt(item.cntr_pric || "0");
-          // ✅ F1 수정: ord_no 우선, 없으면 price+qty 복합키로 uniqueness 보장
-          // (같은 날짜 같은 종목에 여러 체결이 있어도 collision 없음)
           const ordNo72 = String(item.ord_no || item.cntr_no || "").trim();
           const orderNo72 = ordNo72 || `sell_${dt}_${code72}_${price72}_${qty}`;
-          // 🔍 진단 로그: ka10072 실제 응답 내용 확인
           console.log(
             `[ka10072-item] ${dt} ${code72}: qty=${qty} price=${price72} ` +
             `ord_no=${ordNo72 || "(없음)"} cntr_no=${String(item.cntr_no||"").trim()||"(없음)"} ` +
             `fields=${Object.keys(item).slice(0,10).join(",")}`
           );
           allTrades.push({
-            name: (item.stk_nm || "").trim(),
+            name: name72,
             code: code72,
             type: "sell",
             price: price72,
@@ -292,11 +300,12 @@ async function fetchTradeHistory(
               `매도 ${sellItemsFromApi}건 ka10072 담당으로 스킵`
             );
             for (const item of buyItems) {
-              const name = (item.stk_nm || "").trim();
+              // ✅ 신용/융자거래 별표(*) prefix 제거
+              const name = cleanKiwoomField(item.stk_nm);
               const qty = parseInt(item.cntr_qty || item.qty || "0");
               if (qty <= 0) continue;
               const price = parseInt(item.cntr_uv || item.cntr_pric || item.ord_uv || "0");
-              const code76 = (item.stk_cd || "").trim();
+              const code76 = cleanKiwoomField(item.stk_cd);
               // ✅ F2 수정 2: ord_no 있으면 사용, 없으면 price+qty 복합키 (collision 방지)
               const ordNo76 = String(item.ord_no || "").trim();
               allTrades.push({
@@ -381,7 +390,7 @@ async function fetchTradeHistory(
 
             // 매수 내역을 allTrades에 추가
             for (const item of buyItems) {
-              const name = (item.stk_nm || "").trim();
+              const name = cleanKiwoomField(item.stk_nm);
               const qty = parseInt(item.cntr_qty || item.qty || "0");
               const price = parseInt(item.cntr_pric || item.pric || item.buy_uv || "0");
               const dt = item.ord_dt || item.cntr_dt || item.trde_dt || "";
@@ -389,7 +398,7 @@ async function fetchTradeHistory(
                 const formattedDate = dt.length === 8
                   ? `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`
                   : dt;
-                const code7 = (item.stk_cd || "").trim();
+                const code7 = cleanKiwoomField(item.stk_cd);
                 const ordNo7 = String(item.ord_no || item.cntr_no || "").trim();
                 allTrades.push({
                   name,
@@ -481,9 +490,9 @@ async function fetchTradeHistory(
         const rawDate = (item.cntr_dt || item.trde_dt || "").trim();
         if (!rawDate) continue;
 
-        const rawCode = (item.stk_cd || "").trim();
+        const rawCode = cleanKiwoomField(item.stk_cd);
         const code15 = rawCode.replace(/^[A-Za-z]/, "");
-        const name15 = (item.stk_nm || "").trim();
+        const name15 = cleanKiwoomField(item.stk_nm);
         if (!name15 || !code15) continue;
 
         const trdeAmt = parseInt(item.trde_amt || "0");
