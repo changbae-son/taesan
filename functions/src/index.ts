@@ -668,12 +668,16 @@ function mapTradesToPlans(
     } else if (i === 0 && buyDates.length === 0 && holdings) {
       // 매수 내역 없지만 보유 중 → 1차 매수 체결로 설정
       // firstBuyQty = 현재보유 + 매도수량 (원래 매수량)
+      // ✅ filledDate 추정: 현재 KST 날짜 (관심종목→매수 자동 전환은 보통 매수 직후 발화)
+      // 빈 문자열로 두면 "날짜 미상" 표시되어 매매 일자 추적 불가
+      const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+      const todayKstStr = `${kstNow.getFullYear()}-${String(kstNow.getMonth() + 1).padStart(2, "0")}-${String(kstNow.getDate()).padStart(2, "0")}`;
       buyPlans.push({
         level: 1,
         price: holdings.avgPrice || 0,
         quantity: firstBuyQty,
         filled: true,
-        filledDate: "",
+        filledDate: todayKstStr,
         filledQuantity: firstBuyQty,
         filledPrice: holdings.avgPrice || 0,
       });
