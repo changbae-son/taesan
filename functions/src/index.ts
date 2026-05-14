@@ -4421,6 +4421,9 @@ export const inspectStockTrades = functions
               buyPlans: stock.buyPlans,
               sellPlans: stock.sellPlans,
               maSells: stock.maSells,
+              corporateActions: stock.corporateActions,
+              firstBuyPrice: stock.firstBuyPrice,
+              firstBuyQuantity: stock.firstBuyQuantity,
             }
             : null,
           tradesTotal: trades.length,
