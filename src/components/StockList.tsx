@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Stock, Trade } from '../types';
+import { useFeatureFlags } from '../hooks/useFeatureFlags';
 import styles from './StockList.module.css';
 
 // 매수 기록 불완전 여부 판단
@@ -91,6 +92,7 @@ function getHoldingTier(stock: Stock): number {
 
 export default function StockList({ stocks, trades, onSelect }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const featureFlags = useFeatureFlags();
 
   const filtered = stocks.filter((stock) => {
     if (!stock.name || !stock.name.trim()) return false;
@@ -286,9 +288,23 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
                         {/* 1줄: 종목명 + 금액 + 상태 */}
                         <div className={styles.cardRow1}>
                           <span className={styles.stockName}>
-                            {stock.isCreditTrade && (
-                              <span className={styles.creditBadge} title="신용/융자거래 종목">신</span>
-                            )}
+                            {(() => {
+                              if (!stock.isCreditTrade) return null;
+                              // Phase 1a: positions로 현물/신용 혼합 여부 정확 판정
+                              if (featureFlags.creditPositionsEnabled && Array.isArray(stock.positions)) {
+                                const hasCash = stock.positions.some((p) => p.type === 'cash');
+                                const hasCredit = stock.positions.some((p) => p.type === 'credit');
+                                if (hasCash && hasCredit) {
+                                  return <span className={styles.creditBadge} title="현물+신용 혼합 보유">신혼합</span>;
+                                }
+                                if (hasCredit) {
+                                  return <span className={styles.creditBadge} title="신용/융자거래 종목">신</span>;
+                                }
+                                return null;
+                              }
+                              // featureFlag OFF면 기존 동작
+                              return <span className={styles.creditBadge} title="신용/융자거래 종목">신</span>;
+                            })()}
                             {stock.name}
                             {stock.code && <span className={styles.stockCode}>{stock.code.replace(/^A/, '')}</span>}
                             {incomplete && (

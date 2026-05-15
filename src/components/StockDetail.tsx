@@ -10,6 +10,7 @@ import {
 } from 'recharts';
 import type { Stock, Trade, Snapshot } from '../types';
 import { recalcStock } from '../hooks/useStocks';
+import { useFeatureFlags } from '../hooks/useFeatureFlags';
 import styles from './StockDetail.module.css';
 
 interface Props {
@@ -35,6 +36,18 @@ export default function StockDetail({
 }: Props) {
   const [local, setLocal] = useState<Stock>(stock);
   const [showBasicInfo, setShowBasicInfo] = useState(false);
+  const featureFlags = useFeatureFlags();
+  // Phase 1a: 신용 포지션 정보 (featureFlag 뒤에 두어 안전 토글)
+  const creditPosition = featureFlags.creditPositionsEnabled
+    ? (local.positions || []).find((p) => p.type === 'credit')
+    : null;
+  const cashPosition = featureFlags.creditPositionsEnabled
+    ? (local.positions || []).find((p) => p.type === 'cash')
+    : null;
+  const isCreditMixed = !!(creditPosition && cashPosition);
+  const creditRatio = creditPosition && local.totalQuantity > 0
+    ? Math.round((creditPosition.quantity / local.totalQuantity) * 100)
+    : 0;
 
   // ── 수익매도 수동 편집 ──
   const [sellEditIdx, setSellEditIdx] = useState<number | null>(null);
@@ -1657,6 +1670,78 @@ export default function StockDetail({
           </span>
         )}
       </div>
+
+      {/* 신용 포지션 정보 박스 (featureFlag.creditPositionsEnabled ON일 때만) */}
+      {featureFlags.creditPositionsEnabled && creditPosition && (
+        <div className={styles.creditBox}>
+          <div className={styles.creditHeader}>
+            <span className={styles.creditTitle}>💳 신용 포지션</span>
+            {isCreditMixed && (
+              <span className={styles.creditMixedBadge}>[신혼합 {creditRatio}%]</span>
+            )}
+            {!isCreditMixed && (
+              <span className={styles.creditMixedBadge}>[신용 100%]</span>
+            )}
+          </div>
+          <div className={styles.creditGrid}>
+            <div className={styles.creditItem}>
+              <span className={styles.creditLabel}>신용 수량</span>
+              <span className={styles.creditValue}>
+                {creditPosition.quantity.toLocaleString()}주
+                {isCreditMixed && (
+                  <span className={styles.creditTotal}> / 총 {local.totalQuantity.toLocaleString()}주</span>
+                )}
+              </span>
+            </div>
+            <div className={styles.creditItem}>
+              <span className={styles.creditLabel}>신용 평단가</span>
+              <span className={styles.creditValue}>
+                {creditPosition.avgPrice.toLocaleString()}원
+              </span>
+            </div>
+            {creditPosition.since && (
+              <div className={styles.creditItem}>
+                <span className={styles.creditLabel}>매수일</span>
+                <span className={styles.creditValue}>{creditPosition.since}</span>
+              </div>
+            )}
+            {creditPosition.dueDate && (
+              <div className={styles.creditItem}>
+                <span className={styles.creditLabel}>만기일</span>
+                <span className={styles.creditValue}>
+                  {creditPosition.dueDate}
+                  {(() => {
+                    const days = Math.ceil((new Date(creditPosition.dueDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                    const color = days <= 7 ? '#c62828' : days <= 14 ? '#ff9800' : '#888';
+                    return <span style={{ color, fontSize: 11, marginLeft: 6 }}>(D-{days})</span>;
+                  })()}
+                </span>
+              </div>
+            )}
+            {typeof creditPosition.interestRate === 'number' && (
+              <div className={styles.creditItem}>
+                <span className={styles.creditLabel}>연 이자율</span>
+                <span className={styles.creditValue}>
+                  {(creditPosition.interestRate * 100).toFixed(2)}%
+                </span>
+              </div>
+            )}
+            {typeof creditPosition.interestAccrued === 'number' && creditPosition.interestAccrued > 0 && (
+              <div className={styles.creditItem}>
+                <span className={styles.creditLabel}>누적 이자</span>
+                <span className={styles.creditValue} style={{ color: '#c62828' }}>
+                  −{creditPosition.interestAccrued.toLocaleString()}원
+                </span>
+              </div>
+            )}
+          </div>
+          {!creditPosition.dueDate && (
+            <p className={styles.creditHint}>
+              💡 만기 정보 미설정 — Phase 2에서 자동 설정됩니다 (매수일 + 90일)
+            </p>
+          )}
+        </div>
+      )}
 
       {/* 통합 요약바 (평균단가 계획/실제 2줄 + 손익 금액) */}
       <div className={styles.summary}>

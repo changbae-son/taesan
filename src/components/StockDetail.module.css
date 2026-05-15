@@ -719,6 +719,79 @@
   background: #ffebee;
 }
 
+/* Phase 1a: 신용 포지션 정보 박스 */
+.creditBox {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: linear-gradient(90deg, #fff3e0 0%, #fff8e1 100%);
+  border: 1px solid #ffb74d;
+  border-left: 4px solid #f57c00;
+  border-radius: 8px;
+}
+
+.creditHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.creditTitle {
+  font-size: 13px;
+  font-weight: 800;
+  color: #e65100;
+}
+
+.creditMixedBadge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  background: #fff;
+  color: #e65100;
+  border: 1px solid #ffb74d;
+  border-radius: 10px;
+}
+
+.creditGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.creditItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  background: #fff;
+  border-radius: 5px;
+}
+
+.creditLabel {
+  font-size: 10px;
+  color: #888;
+  font-weight: 600;
+}
+
+.creditValue {
+  font-size: 13px;
+  color: #333;
+  font-weight: 700;
+}
+
+.creditTotal {
+  color: #666;
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.creditHint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
+}
+
 .editConfirmBtn {
   padding: 8px 20px;
   background: #1565c0;
