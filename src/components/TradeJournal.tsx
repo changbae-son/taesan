@@ -407,6 +407,7 @@ export default function TradeJournal({
     quantity: 0,
     memo: '',
     tagInput: '',
+    isCreditTrade: false,
   });
   const [filterStock, setFilterStock] = useState('');
   const [filterTag, setFilterTag] = useState('');
@@ -453,6 +454,7 @@ export default function TradeJournal({
           quantity: form.quantity,
           memo: form.memo,
           tags,
+          isCreditTrade: form.isCreditTrade,
         });
       }
       setEditId(null);
@@ -465,6 +467,7 @@ export default function TradeJournal({
         quantity: form.quantity,
         memo: form.memo,
         tags,
+        isCreditTrade: form.isCreditTrade,
       });
     }
     setForm({
@@ -475,6 +478,7 @@ export default function TradeJournal({
       quantity: 0,
       memo: '',
       tagInput: '',
+      isCreditTrade: false,
     });
     setFormOpen(false);
   };
@@ -489,6 +493,7 @@ export default function TradeJournal({
       quantity: trade.quantity,
       memo: trade.memo,
       tagInput: trade.tags.map((t) => `#${t}`).join(' '),
+      isCreditTrade: trade.isCreditTrade === true,
     });
     setFormOpen(true);
   };
@@ -503,6 +508,7 @@ export default function TradeJournal({
       quantity: 0,
       memo: '',
       tagInput: '',
+      isCreditTrade: false,
     });
     setFormOpen(false);
   };
@@ -865,6 +871,23 @@ export default function TradeJournal({
               />
             </label>
           </div>
+
+          {/* 신용거래 체크박스 (매수/매도일 때만 노출) */}
+          {(form.type === 'buy' || form.type === 'sell') && (
+            <div className={styles.creditCheckRow}>
+              <label className={styles.creditCheckLabel}>
+                <input
+                  type="checkbox"
+                  checked={form.isCreditTrade}
+                  onChange={(e) => setForm({ ...form, isCreditTrade: e.target.checked })}
+                />
+                <span>💳 신용/융자 거래</span>
+                <span className={styles.creditCheckHint}>
+                  (체크 시 잔고 합산 시 신용 포지션으로 분리됨)
+                </span>
+              </label>
+            </div>
+          )}
 
           {allTags.length > 0 && (
             <div className={styles.tagChips}>
