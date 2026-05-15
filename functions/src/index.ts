@@ -8057,6 +8057,206 @@ export const creditMaturityCron = functions
   });
 
 /**
+ * 진단: 특정 날짜의 키움 매수 trade API 원본 응답
+ * GET /diagKiwoomTrades?date=20260514&stockName=그래피
+ *
+ * 사용: 신용 매수가 누락되는지 키움 raw 응답 확인
+ */
+export const diagKiwoomTrades = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const date = (req.query.date as string) || "20260514";
+        const filterName = (req.query.stockName as string) || "";
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+
+        const results: any = {date, filterName, ka10076: null, kt00015: null, kt00009: null, kt00007: null};
+
+        // ka10076 (당일 매수) — 단, 과거 날짜도 ord_dt로 지정 가능
+        try {
+          const r = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "authorization": `Bearer ${token}`,
+              "api-id": "ka10076",
+            },
+            body: JSON.stringify({
+              ord_dt: date,
+              stk_cd: "",
+              sell_tp: "0", // 전체 (매수+매도) — 신용 포함 가능성 확인
+              qry_tp: "0",
+              stk_bond_tp: "1",
+              stex_tp: "1", // 누락 파라미터 추가
+              dmst_stex_tp: "KRX",
+            }),
+          });
+          const data = await r.json() as any;
+          let items: any[] = [];
+          for (const key of Object.keys(data)) {
+            if (Array.isArray(data[key]) && data[key].length > 0) {
+              items = data[key];
+              break;
+            }
+          }
+          // 필터 적용 + 원본 그대로 표시
+          const filtered = filterName
+            ? items.filter((x: any) => {
+                const nm = (x.stk_nm || "").trim();
+                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName);
+              })
+            : items;
+          results.ka10076 = {
+            return_code: data.return_code,
+            return_msg: data.return_msg,
+            totalItems: items.length,
+            filteredCount: filtered.length,
+            samples: filtered.slice(0, 5),
+          };
+        } catch (e: any) {
+          results.ka10076 = {error: e.message};
+        }
+
+        // kt00015 (위탁종합거래내역) — 기간별
+        try {
+          const r = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "authorization": `Bearer ${token}`,
+              "api-id": "kt00015",
+            },
+            body: JSON.stringify({
+              strt_dt: date,
+              end_dt: date,
+              tp: "0",
+              gds_tp: "0",
+              dmst_stex_tp: "%",
+              frgn_stex_tp: "%",
+              stk_cd: "",
+              crnc_cd: "",
+            }),
+          });
+          const data = await r.json() as any;
+          const items: any[] = data.trst_ovrl_trde_prps_array || [];
+          const filtered = filterName
+            ? items.filter((x: any) => {
+                const nm = (x.stk_nm || "").trim();
+                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName);
+              })
+            : items;
+          results.kt00015 = {
+            return_code: data.return_code,
+            return_msg: data.return_msg,
+            totalItems: items.length,
+            filteredCount: filtered.length,
+            samples: filtered.slice(0, 5),
+          };
+        } catch (e: any) {
+          results.kt00015 = {error: e.message};
+        }
+
+        // kt00009 (계좌별주문체결현황요청) — 신용 포함 여부 시험
+        try {
+          const r = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "authorization": `Bearer ${token}`,
+              "api-id": "kt00009",
+            },
+            body: JSON.stringify({
+              ord_dt: date,
+              stk_cd: "",
+              stk_bond_tp: "0",
+              mrkt_tp: "0",
+              dmst_stex_tp: "%",
+              sell_tp: "0",
+              qry_tp: "0",
+            }),
+          });
+          const data = await r.json() as any;
+          let items: any[] = [];
+          for (const key of Object.keys(data)) {
+            if (Array.isArray(data[key]) && data[key].length > 0) {
+              items = data[key];
+              break;
+            }
+          }
+          const filtered = filterName
+            ? items.filter((x: any) => {
+                const nm = (x.stk_nm || "").trim();
+                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName);
+              })
+            : items;
+          results.kt00009 = {
+            return_code: data.return_code,
+            return_msg: data.return_msg,
+            keys: Object.keys(data).filter((k) => Array.isArray(data[k])),
+            totalItems: items.length,
+            filteredCount: filtered.length,
+            samples: filtered.slice(0, 5),
+          };
+        } catch (e: any) {
+          results.kt00009 = {error: e.message};
+        }
+
+        // kt00007 (계좌별주문체결내역상세) — 신용 포함 여부 시험
+        try {
+          const r = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "authorization": `Bearer ${token}`,
+              "api-id": "kt00007",
+            },
+            body: JSON.stringify({
+              ord_dt: date,
+              qry_tp: "1",
+              stk_bond_tp: "0",
+              sell_tp: "0",
+              stk_cd: "",
+              fr_ord_no: "",
+              dmst_stex_tp: "%",
+            }),
+          });
+          const data = await r.json() as any;
+          let items: any[] = [];
+          for (const key of Object.keys(data)) {
+            if (Array.isArray(data[key]) && data[key].length > 0) {
+              items = data[key];
+              break;
+            }
+          }
+          const filtered = filterName
+            ? items.filter((x: any) => {
+                const nm = (x.stk_nm || "").trim();
+                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName);
+              })
+            : items;
+          results.kt00007 = {
+            return_code: data.return_code,
+            return_msg: data.return_msg,
+            keys: Object.keys(data).filter((k) => Array.isArray(data[k])),
+            totalItems: items.length,
+            filteredCount: filtered.length,
+            samples: filtered.slice(0, 5),
+          };
+        } catch (e: any) {
+          results.kt00007 = {error: e.message};
+        }
+
+        res.json({success: true, ...results});
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
  * 신용거래 만기 체크 수동 호출 (테스트용)
  * POST /creditMaturityCheck
  */
