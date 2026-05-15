@@ -33,6 +33,22 @@ export interface MASell {
   consumedTradeIds?: string[]; // ✅ 옵션 D: 이 MA 슬롯이 흡수한 trade.id 목록 (정확 매칭용)
 }
 
+// 포지션 (현물/신용 분리 추적)
+// 키움 잔고 API는 같은 종목을 현물/신용 별도 row로 반환함.
+// fetchHoldings에서 dedupe하여 종목당 하나의 stock doc으로 통합하되,
+// 각 포지션 정보(수량/평단/매수일/만기/이자)는 이 배열에 보존.
+export interface Position {
+  type: 'cash' | 'credit';
+  quantity: number;            // 이 포지션 수량
+  avgPrice: number;            // 이 포지션 평단가
+  since?: string;              // 최초 매수일 (YYYY-MM-DD, 추정)
+  // 신용 전용 메타 (Phase 2에서 채워짐)
+  dueDate?: string;            // 만기 예정일 (매수일 + 90일)
+  interestRate?: number;       // 연 이자율 (예: 0.075 = 7.5%)
+  interestAccrued?: number;    // 누적 이자 (원)
+  interestAsOf?: string;       // 이자 계산 기준일
+}
+
 // 매매완료 후 재진입 추적 (태산매매법: 최저가 → +100% → -50% → 첫 양봉 = 1차 매수)
 export interface ReentryTracking {
   enabled: boolean;                    // ON/OFF (사용자 수동 중지 가능)
@@ -133,7 +149,12 @@ export interface Stock {
   maCandles?: number;      // 계산에 사용된 봉 수
   profitAlertDate?: string; // 마지막 23%+ 수익 알림 발송일
   // ✅ 신용/융자거래 종목 여부 (키움 응답의 별표 prefix로 감지)
+  // 현물+신용 혼합 시에도 true (positions 배열로 세부 확인)
   isCreditTrade?: boolean;
+  // 현물/신용 포지션 세부 (Phase 1a 추가)
+  // 1개 = 단일 포지션 (현물 또는 신용 단독)
+  // 2개 = 혼합 (현물 + 신용)
+  positions?: Position[];
   // ✅ 매도 매핑 정합성 audit 결과 (auditSellMapping이 백그라운드로 갱신)
   // tradeSellQty - (sellPlans+maSells filled 합) 값. 0이면 정상, !=0이면 mismatch.
   mappingAuditDiff?: number;
