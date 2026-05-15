@@ -112,7 +112,8 @@ async function fetchHoldings(
 
   const stockList = data.stk_cntr_remn || [];
 
-  return stockList
+  // 1) row별 파싱
+  const rawHoldings = stockList
     .filter((item: any) => parseInt(item.cur_qty || "0") > 0)
     .map((item: any) => {
       // ✅ 신용/융자거래 감지: stk_nm 또는 stk_cd에 별표(*) prefix 있으면 신용거래
@@ -131,6 +132,72 @@ async function fetchHoldings(
         isCreditTrade,
       };
     });
+
+  // 2) 같은 종목(code 우선, 없으면 name) 통합: 현물+신용 dedupe
+  // 키움 잔고 API는 같은 종목을 현물/신용 별도 row로 반환하므로
+  // 통합 시 수량 합산 + 가중평균 + positions 배열 보존
+  interface PositionInfo {
+    type: "cash" | "credit";
+    quantity: number;
+    avgPrice: number;
+  }
+  interface ConsolidatedHolding {
+    name: string;
+    code: string;
+    quantity: number;
+    avgPrice: number;
+    currentPrice: number;
+    profitRate: number;
+    profitAmount: number;
+    totalBuyAmount: number;
+    isCreditTrade: boolean;
+    positions: PositionInfo[];
+  }
+  const byKey: Record<string, ConsolidatedHolding> = {};
+
+  for (const h of rawHoldings) {
+    const key = h.code || h.name;
+    const posType: "cash" | "credit" = h.isCreditTrade ? "credit" : "cash";
+    const position: PositionInfo = {
+      type: posType,
+      quantity: h.quantity,
+      avgPrice: h.avgPrice,
+    };
+
+    if (!byKey[key]) {
+      byKey[key] = {...h, positions: [position]};
+    } else {
+      const existing = byKey[key];
+      // 같은 type의 포지션이 있으면 합치고, 다르면 별도 항목 유지
+      const samePos = existing.positions.find((p: PositionInfo) => p.type === posType);
+      if (samePos) {
+        // 같은 type 합산 (이론상 발생 안 하지만 방어)
+        const totalQty = samePos.quantity + h.quantity;
+        const totalAmt = samePos.avgPrice * samePos.quantity + h.avgPrice * h.quantity;
+        samePos.quantity = totalQty;
+        samePos.avgPrice = totalQty > 0 ? Math.round(totalAmt / totalQty) : 0;
+      } else {
+        existing.positions.push(position);
+      }
+
+      // 통합 잔고 갱신 (수량 합산, 평단 가중평균)
+      const totalQty = existing.positions.reduce((s: number, p: PositionInfo) => s + p.quantity, 0);
+      const totalAmt = existing.positions.reduce((s: number, p: PositionInfo) => s + p.avgPrice * p.quantity, 0);
+      existing.quantity = totalQty;
+      existing.avgPrice = totalQty > 0 ? Math.round(totalAmt / totalQty) : 0;
+      // 현물+신용 혼합이면 isCreditTrade=true (1개라도 신용이면)
+      existing.isCreditTrade = existing.positions.some((p: PositionInfo) => p.type === "credit");
+    }
+  }
+
+  const consolidated: ConsolidatedHolding[] = Object.values(byKey);
+  // dedupe 로그 (2개 이상 통합된 종목 확인)
+  for (const h of consolidated) {
+    if (h.positions.length > 1) {
+      console.log(`[fetchHoldings] ${h.name}(${h.code}) 통합: ${h.positions.map((p: PositionInfo) => `${p.type}(${p.quantity}@${p.avgPrice})`).join(" + ")} → 총 ${h.quantity}주, 평단 ${h.avgPrice}원`);
+    }
+  }
+  return consolidated;
 }
 
 // ─── 당일 체결 내역 조회 (ka10076 체결요청) ───
@@ -934,6 +1001,8 @@ async function syncToFirestore(
         currentPrice: h.currentPrice,
         // ✅ 신용/융자거래 여부 매 sync 시 갱신 (현재 holdings 응답 기준)
         isCreditTrade: h.isCreditTrade === true,
+        // ✅ Phase 1a: 현물/신용 포지션 세부
+        positions: Array.isArray((h as any).positions) ? (h as any).positions : [],
         updatedAt: now,
       };
       // code 필드 마이그레이션 (기존 데이터에 code 없으면 주입)
@@ -1127,6 +1196,8 @@ async function syncToFirestore(
         totalQuantity: h.quantity,
         // ✅ 신용/융자거래 여부
         isCreditTrade: h.isCreditTrade === true,
+        // ✅ Phase 1a: 현물/신용 포지션 세부
+        positions: Array.isArray((h as any).positions) ? (h as any).positions : [],
         buyPlans: mapped.buyPlans,
         sellPlans: mapped.sellPlans,
         maSells,
@@ -2338,6 +2409,8 @@ export const kiwoomAutoSync = functions
             totalQuantity: h.quantity,
             // ✅ 신용/융자거래 여부
             isCreditTrade: h.isCreditTrade === true,
+            // ✅ Phase 1a: 현물/신용 포지션 세부 (fetchHoldings에서 통합)
+            positions: Array.isArray(h.positions) ? h.positions : [],
             updatedAt: Date.now(),
           };
           // code 필드 마이그레이션
