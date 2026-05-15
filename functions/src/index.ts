@@ -99,11 +99,44 @@ function cleanKiwoomField(s: string): string {
 //   3. 잔여가 키움 totalQty와 차이나면 키움 값을 우선 (잔여 = 키움 비율로 분배)
 //   4. avgPrice는 각 type의 매수 가중평균
 //   5. since는 가장 오래된 매수일
+// 신용 만기일 계산 (매수일 + 90일)
+function calcCreditDueDate(sinceDate: string): string {
+  try {
+    const d = new Date(sinceDate);
+    if (isNaN(d.getTime())) return "";
+    d.setDate(d.getDate() + 90);
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return "";
+  }
+}
+
+// 일할 이자 계산 (since ~ asOf 사이 일수만큼)
+// 기본 연 이자율 7.5%
+function calcAccruedInterest(
+  creditAmt: number,
+  sinceDate: string,
+  asOfDate: string,
+  annualRate: number = 0.075
+): number {
+  try {
+    const since = new Date(sinceDate);
+    const asOf = new Date(asOfDate);
+    if (isNaN(since.getTime()) || isNaN(asOf.getTime())) return 0;
+    const days = Math.max(0, Math.ceil((asOf.getTime() - since.getTime()) / (1000 * 60 * 60 * 24)));
+    return Math.round((creditAmt * annualRate * days) / 365);
+  } catch {
+    return 0;
+  }
+}
+
 function computePositionsFromTrades(
   stockTrades: Array<{type: string; price: number; quantity: number; date?: string; isCreditTrade?: boolean}>,
   totalQuantity: number,
-  totalAvg: number
-): Array<{type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string}> {
+  totalAvg: number,
+  // Phase 2: 기존 positions가 있으면 만기/이자 메타데이터 보존 + 갱신
+  existingPositions?: Array<{type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string; dueDate?: string; interestRate?: number; interestAccrued?: number; interestAsOf?: string}>
+): Array<{type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string; dueDate?: string; interestRate?: number; interestAccrued?: number; interestAsOf?: string}> {
   if (totalQuantity <= 0) return [];
 
   let cashBoughtQty = 0;
@@ -143,52 +176,64 @@ function computePositionsFromTrades(
   const cashAvg = cashBoughtQty > 0 ? Math.round(cashBoughtAmt / cashBoughtQty) : 0;
   const creditAvg = creditBoughtQty > 0 ? Math.round(creditBoughtAmt / creditBoughtQty) : 0;
 
+  // 기존 credit position의 메타데이터 (만기/이자) 보존용
+  const existingCredit = existingPositions?.find((p) => p.type === "credit");
+
+  // 신용 포지션에 만기/이자 메타데이터 채우기
+  const enrichCredit = (pos: {type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string}): typeof pos & {dueDate?: string; interestRate?: number; interestAccrued?: number; interestAsOf?: string} => {
+    if (pos.type !== "credit") return pos;
+    const todayKstStr = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}))
+      .toISOString().slice(0, 10);
+    // since 우선순위: trades에서 추론된 값 > 기존 저장값 > 오늘 (fallback)
+    // fallback="오늘"은 정확하진 않지만 사용자가 추후 수정 가능
+    const since = pos.since || existingCredit?.since || todayKstStr;
+    // dueDate: 기존 값 유지 OR since + 90일 자동 계산
+    const dueDate = existingCredit?.dueDate || calcCreditDueDate(since);
+    const interestRate = existingCredit?.interestRate || 0.075; // 기본 7.5%
+    // 이자 누적: since ~ 오늘까지
+    const creditAmt = pos.quantity * pos.avgPrice;
+    const interestAccrued = calcAccruedInterest(creditAmt, since, todayKstStr, interestRate);
+    return {
+      ...pos,
+      since,
+      dueDate,
+      interestRate,
+      interestAccrued,
+      interestAsOf: todayKstStr,
+    };
+  };
+
   // 잔여가 키움 totalQty와 일치하면 그대로 사용
   if (tradesNetTotal === totalQuantity) {
-    const out: Array<{type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string}> = [];
+    const out: Array<any> = [];
     if (cashNetQty > 0) out.push({type: "cash", quantity: cashNetQty, avgPrice: cashAvg, since: cashFirstDate});
-    if (creditNetQty > 0) out.push({type: "credit", quantity: creditNetQty, avgPrice: creditAvg, since: creditFirstDate});
+    if (creditNetQty > 0) out.push(enrichCredit({type: "credit", quantity: creditNetQty, avgPrice: creditAvg, since: creditFirstDate}));
     return out;
   }
 
   // 불일치: 키움 totalQty와 비율 매칭
-  // case 1) trades가 부분만 있는 경우 (API-GAP): 키움 평단 totalAvg가 cash avg와 비슷 vs credit avg와 비슷 비교해서 추정
-  // case 2) credit이 0인데 키움 totalQty가 더 큰 경우: 누락 매수분이 모두 cash로 추정
-  // case 3) 둘 다 있는데 차이가 작은 경우: 비율 유지하고 절대량만 보정
-
   if (creditBoughtQty === 0 && cashBoughtQty === 0) {
-    // trades 완전 비어있음 → 단일 cash 포지션으로 추정 (보수적)
     return [{type: "cash", quantity: totalQuantity, avgPrice: totalAvg}];
   }
 
   if (creditBoughtQty === 0) {
-    // credit trade 0건이지만 키움 totalQty > 0
-    // 가능성: ① 모두 현물 (cash trade 누락 있을 수도 있지만 cash로 채움)
-    //        ② 또는 신용분이 trade에 미반영 (사용자가 수동 마킹 필요)
-    // 키움 totalAvg와 cashAvg의 차이로 신용 비중 추정 시도
+    // 평단가 차이로 신용 비중 추정
     if (cashAvg > 0 && Math.abs(totalAvg - cashAvg) / cashAvg > 0.02) {
-      // 평단가 2% 이상 차이 → 신용분 존재 추정
-      // 가중평균: cashAvg * cashQty + creditAvg_unknown * creditQty = totalAvg * totalQuantity
-      // creditQty + cashQty = totalQuantity
-      // (creditQty = totalQuantity - cashQty 추정)
-      // cashQty는 cashNetQty 그대로, creditQty = totalQuantity - cashNetQty
       const inferredCreditQty = Math.max(0, totalQuantity - cashNetQty);
       if (inferredCreditQty > 0 && cashNetQty > 0) {
-        // 가중평균 역산: creditAvg = (totalAvg * totalQuantity - cashAvg * cashNetQty) / inferredCreditQty
         const inferredCreditAvg = Math.round(
           (totalAvg * totalQuantity - cashAvg * cashNetQty) / inferredCreditQty
         );
         return [
           {type: "cash", quantity: cashNetQty, avgPrice: cashAvg, since: cashFirstDate},
-          {type: "credit", quantity: inferredCreditQty, avgPrice: inferredCreditAvg > 0 ? inferredCreditAvg : totalAvg},
+          enrichCredit({type: "credit", quantity: inferredCreditQty, avgPrice: inferredCreditAvg > 0 ? inferredCreditAvg : totalAvg, since: existingCredit?.since}),
         ];
       }
     }
-    // 추정 실패 → 모두 cash
     return [{type: "cash", quantity: totalQuantity, avgPrice: totalAvg, since: cashFirstDate}];
   }
 
-  // credit trade 존재 + 키움 잔고 불일치: 비율 유지하면서 키움 totalQty에 맞춤
+  // credit trade 존재 + 키움 잔고 불일치: 비율 매칭
   const totalBoughtNet = cashNetQty + creditNetQty;
   if (totalBoughtNet === 0) {
     return [{type: "cash", quantity: totalQuantity, avgPrice: totalAvg}];
@@ -196,9 +241,9 @@ function computePositionsFromTrades(
   const ratio = totalQuantity / totalBoughtNet;
   const adjustedCash = Math.round(cashNetQty * ratio);
   const adjustedCredit = totalQuantity - adjustedCash;
-  const out: Array<{type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string}> = [];
+  const out: Array<any> = [];
   if (adjustedCash > 0) out.push({type: "cash", quantity: adjustedCash, avgPrice: cashAvg, since: cashFirstDate});
-  if (adjustedCredit > 0) out.push({type: "credit", quantity: adjustedCredit, avgPrice: creditAvg, since: creditFirstDate});
+  if (adjustedCredit > 0) out.push(enrichCredit({type: "credit", quantity: adjustedCredit, avgPrice: creditAvg, since: creditFirstDate}));
   return out;
 }
 
@@ -4621,11 +4666,12 @@ async function reconcileStockPlans(stockName: string): Promise<{
       console.log(`[reconcile] ${stockName} avgPrice 보정 SKIP (trades 누락: ${tradesNetQty}주 / 키움 ${stockTotalQty}주, 키움 평단 ${stock.avgPrice} 유지)`);
     }
     // ✅ Phase 1a: trades 기반 positions 재계산
-    // 키움 kt00005가 현물+신용을 통합 row로 반환할 때 trades의 isCreditTrade 플래그로 분리
+    // ✅ Phase 2: 기존 positions의 만기/이자 메타데이터 보존
     try {
       const stockTotalQty = Number(stock.totalQuantity) || 0;
       const stockTotalAvg = Number(stock.avgPrice) || 0;
       if (stockTotalQty > 0 && stockTotalAvg > 0) {
+        const existingPositions = Array.isArray(stock.positions) ? stock.positions : undefined;
         const computedPositions = computePositionsFromTrades(
           trades.map((t: any) => ({
             type: t.type,
@@ -4635,7 +4681,8 @@ async function reconcileStockPlans(stockName: string): Promise<{
             isCreditTrade: t.isCreditTrade === true,
           })),
           stockTotalQty,
-          stockTotalAvg
+          stockTotalAvg,
+          existingPositions
         );
         reconcileUpdate.positions = computedPositions;
         // isCreditTrade 종합 플래그: 신용 포지션이 1개라도 있으면 true
@@ -7799,6 +7846,145 @@ export const featureFlags = functions
         }
         res.status(405).json({success: false, error: "GET 또는 POST만 지원"});
       } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * ─── Phase 2: 신용거래 만기 알림 + 일일 이자 갱신 ───
+ *
+ * 매일 09:00 KST cron으로 실행:
+ *   1) 모든 신용 포지션의 누적 이자 재계산 (since ~ 오늘)
+ *   2) 만기 D-7 / D-3 / D-1 / D-day / 만기 지난 종목 텔레그램 알림
+ *
+ * featureFlags.creditMaturityAlertEnabled = true 일 때만 알림 발송.
+ * (이자 계산은 항상 실행 - 데이터 정확성 위해)
+ *
+ * 수동 호출: POST /creditMaturityCheck
+ */
+async function runCreditMaturityCheck(): Promise<{
+  processed: number;
+  imminent: Array<{name: string; dueDate: string; dDay: number; creditAmt: number}>;
+  overdue: Array<{name: string; dueDate: string; overdueDays: number; creditAmt: number}>;
+}> {
+  const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+  const today = kst.toISOString().slice(0, 10);
+  console.log(`[creditMaturity] 체크 시작 ${today}`);
+
+  const stocksSnap = await db.collection("stocks").get();
+  let processed = 0;
+  const imminent: Array<{name: string; dueDate: string; dDay: number; creditAmt: number}> = [];
+  const overdue: Array<{name: string; dueDate: string; overdueDays: number; creditAmt: number}> = [];
+
+  for (const doc of stocksSnap.docs) {
+    const data = doc.data();
+    if (!Array.isArray(data.positions)) continue;
+    if ((data.totalQuantity || 0) === 0) continue;
+
+    const creditIdx = data.positions.findIndex((p: any) => p.type === "credit");
+    if (creditIdx === -1) continue;
+
+    const credit = data.positions[creditIdx];
+    if (!credit.since) continue;
+
+    // 누적 이자 재계산
+    const creditAmt = credit.quantity * credit.avgPrice;
+    const interestRate = credit.interestRate || 0.075;
+    const newAccrued = calcAccruedInterest(creditAmt, credit.since, today, interestRate);
+    const dueDate = credit.dueDate || calcCreditDueDate(credit.since);
+
+    // positions 갱신
+    const newPositions = [...data.positions];
+    newPositions[creditIdx] = {
+      ...credit,
+      dueDate: dueDate || credit.dueDate,
+      interestAccrued: newAccrued,
+      interestAsOf: today,
+      interestRate,
+    };
+    await doc.ref.update({positions: newPositions, updatedAt: Date.now()});
+    processed++;
+
+    // 만기 D-day 계산
+    if (dueDate) {
+      const due = new Date(dueDate);
+      const dDay = Math.ceil((due.getTime() - new Date(today).getTime()) / (1000 * 60 * 60 * 24));
+      if (dDay >= 0 && dDay <= 7) {
+        imminent.push({name: data.name, dueDate, dDay, creditAmt});
+      } else if (dDay < 0) {
+        overdue.push({name: data.name, dueDate, overdueDays: -dDay, creditAmt});
+      }
+    }
+  }
+
+  // 텔레그램 알림 (featureFlag ON일 때만)
+  try {
+    const flagsDoc = await db.collection("settings").doc("featureFlags").get();
+    const flags = flagsDoc.exists ? flagsDoc.data() || {} : {};
+    if (flags.creditMaturityAlertEnabled === true && (imminent.length > 0 || overdue.length > 0)) {
+      let msg = `<b>💳 신용거래 만기 알림</b>\n`;
+      msg += `<i>${today}</i>\n\n`;
+
+      if (overdue.length > 0) {
+        msg += `<b>🔴 만기 경과 (반대매매 위험!)</b>\n`;
+        for (const o of overdue) {
+          msg += `📌 ${o.name}: ${o.dueDate} (${o.overdueDays}일 경과) · 잔고 ${o.creditAmt.toLocaleString()}원\n`;
+        }
+        msg += `\n`;
+      }
+
+      if (imminent.length > 0) {
+        msg += `<b>⚠️ 만기 D-7 이내</b>\n`;
+        imminent.sort((a, b) => a.dDay - b.dDay);
+        for (const i of imminent) {
+          const emoji = i.dDay <= 1 ? "🚨" : i.dDay <= 3 ? "⚠️" : "⏰";
+          msg += `${emoji} ${i.name}: ${i.dueDate} (D-${i.dDay}) · 잔고 ${i.creditAmt.toLocaleString()}원\n`;
+        }
+        msg += `\n`;
+      }
+
+      msg += `<i>👉 만기 도래 종목은 매도 또는 만기 연장(현물 전환) 검토하세요.</i>`;
+      await sendTelegram(msg);
+      console.log(`[creditMaturity] 텔레그램 발송: 임박 ${imminent.length}, 경과 ${overdue.length}`);
+    } else {
+      console.log(`[creditMaturity] 알림 스킵 (flag=${flags.creditMaturityAlertEnabled}, imminent=${imminent.length}, overdue=${overdue.length})`);
+    }
+  } catch (e: any) {
+    console.warn(`[creditMaturity] 텔레그램 발송 실패: ${e.message}`);
+  }
+
+  return {processed, imminent, overdue};
+}
+
+/**
+ * 신용거래 만기/이자 일일 cron
+ * 매일 09:00 KST 평일 실행
+ */
+export const creditMaturityCron = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 300})
+  .pubsub.schedule("0 9 * * 1-5")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    const result = await runCreditMaturityCheck();
+    console.log(`[creditMaturityCron] 완료: processed=${result.processed}, imminent=${result.imminent.length}, overdue=${result.overdue.length}`);
+  });
+
+/**
+ * 신용거래 만기 체크 수동 호출 (테스트용)
+ * POST /creditMaturityCheck
+ */
+export const creditMaturityCheck = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 300})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const result = await runCreditMaturityCheck();
+        res.json({success: true, ...result});
+      } catch (error: any) {
+        console.error("[creditMaturityCheck] 오류:", error.message);
         res.status(500).json({success: false, error: error.message});
       }
     });
