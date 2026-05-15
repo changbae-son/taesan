@@ -7180,3 +7180,309 @@ export const fixJaeyoungMerge = functions
       }
     });
   });
+
+/**
+ * ─── 마이그레이션 안전장치: 전체 백업 endpoint ───
+ *
+ * POST /backupCollections
+ * body: { label?: string }  // 예: "pre-credit-phase1"
+ *
+ * stocks + trades 컬렉션 전체를 timestamp 백업 컬렉션으로 복사.
+ * 백업 컬렉션명: `{collection}_backup_{label}_{timestamp}`
+ *
+ * 사용 예:
+ *   curl -X POST .../backupCollections -d '{"label":"pre-credit-phase1"}'
+ *
+ * 복구는 restoreFromBackup endpoint 사용.
+ */
+export const backupCollections = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 540, memory: "512MB"})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {label = "manual"} = req.body || {};
+        const ts = new Date().toISOString().replace(/[:.]/g, "-");
+        const stocksBackupName = `stocks_backup_${label}_${ts}`;
+        const tradesBackupName = `trades_backup_${label}_${ts}`;
+
+        // stocks 백업
+        const stocksSnap = await db.collection("stocks").get();
+        let stocksCount = 0;
+        let batch = db.batch();
+        let batchCount = 0;
+        for (const doc of stocksSnap.docs) {
+          batch.set(db.collection(stocksBackupName).doc(doc.id), {
+            ...doc.data(),
+            _backupAt: Date.now(),
+            _backupLabel: label,
+            _originalDocId: doc.id,
+          });
+          stocksCount++;
+          batchCount++;
+          if (batchCount >= 400) {
+            await batch.commit();
+            batch = db.batch();
+            batchCount = 0;
+          }
+        }
+        if (batchCount > 0) await batch.commit();
+
+        // trades 백업
+        const tradesSnap = await db.collection("trades").get();
+        let tradesCount = 0;
+        batch = db.batch();
+        batchCount = 0;
+        for (const doc of tradesSnap.docs) {
+          batch.set(db.collection(tradesBackupName).doc(doc.id), {
+            ...doc.data(),
+            _backupAt: Date.now(),
+            _backupLabel: label,
+            _originalDocId: doc.id,
+          });
+          tradesCount++;
+          batchCount++;
+          if (batchCount >= 400) {
+            await batch.commit();
+            batch = db.batch();
+            batchCount = 0;
+          }
+        }
+        if (batchCount > 0) await batch.commit();
+
+        // 백업 메타 기록
+        await db.collection("settings").doc(`backup_${ts}`).set({
+          label,
+          timestamp: ts,
+          stocksBackupName,
+          tradesBackupName,
+          stocksCount,
+          tradesCount,
+          createdAt: Date.now(),
+        });
+
+        console.log(`[backupCollections] ${label} 백업 완료: stocks ${stocksCount}건 → ${stocksBackupName}, trades ${tradesCount}건 → ${tradesBackupName}`);
+        res.json({
+          success: true,
+          label,
+          timestamp: ts,
+          stocksBackupName,
+          tradesBackupName,
+          stocksCount,
+          tradesCount,
+        });
+      } catch (error: any) {
+        console.error("[backupCollections] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 백업에서 복원
+ * POST /restoreFromBackup
+ * body: { stocksBackupName, tradesBackupName, deleteCurrent?: boolean }
+ *
+ * deleteCurrent=true이면 현재 stocks/trades 전체 삭제 후 복원 (위험)
+ * 기본은 백업 데이터로 덮어쓰기만 (현재 doc 보존, 백업 docId 기준 upsert)
+ *
+ * 사용 시 매우 신중히 확인.
+ */
+export const restoreFromBackup = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 540, memory: "512MB"})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {stocksBackupName, tradesBackupName, deleteCurrent = false, confirm} = req.body || {};
+        if (!stocksBackupName || !tradesBackupName) {
+          res.status(400).json({success: false, error: "stocksBackupName/tradesBackupName 필수"});
+          return;
+        }
+        if (confirm !== "YES_RESTORE_OVERWRITE") {
+          res.status(400).json({
+            success: false,
+            error: "안전 확인 필요: confirm 필드에 'YES_RESTORE_OVERWRITE' 보내야 실행",
+          });
+          return;
+        }
+
+        // 백업 존재 확인
+        const stocksBackupSnap = await db.collection(stocksBackupName).get();
+        const tradesBackupSnap = await db.collection(tradesBackupName).get();
+        if (stocksBackupSnap.empty && tradesBackupSnap.empty) {
+          res.status(404).json({success: false, error: "백업 컬렉션이 비어있거나 존재하지 않음"});
+          return;
+        }
+
+        // 현재 데이터를 먼저 "복원 직전 백업"으로 저장 (롤백의 롤백 가능)
+        const safetyTs = new Date().toISOString().replace(/[:.]/g, "-");
+        const safetyStocksName = `stocks_pre_restore_${safetyTs}`;
+        const safetyTradesName = `trades_pre_restore_${safetyTs}`;
+
+        const currentStocksSnap = await db.collection("stocks").get();
+        let batch = db.batch();
+        let bc = 0;
+        for (const doc of currentStocksSnap.docs) {
+          batch.set(db.collection(safetyStocksName).doc(doc.id), doc.data());
+          bc++;
+          if (bc >= 400) { await batch.commit(); batch = db.batch(); bc = 0; }
+        }
+        if (bc > 0) await batch.commit();
+
+        const currentTradesSnap = await db.collection("trades").get();
+        batch = db.batch();
+        bc = 0;
+        for (const doc of currentTradesSnap.docs) {
+          batch.set(db.collection(safetyTradesName).doc(doc.id), doc.data());
+          bc++;
+          if (bc >= 400) { await batch.commit(); batch = db.batch(); bc = 0; }
+        }
+        if (bc > 0) await batch.commit();
+
+        // 현재 데이터 삭제 (옵션)
+        let deletedStocks = 0;
+        let deletedTrades = 0;
+        if (deleteCurrent) {
+          batch = db.batch();
+          bc = 0;
+          for (const doc of currentStocksSnap.docs) {
+            batch.delete(doc.ref);
+            deletedStocks++;
+            bc++;
+            if (bc >= 400) { await batch.commit(); batch = db.batch(); bc = 0; }
+          }
+          if (bc > 0) await batch.commit();
+
+          batch = db.batch();
+          bc = 0;
+          for (const doc of currentTradesSnap.docs) {
+            batch.delete(doc.ref);
+            deletedTrades++;
+            bc++;
+            if (bc >= 400) { await batch.commit(); batch = db.batch(); bc = 0; }
+          }
+          if (bc > 0) await batch.commit();
+        }
+
+        // 백업 데이터로 복원
+        let restoredStocks = 0;
+        batch = db.batch();
+        bc = 0;
+        for (const doc of stocksBackupSnap.docs) {
+          const data = doc.data();
+          // 백업 메타 필드 제거
+          delete data._backupAt;
+          delete data._backupLabel;
+          delete data._originalDocId;
+          batch.set(db.collection("stocks").doc(doc.id), data);
+          restoredStocks++;
+          bc++;
+          if (bc >= 400) { await batch.commit(); batch = db.batch(); bc = 0; }
+        }
+        if (bc > 0) await batch.commit();
+
+        let restoredTrades = 0;
+        batch = db.batch();
+        bc = 0;
+        for (const doc of tradesBackupSnap.docs) {
+          const data = doc.data();
+          delete data._backupAt;
+          delete data._backupLabel;
+          delete data._originalDocId;
+          batch.set(db.collection("trades").doc(doc.id), data);
+          restoredTrades++;
+          bc++;
+          if (bc >= 400) { await batch.commit(); batch = db.batch(); bc = 0; }
+        }
+        if (bc > 0) await batch.commit();
+
+        console.log(`[restoreFromBackup] 완료: stocks ${restoredStocks}건, trades ${restoredTrades}건 복원. safety backup: ${safetyStocksName}, ${safetyTradesName}`);
+        res.json({
+          success: true,
+          deletedStocks,
+          deletedTrades,
+          restoredStocks,
+          restoredTrades,
+          safetyBackup: {
+            stocksName: safetyStocksName,
+            tradesName: safetyTradesName,
+          },
+        });
+      } catch (error: any) {
+        console.error("[restoreFromBackup] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 백업 목록 조회
+ * GET /listBackups
+ */
+export const listBackups = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const settingsSnap = await db.collection("settings").get();
+        const backups: any[] = [];
+        settingsSnap.forEach((d) => {
+          if (d.id.startsWith("backup_")) {
+            backups.push({id: d.id, ...d.data()});
+          }
+        });
+        backups.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        res.json({success: true, backups});
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * Feature Flag 관리
+ * GET /featureFlags  → 현재 flag 조회
+ * POST /featureFlags body: { key, value } → flag 설정
+ *
+ * 신용거래 Phase 1 작업 시:
+ *   creditPositionsEnabled: 신용 통합 로직 활성화 (default false)
+ *   creditTabEnabled: 신용종목 탭 활성화 (default false)
+ *   creditMaturityAlertEnabled: 만기 알림 cron 활성화 (default false)
+ *
+ * flag off로 두면 새 코드는 실행되지 않고 기존 동작 그대로 유지됨.
+ * 문제 발생 시 flag만 false로 바꾸면 즉시 옛 동작으로 복귀.
+ */
+export const featureFlags = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        if (req.method === "GET") {
+          const doc = await db.collection("settings").doc("featureFlags").get();
+          const data = doc.exists ? doc.data() : {};
+          res.json({success: true, flags: data});
+          return;
+        }
+        if (req.method === "POST") {
+          const {key, value} = req.body || {};
+          if (!key) {
+            res.status(400).json({success: false, error: "key 필수"});
+            return;
+          }
+          await db.collection("settings").doc("featureFlags").set(
+            {[key]: value, [`${key}_updatedAt`]: Date.now()},
+            {merge: true}
+          );
+          const doc = await db.collection("settings").doc("featureFlags").get();
+          res.json({success: true, flags: doc.data()});
+          return;
+        }
+        res.status(405).json({success: false, error: "GET 또는 POST만 지원"});
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
