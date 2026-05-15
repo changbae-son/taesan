@@ -86,6 +86,122 @@ function cleanKiwoomField(s: string): string {
   return (s || "").trim().replace(/^\*+/, "");
 }
 
+// ─── Phase 1a: trades 기반 positions 재계산 ───
+// 키움 kt00005 잔고 API가 같은 종목의 현물+신용을 통합 row로 반환할 때
+// trades 컬렉션의 isCreditTrade 플래그로 분리 정보 재구성.
+//
+// 입력: stockTrades (해당 종목의 모든 trade), totalQuantity (키움 잔고), totalAvg (키움 평단)
+// 출력: positions 배열 [{type, quantity, avgPrice, since?}]
+//
+// 알고리즘:
+//   1. trades에서 cash/credit 별로 매수/매도 합산
+//   2. 잔여 = 매수 − 매도 (각각)
+//   3. 잔여가 키움 totalQty와 차이나면 키움 값을 우선 (잔여 = 키움 비율로 분배)
+//   4. avgPrice는 각 type의 매수 가중평균
+//   5. since는 가장 오래된 매수일
+function computePositionsFromTrades(
+  stockTrades: Array<{type: string; price: number; quantity: number; date?: string; isCreditTrade?: boolean}>,
+  totalQuantity: number,
+  totalAvg: number
+): Array<{type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string}> {
+  if (totalQuantity <= 0) return [];
+
+  let cashBoughtQty = 0;
+  let cashBoughtAmt = 0;
+  let cashSoldQty = 0;
+  let cashFirstDate: string | undefined;
+  let creditBoughtQty = 0;
+  let creditBoughtAmt = 0;
+  let creditSoldQty = 0;
+  let creditFirstDate: string | undefined;
+
+  for (const t of stockTrades) {
+    const qty = Number(t.quantity) || 0;
+    const price = Number(t.price) || 0;
+    if (qty <= 0) continue;
+    const isCredit = t.isCreditTrade === true;
+    if (t.type === "buy") {
+      if (isCredit) {
+        creditBoughtQty += qty;
+        creditBoughtAmt += qty * price;
+        if (!creditFirstDate || (t.date && t.date < creditFirstDate)) creditFirstDate = t.date;
+      } else {
+        cashBoughtQty += qty;
+        cashBoughtAmt += qty * price;
+        if (!cashFirstDate || (t.date && t.date < cashFirstDate)) cashFirstDate = t.date;
+      }
+    } else if (t.type === "sell") {
+      if (isCredit) creditSoldQty += qty;
+      else cashSoldQty += qty;
+    }
+  }
+
+  const cashNetQty = Math.max(0, cashBoughtQty - cashSoldQty);
+  const creditNetQty = Math.max(0, creditBoughtQty - creditSoldQty);
+  const tradesNetTotal = cashNetQty + creditNetQty;
+
+  const cashAvg = cashBoughtQty > 0 ? Math.round(cashBoughtAmt / cashBoughtQty) : 0;
+  const creditAvg = creditBoughtQty > 0 ? Math.round(creditBoughtAmt / creditBoughtQty) : 0;
+
+  // 잔여가 키움 totalQty와 일치하면 그대로 사용
+  if (tradesNetTotal === totalQuantity) {
+    const out: Array<{type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string}> = [];
+    if (cashNetQty > 0) out.push({type: "cash", quantity: cashNetQty, avgPrice: cashAvg, since: cashFirstDate});
+    if (creditNetQty > 0) out.push({type: "credit", quantity: creditNetQty, avgPrice: creditAvg, since: creditFirstDate});
+    return out;
+  }
+
+  // 불일치: 키움 totalQty와 비율 매칭
+  // case 1) trades가 부분만 있는 경우 (API-GAP): 키움 평단 totalAvg가 cash avg와 비슷 vs credit avg와 비슷 비교해서 추정
+  // case 2) credit이 0인데 키움 totalQty가 더 큰 경우: 누락 매수분이 모두 cash로 추정
+  // case 3) 둘 다 있는데 차이가 작은 경우: 비율 유지하고 절대량만 보정
+
+  if (creditBoughtQty === 0 && cashBoughtQty === 0) {
+    // trades 완전 비어있음 → 단일 cash 포지션으로 추정 (보수적)
+    return [{type: "cash", quantity: totalQuantity, avgPrice: totalAvg}];
+  }
+
+  if (creditBoughtQty === 0) {
+    // credit trade 0건이지만 키움 totalQty > 0
+    // 가능성: ① 모두 현물 (cash trade 누락 있을 수도 있지만 cash로 채움)
+    //        ② 또는 신용분이 trade에 미반영 (사용자가 수동 마킹 필요)
+    // 키움 totalAvg와 cashAvg의 차이로 신용 비중 추정 시도
+    if (cashAvg > 0 && Math.abs(totalAvg - cashAvg) / cashAvg > 0.02) {
+      // 평단가 2% 이상 차이 → 신용분 존재 추정
+      // 가중평균: cashAvg * cashQty + creditAvg_unknown * creditQty = totalAvg * totalQuantity
+      // creditQty + cashQty = totalQuantity
+      // (creditQty = totalQuantity - cashQty 추정)
+      // cashQty는 cashNetQty 그대로, creditQty = totalQuantity - cashNetQty
+      const inferredCreditQty = Math.max(0, totalQuantity - cashNetQty);
+      if (inferredCreditQty > 0 && cashNetQty > 0) {
+        // 가중평균 역산: creditAvg = (totalAvg * totalQuantity - cashAvg * cashNetQty) / inferredCreditQty
+        const inferredCreditAvg = Math.round(
+          (totalAvg * totalQuantity - cashAvg * cashNetQty) / inferredCreditQty
+        );
+        return [
+          {type: "cash", quantity: cashNetQty, avgPrice: cashAvg, since: cashFirstDate},
+          {type: "credit", quantity: inferredCreditQty, avgPrice: inferredCreditAvg > 0 ? inferredCreditAvg : totalAvg},
+        ];
+      }
+    }
+    // 추정 실패 → 모두 cash
+    return [{type: "cash", quantity: totalQuantity, avgPrice: totalAvg, since: cashFirstDate}];
+  }
+
+  // credit trade 존재 + 키움 잔고 불일치: 비율 유지하면서 키움 totalQty에 맞춤
+  const totalBoughtNet = cashNetQty + creditNetQty;
+  if (totalBoughtNet === 0) {
+    return [{type: "cash", quantity: totalQuantity, avgPrice: totalAvg}];
+  }
+  const ratio = totalQuantity / totalBoughtNet;
+  const adjustedCash = Math.round(cashNetQty * ratio);
+  const adjustedCredit = totalQuantity - adjustedCash;
+  const out: Array<{type: "cash" | "credit"; quantity: number; avgPrice: number; since?: string}> = [];
+  if (adjustedCash > 0) out.push({type: "cash", quantity: adjustedCash, avgPrice: cashAvg, since: cashFirstDate});
+  if (adjustedCredit > 0) out.push({type: "credit", quantity: adjustedCredit, avgPrice: creditAvg, since: creditFirstDate});
+  return out;
+}
+
 // ─── 잔고 조회 (kt00005 체결잔고요청) ───
 async function fetchHoldings(
   config: KiwoomConfig,
@@ -4418,9 +4534,48 @@ async function reconcileStockPlans(stockName: string): Promise<{
       updatedAt: Date.now(),
     };
     // buyPlans 기반 평단이 stock.avgPrice와 다를 때만 갱신 (액면병합 후 미갱신 보정)
-    if (stockAvg > 0 && stockAvg !== (Number(stock.avgPrice) || 0)) {
+    // ✅ Phase 1a 수정: trades 누락이 있으면 buyPlans avg 부정확 → 키움 값 우선
+    // 조건: trades net qty (매수-매도) == 키움 totalQuantity 인 경우에만 override
+    const stockTotalQty = Number(stock.totalQuantity) || 0;
+    let tradesNetQty = 0;
+    for (const t of trades) {
+      const q = Number(t.quantity) || 0;
+      if (t.type === "buy") tradesNetQty += q;
+      else if (t.type === "sell") tradesNetQty -= q;
+    }
+    const tradesComplete = tradesNetQty === stockTotalQty;
+    if (stockAvg > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && tradesComplete) {
       reconcileUpdate.avgPrice = stockAvg;
-      console.log(`[reconcile] ${stockName} avgPrice 보정: ${stock.avgPrice} → ${stockAvg}`);
+      console.log(`[reconcile] ${stockName} avgPrice 보정: ${stock.avgPrice} → ${stockAvg} (trades 완전)`);
+    } else if (stockAvg > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && !tradesComplete) {
+      console.log(`[reconcile] ${stockName} avgPrice 보정 SKIP (trades 누락: ${tradesNetQty}주 / 키움 ${stockTotalQty}주, 키움 평단 ${stock.avgPrice} 유지)`);
+    }
+    // ✅ Phase 1a: trades 기반 positions 재계산
+    // 키움 kt00005가 현물+신용을 통합 row로 반환할 때 trades의 isCreditTrade 플래그로 분리
+    try {
+      const stockTotalQty = Number(stock.totalQuantity) || 0;
+      const stockTotalAvg = Number(stock.avgPrice) || 0;
+      if (stockTotalQty > 0 && stockTotalAvg > 0) {
+        const computedPositions = computePositionsFromTrades(
+          trades.map((t: any) => ({
+            type: t.type,
+            price: Number(t.price) || 0,
+            quantity: Number(t.quantity) || 0,
+            date: t.date,
+            isCreditTrade: t.isCreditTrade === true,
+          })),
+          stockTotalQty,
+          stockTotalAvg
+        );
+        reconcileUpdate.positions = computedPositions;
+        // isCreditTrade 종합 플래그: 신용 포지션이 1개라도 있으면 true
+        reconcileUpdate.isCreditTrade = computedPositions.some((p) => p.type === "credit");
+        if (computedPositions.length > 1) {
+          console.log(`[reconcile/positions] ${stockName} 분리: ${computedPositions.map((p) => `${p.type}(${p.quantity}@${p.avgPrice})`).join(" + ")}`);
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[reconcile/positions] ${stockName} 계산 실패: ${e.message}`);
     }
     await stockDoc.ref.update(reconcileUpdate);
     console.log(
