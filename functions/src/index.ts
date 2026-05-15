@@ -305,7 +305,10 @@ async function fetchTradeHistory(
         for (const item of valid) {
           const qty = parseInt(item.cntr_qty || "0");
           if (qty <= 0) continue;
-          // ✅ 신용/융자거래 별표(*) prefix 제거
+          // ✅ 신용/융자거래 감지 (별표 prefix) — clean 전에 raw 확인
+          const rawNm72 = (item.stk_nm || "").trim();
+          const rawCd72 = (item.stk_cd || "").trim();
+          const isCredit72 = rawNm72.startsWith("*") || rawCd72.startsWith("*");
           const code72 = cleanKiwoomField(item.stk_cd);
           const name72 = cleanKiwoomField(item.stk_nm);
           const price72 = parseInt(item.cntr_pric || "0");
@@ -313,8 +316,8 @@ async function fetchTradeHistory(
           const orderNo72 = ordNo72 || `sell_${dt}_${code72}_${price72}_${qty}`;
           console.log(
             `[ka10072-item] ${dt} ${code72}: qty=${qty} price=${price72} ` +
-            `ord_no=${ordNo72 || "(없음)"} cntr_no=${String(item.cntr_no||"").trim()||"(없음)"} ` +
-            `fields=${Object.keys(item).slice(0,10).join(",")}`
+            `credit=${isCredit72} ` +
+            `ord_no=${ordNo72 || "(없음)"} cntr_no=${String(item.cntr_no||"").trim()||"(없음)"}`
           );
           allTrades.push({
             name: name72,
@@ -325,6 +328,7 @@ async function fetchTradeHistory(
             date: dt,
             time: item.cntr_tm || "",
             orderNo: orderNo72,
+            isCreditTrade: isCredit72,
           });
         }
       }
@@ -374,7 +378,10 @@ async function fetchTradeHistory(
               `매도 ${sellItemsFromApi}건 ka10072 담당으로 스킵`
             );
             for (const item of buyItems) {
-              // ✅ 신용/융자거래 별표(*) prefix 제거
+              // ✅ 신용/융자거래 감지 (별표 prefix) — clean 전에 raw 확인
+              const rawNm76 = (item.stk_nm || "").trim();
+              const rawCd76 = (item.stk_cd || "").trim();
+              const isCredit76 = rawNm76.startsWith("*") || rawCd76.startsWith("*");
               const name = cleanKiwoomField(item.stk_nm);
               const qty = parseInt(item.cntr_qty || item.qty || "0");
               if (qty <= 0) continue;
@@ -391,6 +398,7 @@ async function fetchTradeHistory(
                 date: dt,
                 time: item.cntr_tm || item.ord_tm || "",
                 orderNo: ordNo76 || `buy_${dt}_${code76}_${price}_${qty}`,
+                isCreditTrade: isCredit76,
               });
             }
           }
@@ -564,6 +572,10 @@ async function fetchTradeHistory(
         const rawDate = (item.cntr_dt || item.trde_dt || "").trim();
         if (!rawDate) continue;
 
+        // ✅ 신용/융자거래 감지 (별표 prefix) — clean 전에 raw 확인
+        const rawNm15 = (item.stk_nm || "").trim();
+        const rawCd15 = (item.stk_cd || "").trim();
+        const isCredit15 = rawNm15.startsWith("*") || rawCd15.startsWith("*");
         const rawCode = cleanKiwoomField(item.stk_cd);
         const code15 = rawCode.replace(/^[A-Za-z]/, "");
         const name15 = cleanKiwoomField(item.stk_nm);
@@ -576,7 +588,7 @@ async function fetchTradeHistory(
 
         console.log(
           `[kt00015 p${pageNum}] ${rawDate} ${name15}(${code15}) ${type15} ` +
-          `${qty}주 @${price15} trde_no=${ordNo15 || "(없음)"}`
+          `${qty}주 @${price15} credit=${isCredit15} trde_no=${ordNo15 || "(없음)"}`
         );
 
         allTrades.push({
@@ -588,6 +600,7 @@ async function fetchTradeHistory(
           date: rawDate,
           time: item.proc_tm || "",
           orderNo: ordNo15 || `kt15_${rawDate}_${code15}_${price15}_${qty}`,
+          isCreditTrade: isCredit15,
         });
 
         if (isBuy) buyAdded++;
@@ -922,6 +935,8 @@ async function saveKiwoomTradesBackfill(trades: any[]): Promise<number> {
       quantity: t.quantity,
       memo: `키움 백필 (${t.time || ""})`,
       tags,
+      // ✅ Phase 1a: 신용/융자거래 여부 trade에 보존
+      isCreditTrade: t.isCreditTrade === true,
       createdAt: now,
     });
     saved++;
@@ -1514,6 +1529,8 @@ async function syncToFirestore(
         quantity: t.quantity,
         memo: `키움 자동동기화 (${t.time || ""})`,
         tags,
+        // ✅ Phase 1a: 신용/융자거래 여부 trade에 보존
+        isCreditTrade: t.isCreditTrade === true,
         createdAt: now,
       });
       syncedTrades++;

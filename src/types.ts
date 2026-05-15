@@ -194,6 +194,8 @@ export interface Trade {
   quantity: number;
   memo: string;
   tags: string[];
+  // ✅ Phase 1a: 신용/융자거래 여부 (키움 응답의 별표 prefix로 감지)
+  isCreditTrade?: boolean;
   createdAt: number;
 }
 
