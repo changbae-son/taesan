@@ -8057,6 +8057,94 @@ export const creditMaturityCron = functions
   });
 
 /**
+ * 수동 trade 주입 (어드민 — 키움 API에서 안 가져오는 신용 매수 등 보강용)
+ * POST /manualInjectTrade
+ * body: { stockName, code, date, type, price, quantity, memo?, isCreditTrade?, tags? }
+ *
+ * 안전 가드:
+ *   1) 같은 (stockName, date, type, price, quantity) 조합 trade가 이미 있으면 중복 거부
+ *   2) tradeId = "trade_manual_${ts}_${stockName_slug}"
+ *   3) reconcileStockPlans 자동 호출
+ */
+export const manualInjectTrade = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {
+          stockName, code, date, type, price, quantity,
+          memo = "", isCreditTrade = false, tags = [],
+        } = req.body || {};
+        if (!stockName || !date || !type || !price || !quantity) {
+          res.status(400).json({success: false, error: "stockName/date/type/price/quantity 필수"});
+          return;
+        }
+        if (type !== "buy" && type !== "sell") {
+          res.status(400).json({success: false, error: "type은 buy 또는 sell"});
+          return;
+        }
+
+        // 중복 체크
+        const existing = await db.collection("trades")
+          .where("stockName", "==", stockName)
+          .where("date", "==", date)
+          .where("type", "==", type)
+          .get();
+        for (const doc of existing.docs) {
+          const t = doc.data();
+          if (Number(t.price) === Number(price) && Number(t.quantity) === Number(quantity)) {
+            res.status(409).json({
+              success: false,
+              error: "중복 trade 존재",
+              existingId: doc.id,
+              existing: t,
+            });
+            return;
+          }
+        }
+
+        const ts = Date.now();
+        const slug = stockName.replace(/[^a-zA-Z0-9가-힣]/g, "").slice(0, 20);
+        const tradeId = `trade_manual_${ts}_${slug}`;
+
+        const finalTags: string[] = Array.isArray(tags) ? [...tags] : [];
+        if (isCreditTrade && !finalTags.includes("신용")) finalTags.push("신용");
+
+        await db.collection("trades").doc(tradeId).set({
+          date,
+          stockName,
+          code: code || "",
+          type,
+          price: Number(price),
+          quantity: Number(quantity),
+          memo,
+          tags: finalTags,
+          isCreditTrade: isCreditTrade === true,
+          createdAt: ts,
+        });
+
+        // 자동 reconcile
+        let reconcileResult: any = null;
+        try {
+          reconcileResult = await reconcileStockPlans(stockName);
+        } catch (e: any) {
+          reconcileResult = {error: e.message};
+        }
+
+        res.json({
+          success: true,
+          tradeId,
+          reconcile: reconcileResult,
+        });
+      } catch (error: any) {
+        console.error("[manualInjectTrade] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
  * 진단: 특정 날짜의 키움 매수 trade API 원본 응답
  * GET /diagKiwoomTrades?date=20260514&stockName=그래피
  *
