@@ -50,31 +50,51 @@ function createDefaultStock(name: string): Omit<Stock, 'id'> {
 
 export function recalcStock(stock: Stock): Stock {
   const s = { ...stock };
-  const { firstBuyPrice, firstBuyQuantity } = s;
+  const { firstBuyPrice, firstBuyQuantity, rule, bottomPrice } = s;
+  const isRuleB = rule === 'B' && (bottomPrice || 0) > 0;
 
-  // 매수 계획 자동 계산 (실제 체결가 기준 - 태산매매법)
-  // 2차 이후 매수가 = 이전 차수 실제 매수가 × 0.9
+  // 매수 계획 자동 계산 (태산매매법)
+  // 룰A: 2차 이후 매수가 = 이전 차수 실제 매수가 × 0.9 (계단식)
+  // 룰B: 첫 미체결 차수 = bottomPrice × 0.9, 그 이후 = 이전 차수 × 0.9 (계단식)
   if (firstBuyPrice > 0 && firstBuyQuantity > 0) {
-    s.buyPlans = s.buyPlans.map((bp, i) => {
+    // 누적형 재계산: updated[i-1]를 참조하므로 룰 전환 즉시 cascade 반영됨
+    const updated: typeof s.buyPlans = [];
+    for (let i = 0; i < s.buyPlans.length; i++) {
+      const bp = s.buyPlans[i];
       let calcPrice: number;
+
       if (i === 0) {
         calcPrice = firstBuyPrice;
+      } else if (bp.filled) {
+        // 체결된 차수는 그대로 보존 (filledPrice 우선)
+        calcPrice = bp.filledPrice || bp.price;
+      } else if (isRuleB) {
+        // 룰B: 첫 미체결이면 bottomPrice × 0.9, 그 이후는 이전 차수 × 0.9
+        const prev = updated[i - 1];
+        if (prev.filled) {
+          // 첫 미체결 차수
+          calcPrice = Math.round((bottomPrice as number) * 0.9);
+        } else {
+          // 이전도 미체결 → 룰B 계단식
+          calcPrice = Math.round((prev.price || 0) * 0.9);
+        }
       } else {
-        // 이전 차수의 실제 체결가 우선, 없으면 계획가 사용
-        const prevPlan = s.buyPlans[i - 1];
-        const prevActualPrice = prevPlan.filledPrice || prevPlan.price || firstBuyPrice * Math.pow(0.9, i - 1);
+        // 룰A: 이전 차수 (체결가 우선) × 0.9
+        const prev = updated[i - 1];
+        const prevActualPrice = prev.filledPrice || prev.price || firstBuyPrice * Math.pow(0.9, i - 1);
         calcPrice = Math.round(prevActualPrice * 0.9);
       }
 
-      return {
+      updated.push({
         ...bp,
-        price: bp.filled ? bp.price : calcPrice, // 체결된 항목은 가격 보존
+        price: bp.filled ? (bp.filledPrice || bp.price) : calcPrice,
         quantity: firstBuyQuantity,
         filledDate: bp.filledDate,
         filledQuantity: bp.filledQuantity,
         filledPrice: bp.filledPrice,
-      };
-    });
+      });
+    }
+    s.buyPlans = updated;
   }
 
   // 평단가 & 보유수량 계산 (실제 체결 데이터 우선 사용)

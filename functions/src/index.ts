@@ -624,7 +624,8 @@ async function fetchTradeHistory(
 function mapTradesToPlans(
   trades: any[],
   stockName: string,
-  holdings: any
+  holdings: any,
+  ruleConfig?: {rule?: string; bottomPrice?: number}
 ): {buyPlans: any[]; sellPlans: any[]; sellCount: number; firstBuyPrice: number; firstBuyQty: number} {
   // 해당 종목의 체결내역을 날짜+시간 순으로 정렬
   const stockTrades = trades
@@ -698,13 +699,37 @@ function mapTradesToPlans(
         filledPrice: holdings.avgPrice || 0,
       });
     } else {
-      // 미체결 차수: 이전 차수 기준 -10%
-      const prevPrice: number = i > 0 && buyPlans[i - 1]
-        ? (buyPlans[i - 1].price as number)
-        : firstBuyPrice;
+      // 미체결 차수
+      // 룰B (rule==='B' && bottomPrice > 0):
+      //   첫 미체결 = bottomPrice × 0.9, 그 이후는 이전 × 0.9 (계단식)
+      // 룰A (기본):
+      //   이전 차수 × 0.9
+      const isRuleB = ruleConfig?.rule === "B" && (ruleConfig?.bottomPrice || 0) > 0;
+      let nextPrice: number;
+
+      if (isRuleB) {
+        const prev = i > 0 ? buyPlans[i - 1] : null;
+        if (prev && prev.filled) {
+          // 첫 미체결 차수 → bottomPrice × 0.9
+          nextPrice = Math.round((ruleConfig!.bottomPrice as number) * 0.9);
+        } else if (prev) {
+          // 이전도 미체결 → 룰B 계단식
+          nextPrice = Math.round((prev.price as number) * 0.9);
+        } else {
+          // i=0 (1차도 미체결) → bottomPrice × 0.9
+          nextPrice = Math.round((ruleConfig!.bottomPrice as number) * 0.9);
+        }
+      } else {
+        // 룰A
+        const prevPrice: number = i > 0 && buyPlans[i - 1]
+          ? (buyPlans[i - 1].price as number)
+          : firstBuyPrice;
+        nextPrice = prevPrice > 0 ? Math.round(prevPrice * 0.9) : 0;
+      }
+
       buyPlans.push({
         level: i + 1,
-        price: prevPrice > 0 ? Math.round(prevPrice * 0.9) : 0,
+        price: nextPrice,
         quantity: firstBuyQty,
         filled: false,
         filledDate: "",
@@ -875,16 +900,28 @@ async function syncToFirestore(
 
   // 잔고 동기화 (보유 중인 종목만)
   for (const h of activeHoldings) {
-    // 체결내역으로 매수/매도 차수 매핑
-    const mapped = mapTradesToPlans(trades, h.name, h);
-
     // 종목코드 우선 매칭, 없으면 이름 매칭
     const existingDocId = (h.code && existingByCode[h.code]) || existingStocks[h.name];
 
+    // 기존 종목 데이터 미리 로드 (룰/저점 정보 mapTradesToPlans에 전달용)
+    let preExistingData: admin.firestore.DocumentData | null = null;
+    let preExistingDoc: admin.firestore.DocumentSnapshot | null = null;
     if (existingDocId) {
-      // 기존 종목 업데이트
-      const existingDoc = await db.collection("stocks").doc(existingDocId).get();
-      const existingData = existingDoc.data();
+      preExistingDoc = await db.collection("stocks").doc(existingDocId).get();
+      preExistingData = preExistingDoc.exists ? (preExistingDoc.data() || null) : null;
+    }
+
+    // 체결내역으로 매수/매도 차수 매핑 (룰B면 bottomPrice 기반 미체결 차수 계산)
+    const ruleConfig = preExistingData ? {
+      rule: preExistingData.rule,
+      bottomPrice: preExistingData.bottomPrice,
+    } : undefined;
+    const mapped = mapTradesToPlans(trades, h.name, h, ruleConfig);
+
+    if (existingDocId) {
+      // 기존 종목 업데이트 (위에서 미리 로드된 데이터 사용)
+      const existingDoc = preExistingDoc!;
+      const existingData = preExistingData;
 
       // 체결 내역이 있을 때만 buyPlans/sellPlans 업데이트
       // 체결 내역 없이 잔고만 조회한 경우 기존 계획 보존
@@ -2309,11 +2346,36 @@ export const kiwoomAutoSync = functions
           }
           // ─── Rule B 저점 자동 추적 ───
           // rule='B' 종목: 현재가가 저장된 bottomPrice보다 낮으면 갱신
+          // + buyPlans 미체결 차수도 새 bottomPrice × 0.9 계단식으로 재계산
           const stockData = stockFullData[docId];
           if (stockData?.rule === "B") {
             const storedBottom = stockData.bottomPrice || 0;
             if (storedBottom === 0 || h.currentPrice < storedBottom) {
               updateData.bottomPrice = h.currentPrice;
+              // buyPlans 미체결 차수 재계산 (manualOverride 보호)
+              const existingPlans = Array.isArray(stockData.buyPlans) ? stockData.buyPlans : [];
+              if (existingPlans.length > 0) {
+                const newBottom = h.currentPrice;
+                const recalcedPlans: any[] = [];
+                for (let i = 0; i < existingPlans.length; i++) {
+                  const bp = existingPlans[i];
+                  if (bp.manualOverride || bp.filled) {
+                    recalcedPlans.push(bp);
+                    continue;
+                  }
+                  const prev = i > 0 ? recalcedPlans[i - 1] : null;
+                  let newPrice: number;
+                  if (!prev || prev.filled) {
+                    // 첫 미체결 차수 → newBottom × 0.9
+                    newPrice = Math.round(newBottom * 0.9);
+                  } else {
+                    // 이전도 미체결 → 룰B 계단식
+                    newPrice = Math.round((prev.price || 0) * 0.9);
+                  }
+                  recalcedPlans.push({...bp, price: newPrice});
+                }
+                updateData.buyPlans = recalcedPlans;
+              }
             }
           }
           await db.collection("stocks").doc(docId).update(updateData);
@@ -3609,8 +3671,11 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   // ✅ buyPlans 계획가(price) / 계획수량(quantity) 자동 보정 (액면분할/단위오류 대응)
   // - 체결된 차수: filledPrice/filledQuantity 기준으로 price/quantity 갱신
-  // - 미체결 차수: 이전 차수 실제가 × 0.9 (태산매매법 -10% 룰)
+  // - 미체결 차수:
+  //     · 룰A: 이전 차수 실제가 × 0.9 (계단식)
+  //     · 룰B (rule==='B' && bottomPrice > 0): 첫 미체결 = bottomPrice × 0.9, 그 이후 = 이전 × 0.9
   // - manualOverride 슬롯은 손대지 않음
+  const isRuleB = stock.rule === "B" && (Number(stock.bottomPrice) || 0) > 0;
   for (let i = 0; i < buyPlans.length; i++) {
     const bp = buyPlans[i];
     if (bp.manualOverride) continue;
@@ -3623,10 +3688,22 @@ async function reconcileStockPlans(stockName: string): Promise<{
       correctPrice = bp.filledPrice;
       if ((bp.filledQuantity || 0) > 0) correctQty = bp.filledQuantity;
     } else if (i > 0) {
-      // 미체결 차수: 이전 차수 기준 -10%
+      // 미체결 차수
       const prev = buyPlans[i - 1];
-      const prevPrice = prev.filledPrice || prev.price || 0;
-      if (prevPrice > 0) correctPrice = Math.round(prevPrice * 0.9);
+      if (isRuleB) {
+        if (prev.filled) {
+          // 첫 미체결 차수 → bottomPrice × 0.9
+          correctPrice = Math.round((Number(stock.bottomPrice) || 0) * 0.9);
+        } else {
+          // 이전도 미체결 → 룰B 계단식 (직전 차수의 보정 후 price 사용)
+          const prevPrice = prev.price || 0;
+          if (prevPrice > 0) correctPrice = Math.round(prevPrice * 0.9);
+        }
+      } else {
+        // 룰A: 이전 차수 실제가 × 0.9
+        const prevPrice = prev.filledPrice || prev.price || 0;
+        if (prevPrice > 0) correctPrice = Math.round(prevPrice * 0.9);
+      }
       // 미체결 수량은 1차 수량과 동일하게 유지
       const firstBp = buyPlans[0];
       const firstQty = firstBp.filledQuantity || firstBp.quantity || 0;
@@ -3634,7 +3711,7 @@ async function reconcileStockPlans(stockName: string): Promise<{
     }
 
     if (correctPrice !== bp.price || correctQty !== bp.quantity) {
-      console.log(`[reconcile] ${stockName} buy${i + 1}차 계획값 보정: price ${bp.price} → ${correctPrice}, qty ${bp.quantity} → ${correctQty}`);
+      console.log(`[reconcile] ${stockName} buy${i + 1}차 계획값 보정 (rule=${stock.rule || "A"}): price ${bp.price} → ${correctPrice}, qty ${bp.quantity} → ${correctQty}`);
       buyPlans[i] = {...bp, price: correctPrice, quantity: correctQty};
       buyFilledCount++; // 변경 트리거
     }

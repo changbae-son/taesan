@@ -1618,18 +1618,43 @@ export default function StockDetail({
         <span className={styles.ruleLabel}>매매 규칙:</span>
         <button
           className={`${styles.ruleBtn} ${local.rule === 'A' ? styles.ruleActive : ''}`}
-          onClick={() => updateField('rule', 'A')}
+          onClick={() => {
+            // 룰A로 전환: recalcStock이 buyPlans를 이전 차수 × 0.9 계단식으로 자동 재계산
+            updateField('rule', 'A');
+          }}
         >
           룰A (매수가 -10%)
         </button>
         <button
           className={`${styles.ruleBtn} ${local.rule === 'B' ? styles.ruleBActive : ''}`}
-          onClick={() => updateField('rule', 'B')}
+          onClick={() => {
+            // 룰B로 전환: bottomPrice 없으면 currentPrice를 임시 저점으로 자동 설정
+            // recalcStock이 buyPlans 미체결 차수를 bottomPrice × 0.9 계단식으로 재계산
+            const hasBottom = (local.bottomPrice || 0) > 0;
+            if (!hasBottom && (local.currentPrice || 0) > 0) {
+              if (confirm(
+                `룰B 전환 시 저점(bottomPrice)이 필요합니다.\n\n` +
+                `현재 저점이 설정되지 않아 현재가(${local.currentPrice.toLocaleString()}원)를 ` +
+                `임시 저점으로 사용하시겠습니까?\n\n` +
+                `* 이후 더 낮은 가격이 나오면 자동 갱신됩니다.\n` +
+                `* 2/3/4/5차 매수가가 ${Math.round(local.currentPrice * 0.9).toLocaleString()}원부터 계단식으로 재계산됩니다.`
+              )) {
+                update({ rule: 'B', bottomPrice: local.currentPrice });
+              }
+            } else {
+              updateField('rule', 'B');
+            }
+          }}
         >
           룰B (저점 -10%)
         </button>
         {local.sellCount >= 3 && local.rule === 'A' && (
           <span className={styles.chip}>룰B 전환 가능</span>
+        )}
+        {local.rule === 'B' && (local.bottomPrice || 0) === 0 && (
+          <span className={styles.chip} style={{ background: '#ffebee', color: '#c62828' }}>
+            ⚠️ 저점 미설정 — 매수계획 재계산 안 됨
+          </span>
         )}
       </div>
 
