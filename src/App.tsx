@@ -7,12 +7,14 @@ import Dashboard from './components/Dashboard';
 import KiwoomSettings from './components/KiwoomSettings';
 import CompletedStocks from './components/CompletedStocks';
 import Watchlist from './components/Watchlist';
+import CreditStocks from './components/CreditStocks';
 import { useStocks } from './hooks/useStocks';
 import { useTrash } from './hooks/useTrash';
 import { useWatchlist } from './hooks/useWatchlist';
 import { useTrades } from './hooks/useTrades';
 import { useSnapshots } from './hooks/useSnapshots';
 import { useToast } from './hooks/useToast';
+import { useFeatureFlags } from './hooks/useFeatureFlags';
 import type { TabType } from './types';
 import './App.css';
 
@@ -23,10 +25,11 @@ export default function App() {
   const { snapshots, addSnapshot } = useSnapshots();
   const { visible, message, showToast } = useToast();
   const { items: watchItems, addItem: addWatchItem, removeItem: removeWatchItem, updateItem: updateWatchItem } = useWatchlist();
+  const featureFlags = useFeatureFlags();
 
   const getTabFromHash = (): TabType => {
     const hash = window.location.hash.replace('#', '') || 'list';
-    const validTabs: TabType[] = ['list', 'detail', 'journal', 'dashboard', 'completed', 'watchlist', 'kiwoom'];
+    const validTabs: TabType[] = ['list', 'detail', 'credit', 'journal', 'dashboard', 'completed', 'watchlist', 'kiwoom'];
     return validTabs.includes(hash as TabType) ? (hash as TabType) : 'list';
   };
 
@@ -131,8 +134,12 @@ export default function App() {
 
       <div className="main">
         <div className="tabs">
-          {(['list', 'detail', 'journal', 'dashboard', 'completed', 'watchlist', 'kiwoom'] as TabType[]).map(
-            (tab) => (
+          {(() => {
+            // 탭 순서: list → detail → (credit, flag ON일 때만) → journal → dashboard → completed → watchlist → kiwoom
+            const baseTabs: TabType[] = ['list', 'detail'];
+            const middleTabs: TabType[] = featureFlags.creditTabEnabled ? ['credit'] : [];
+            const restTabs: TabType[] = ['journal', 'dashboard', 'completed', 'watchlist', 'kiwoom'];
+            return [...baseTabs, ...middleTabs, ...restTabs].map((tab) => (
               <button
                 key={tab}
                 className={`tab ${activeTab === tab ? 'tab-active' : ''}`}
@@ -140,14 +147,15 @@ export default function App() {
               >
                 {tab === 'list' && '전체 리스트'}
                 {tab === 'detail' && '종목 상세'}
+                {tab === 'credit' && '💳 신용종목'}
                 {tab === 'journal' && '매매 일지'}
                 {tab === 'dashboard' && '통계 대시보드'}
                 {tab === 'completed' && '매매완료'}
                 {tab === 'watchlist' && '관심종목'}
                 {tab === 'kiwoom' && '키움 연동'}
               </button>
-            )
-          )}
+            ));
+          })()}
         </div>
 
         <div className="content">
@@ -205,6 +213,23 @@ export default function App() {
                 </div>
               </div>
             ))}
+          {activeTab === 'credit' && featureFlags.creditTabEnabled && (
+            <CreditStocks
+              stocks={stocks}
+              onSelectStock={(id) => {
+                handleSelectStock(id);
+                changeTab('detail');
+              }}
+            />
+          )}
+          {activeTab === 'credit' && !featureFlags.creditTabEnabled && (
+            <div style={{ padding: 40, textAlign: 'center', color: '#888' }}>
+              <p>신용종목 탭이 비활성화 상태입니다.</p>
+              <p style={{ fontSize: 12, marginTop: 8 }}>
+                featureFlags.creditTabEnabled = true로 토글하여 활성화하세요.
+              </p>
+            </div>
+          )}
           {activeTab === 'journal' && (
             <TradeJournal
               trades={trades}

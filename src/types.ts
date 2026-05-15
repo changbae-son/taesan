@@ -223,4 +223,4 @@ export interface WatchItem {
   updatedAt: number;
 }
 
-export type TabType = 'list' | 'detail' | 'journal' | 'dashboard' | 'kiwoom' | 'completed' | 'watchlist';
+export type TabType = 'list' | 'detail' | 'credit' | 'journal' | 'dashboard' | 'kiwoom' | 'completed' | 'watchlist';
