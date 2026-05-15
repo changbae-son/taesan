@@ -1173,12 +1173,20 @@ async function syncToFirestore(
       const stockBuys = stockTrades.filter((t) => t.type === "buy");
       console.log(`[동기화] ${h.name}: hasTrades=${hasTrades}, 매수=${stockBuys.length}건, 매도=${stockTrades.length - stockBuys.length}건, mapped.firstBuyQty=${mapped.firstBuyQty}, holdings.qty=${h.quantity}`);
 
+      // ✅ Phase 1a 수정 (회귀 방지):
+      // 키움 kt00005가 단일 row만 반환할 때 기존 multi-position 보존
+      const existingPositions = Array.isArray(existingData?.positions) ? existingData!.positions : [];
+      const newPositionsRaw = Array.isArray((h as any).positions) ? (h as any).positions : [];
+      const shouldKeepExisting = existingPositions.length > 1 && newPositionsRaw.length <= 1;
+      const positionsToSave = shouldKeepExisting ? existingPositions : newPositionsRaw;
+      const isCreditFromPositions = positionsToSave.some((p: any) => p?.type === "credit");
+
       const updateData: any = {
         currentPrice: h.currentPrice,
-        // ✅ 신용/융자거래 여부 매 sync 시 갱신 (현재 holdings 응답 기준)
-        isCreditTrade: h.isCreditTrade === true,
+        // ✅ 신용/융자거래 여부 (기존 multi-position 보존 시 그 값 우선)
+        isCreditTrade: shouldKeepExisting ? isCreditFromPositions : h.isCreditTrade === true,
         // ✅ Phase 1a: 현물/신용 포지션 세부
-        positions: Array.isArray((h as any).positions) ? (h as any).positions : [],
+        positions: positionsToSave,
         updatedAt: now,
       };
       // code 필드 마이그레이션 (기존 데이터에 code 없으면 주입)
@@ -2651,14 +2659,25 @@ export const kiwoomAutoSync = functions
         // 종목코드 우선, 이름은 폴백
         const docId = (h.code && codeToId[h.code]) || nameToId[h.name];
         if (docId) {
+          // ✅ Phase 1a 수정 (회귀 방지):
+          // 키움 kt00005가 단일 row만 반환할 때 기존의 multi-position을 덮어쓰지 않도록 처리.
+          // → 기존 positions가 multi이면(현물+신용 분리됨) 그대로 보존
+          //   reconcile이 trades 기반으로 정확한 분리 유지
+          const existingData = stockFullData[docId];
+          const existingPositions = Array.isArray(existingData?.positions) ? existingData!.positions : [];
+          const newPositions = Array.isArray(h.positions) ? h.positions : [];
+          const shouldKeepExisting = existingPositions.length > 1 && newPositions.length <= 1;
+          const positionsToSave = shouldKeepExisting ? existingPositions : newPositions;
+          const isCreditFromPositions = positionsToSave.some((p: any) => p?.type === "credit");
+
           const updateData: any = {
             currentPrice: h.currentPrice,
             avgPrice: h.avgPrice,
             totalQuantity: h.quantity,
-            // ✅ 신용/융자거래 여부
-            isCreditTrade: h.isCreditTrade === true,
+            // ✅ 신용/융자거래 여부 (기존 multi-position 보존 시 그 값 우선)
+            isCreditTrade: shouldKeepExisting ? isCreditFromPositions : h.isCreditTrade === true,
             // ✅ Phase 1a: 현물/신용 포지션 세부 (fetchHoldings에서 통합)
-            positions: Array.isArray(h.positions) ? h.positions : [],
+            positions: positionsToSave,
             updatedAt: Date.now(),
           };
           // code 필드 마이그레이션
@@ -2712,6 +2731,72 @@ export const kiwoomAutoSync = functions
       });
 
       console.log(`자동동기화 완료: ${updated}종목 현재가 업데이트 (${hour}:${min})`);
+
+      // ✅ Phase 1a: 신용 관련 종목 positions 자동 분리
+      // kt00005가 단일 row만 줄 때 trades 기반으로 현물/신용 분리 유지
+      try {
+        const stocksToReconcile = new Set<string>();
+        const allTradesSnap = await db.collection("trades").get();
+        const tradesByStock: Record<string, any[]> = {};
+        allTradesSnap.forEach((doc) => {
+          const t = doc.data();
+          if (!t.stockName) return;
+          if (!tradesByStock[t.stockName]) tradesByStock[t.stockName] = [];
+          tradesByStock[t.stockName].push(t);
+        });
+
+        for (const doc of stockDocs.docs) {
+          const data = doc.data();
+          const name = data.name;
+          if (!name || (data.totalQuantity || 0) === 0) continue;
+          // ① 신용 플래그 있는 종목
+          if (data.isCreditTrade === true) {
+            stocksToReconcile.add(name);
+            continue;
+          }
+          // ② 기존 positions에 credit 있는 종목 (회귀 방지)
+          if (Array.isArray(data.positions) && data.positions.some((p: any) => p?.type === "credit")) {
+            stocksToReconcile.add(name);
+            continue;
+          }
+          // ③ trades에 신용 매수
+          const stockTrades = tradesByStock[name] || [];
+          if (stockTrades.some((t) => t.isCreditTrade === true)) {
+            stocksToReconcile.add(name);
+            continue;
+          }
+          // ④ 키움 평단 vs trades 평단 차이 > 2% (잠재 신용)
+          const stockAvg = Number(data.avgPrice) || 0;
+          let tradeBoughtAmt = 0;
+          let tradeBoughtQty = 0;
+          for (const t of stockTrades) {
+            if (t.type !== "buy") continue;
+            const q = Number(t.quantity) || 0;
+            const p = Number(t.price) || 0;
+            tradeBoughtAmt += q * p;
+            tradeBoughtQty += q;
+          }
+          if (tradeBoughtQty > 0 && stockAvg > 0) {
+            const tradesAvg = tradeBoughtAmt / tradeBoughtQty;
+            if (Math.abs(tradesAvg - stockAvg) / stockAvg > 0.02) {
+              stocksToReconcile.add(name);
+            }
+          }
+        }
+
+        if (stocksToReconcile.size > 0) {
+          console.log(`[autoSync→reconcile] ${stocksToReconcile.size}개 신용 관련 종목 positions 재계산`);
+          for (const name of stocksToReconcile) {
+            try {
+              await reconcileStockPlans(name);
+            } catch (e: any) {
+              console.warn(`[autoSync→reconcile] ${name} 실패: ${e.message}`);
+            }
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[autoSync→reconcile] positions 자동 분리 실패: ${e.message}`);
+      }
 
       // 실시간 알림 체크: 23%+ 수익 / MA선 근접 (5분마다)
       const stockDataList = stockDocs.docs.map((d) => ({id: d.id, data: d.data()}));
