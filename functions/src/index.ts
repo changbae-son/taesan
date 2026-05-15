@@ -236,6 +236,18 @@ function computePositionsFromTrades(
   // credit trade 존재 + 키움 잔고 불일치: 비율 매칭
   const totalBoughtNet = cashNetQty + creditNetQty;
   if (totalBoughtNet === 0) {
+    // ✅ Phase 1a 보강: trades 매수=매도라 net=0인데 키움 잔고가 있는 경우
+    // 매수 trades의 신용 비율로 잔여를 추정
+    const totalBought = cashBoughtQty + creditBoughtQty;
+    if (totalBought > 0) {
+      const creditBuyRatio = creditBoughtQty / totalBought;
+      const creditQty = Math.round(totalQuantity * creditBuyRatio);
+      const cashQty = totalQuantity - creditQty;
+      const out: Array<any> = [];
+      if (cashQty > 0) out.push({type: "cash", quantity: cashQty, avgPrice: cashAvg || totalAvg, since: cashFirstDate});
+      if (creditQty > 0) out.push(enrichCredit({type: "credit", quantity: creditQty, avgPrice: creditAvg || totalAvg, since: creditFirstDate}));
+      if (out.length > 0) return out;
+    }
     return [{type: "cash", quantity: totalQuantity, avgPrice: totalAvg}];
   }
   const ratio = totalQuantity / totalBoughtNet;
@@ -902,12 +914,31 @@ async function fetchTradeHistory(
       const tReal = !isFallbackKey(t.orderNo);
       const exReal = !isFallbackKey(existing.orderNo);
       if (tReal && !exReal) {
-        // 실 ord_no 로 교체
+        // 실 ord_no 로 교체 (단, existing의 신용 정보가 있고 t에 없으면 보존)
+        const merged = {...t};
+        if (existing.isCreditTrade && !merged.isCreditTrade) merged.isCreditTrade = true;
+        if (existing.loanDt && !merged.loanDt) merged.loanDt = existing.loanDt;
+        if (existing.rawCreditType && !merged.rawCreditType) merged.rawCreditType = existing.rawCreditType;
         console.log(
           `[dedup] 교체: ${t.code} ${t.date} ${t.type} ${t.price}@${t.quantity} ` +
-          `fallback(${existing.orderNo}) → real(${t.orderNo})`
+          `fallback(${existing.orderNo}) → real(${t.orderNo}) credit=${merged.isCreditTrade}`
         );
-        dedupMap.set(key, t);
+        dedupMap.set(key, merged);
+      } else if (tReal && exReal) {
+        // ✅ Phase 1a 보강: 둘 다 real ord_no — kt00015/kt00007이 같은 체결을 다른 ord_no로 반환
+        // 기존 trade 유지 + kt00007의 신용 정보 (isCreditTrade/loanDt/rawCreditType) 병합
+        if ((t.isCreditTrade === true && !existing.isCreditTrade) ||
+            (t.loanDt && !existing.loanDt) ||
+            (t.rawCreditType && !existing.rawCreditType)) {
+          if (t.isCreditTrade === true) existing.isCreditTrade = true;
+          if (t.loanDt) existing.loanDt = t.loanDt;
+          if (t.rawCreditType) existing.rawCreditType = t.rawCreditType;
+          console.log(
+            `[dedup-merge] 신용정보 병합: ${t.code} ${t.date} ${t.type} ` +
+            `${t.price}@${t.quantity} existing(${existing.orderNo}) + credit from ord=${t.orderNo} ` +
+            `→ credit=${existing.isCreditTrade}, loan_dt=${existing.loanDt || "(없음)"}`
+          );
+        }
       } else if (!tReal && !exReal) {
         // 둘 다 fallback → 부분체결 가능성 → suffix 붙여 별도 보존
         let suffix = 2;
@@ -919,6 +950,9 @@ async function fetchTradeHistory(
           `[dedup-partial] 부분체결 가능성: ${t.code} ${t.date} ${t.type} ` +
           `${t.price}@${t.quantity} → 별도 저장 (suffix _${suffix})`
         );
+      } else if (!tReal && exReal) {
+        // existing이 real이고 t가 fallback → existing 유지, t 폐기
+        // (existing이 이미 위 또는 별도 path로 신용 정보 처리됨)
       }
     }
   }
@@ -1728,6 +1762,22 @@ async function syncToFirestore(
     const docRef = db.collection("trades").doc(tradeId);
     const doc = await docRef.get();
 
+    // ✅ Phase 1a 보강: 기존 trade가 있어도 isCreditTrade/loanDt가 누락된 경우 부분 업데이트
+    // (kt00007이 신용 정보를 새로 가져왔을 때, 기존 trade에 적용)
+    if (doc.exists) {
+      const existing = doc.data() || {};
+      const needsCreditUpdate = (t.isCreditTrade === true && existing.isCreditTrade !== true);
+      const needsLoanDtUpdate = (t.loanDt && !existing.loanDt);
+      if (needsCreditUpdate || needsLoanDtUpdate) {
+        const patch: any = {};
+        if (needsCreditUpdate) patch.isCreditTrade = true;
+        if (needsLoanDtUpdate) patch.loanDt = t.loanDt;
+        if (t.rawCreditType && !existing.rawCreditType) patch.rawCreditType = t.rawCreditType;
+        await docRef.update(patch);
+        console.log(`[기존 trade 신용정보 보강] ${tradeId} ← ${JSON.stringify(patch)}`);
+      }
+    }
+
     if (!doc.exists) {
       const formattedDate = t.date
         ? `${t.date.slice(0, 4)}-${t.date.slice(4, 6)}-${t.date.slice(6, 8)}`
@@ -1744,7 +1794,20 @@ async function syncToFirestore(
         .limit(1)
         .get();
       if (!dupQuery.empty) {
-        const existingId = dupQuery.docs[0].id;
+        const existingDoc = dupQuery.docs[0];
+        const existingId = existingDoc.id;
+        const existingData = existingDoc.data() || {};
+        // ✅ Phase 1a 보강: 기존 trade의 isCreditTrade/loanDt 누락 시 보강
+        const needsCreditUpdate = (t.isCreditTrade === true && existingData.isCreditTrade !== true);
+        const needsLoanDtUpdate = (t.loanDt && !existingData.loanDt);
+        if (needsCreditUpdate || needsLoanDtUpdate) {
+          const patch: any = {};
+          if (needsCreditUpdate) patch.isCreditTrade = true;
+          if (needsLoanDtUpdate) patch.loanDt = t.loanDt;
+          if (t.rawCreditType && !existingData.rawCreditType) patch.rawCreditType = t.rawCreditType;
+          await existingDoc.ref.update(patch);
+          console.log(`[기존 trade 신용정보 보강] ${existingId} ← ${JSON.stringify(patch)} (cross-dedup 매칭)`);
+        }
         console.log(`[중복방지] ${t.name} ${formattedDate} ${t.type} ${t.price}x${t.quantity} 이미 있음 (${existingId}) - 신규 ${tradeId} 스킵`);
         continue;
       }
