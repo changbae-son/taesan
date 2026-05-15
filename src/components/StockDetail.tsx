@@ -48,6 +48,39 @@ export default function StockDetail({
   const creditRatio = creditPosition && local.totalQuantity > 0
     ? Math.round((creditPosition.quantity / local.totalQuantity) * 100)
     : 0;
+  // Phase 2.5: 신용 포지션 수동 편집 (since/dueDate/이자율)
+  const [editCreditMeta, setEditCreditMeta] = useState<{since: string; dueDate: string; rate: number} | null>(null);
+  const openCreditEdit = () => {
+    if (!creditPosition) return;
+    setEditCreditMeta({
+      since: creditPosition.since || new Date().toISOString().slice(0, 10),
+      dueDate: creditPosition.dueDate || '',
+      rate: typeof creditPosition.interestRate === 'number' ? creditPosition.interestRate * 100 : 7.5,
+    });
+  };
+  const saveCreditEdit = () => {
+    if (!editCreditMeta || !creditPosition || !Array.isArray(local.positions)) return;
+    const newPositions = local.positions.map((p) => {
+      if (p.type !== 'credit') return p;
+      // since 변경 시 dueDate 자동 재계산 (사용자가 직접 입력한 경우 그대로)
+      let newDueDate = editCreditMeta.dueDate;
+      if (!newDueDate && editCreditMeta.since) {
+        const d = new Date(editCreditMeta.since);
+        if (!isNaN(d.getTime())) {
+          d.setDate(d.getDate() + 90);
+          newDueDate = d.toISOString().slice(0, 10);
+        }
+      }
+      return {
+        ...p,
+        since: editCreditMeta.since,
+        dueDate: newDueDate || undefined,
+        interestRate: editCreditMeta.rate / 100,
+      };
+    });
+    update({ positions: newPositions }, true);
+    setEditCreditMeta(null);
+  };
 
   // ── 수익매도 수동 편집 ──
   const [sellEditIdx, setSellEditIdx] = useState<number | null>(null);
@@ -1682,7 +1715,55 @@ export default function StockDetail({
             {!isCreditMixed && (
               <span className={styles.creditMixedBadge}>[신용 100%]</span>
             )}
+            <button
+              className={styles.creditEditBtn}
+              onClick={() => editCreditMeta ? setEditCreditMeta(null) : openCreditEdit()}
+              title="매수일/만기일/이자율 수동 편집"
+            >
+              {editCreditMeta ? '취소' : '✏️ 편집'}
+            </button>
           </div>
+
+          {/* 편집 모드 */}
+          {editCreditMeta && (
+            <div className={styles.creditEditPanel}>
+              <div className={styles.creditEditRow}>
+                <label>매수일</label>
+                <input
+                  type="date"
+                  value={editCreditMeta.since}
+                  onChange={(e) => setEditCreditMeta({...editCreditMeta, since: e.target.value, dueDate: ''})}
+                />
+                <span className={styles.creditEditHint}>(변경 시 만기일 자동 +90일)</span>
+              </div>
+              <div className={styles.creditEditRow}>
+                <label>만기일</label>
+                <input
+                  type="date"
+                  value={editCreditMeta.dueDate}
+                  onChange={(e) => setEditCreditMeta({...editCreditMeta, dueDate: e.target.value})}
+                  placeholder="(자동 계산)"
+                />
+                <span className={styles.creditEditHint}>(비우면 매수일 +90일 자동)</span>
+              </div>
+              <div className={styles.creditEditRow}>
+                <label>연 이자율(%)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  max="20"
+                  value={editCreditMeta.rate}
+                  onChange={(e) => setEditCreditMeta({...editCreditMeta, rate: parseFloat(e.target.value) || 0})}
+                />
+                <span className={styles.creditEditHint}>(키움 신용 ≈ 7.5~9%)</span>
+              </div>
+              <div className={styles.creditEditActions}>
+                <button className={styles.creditSaveBtn} onClick={saveCreditEdit}>💾 저장</button>
+                <button className={styles.creditCancelBtn} onClick={() => setEditCreditMeta(null)}>취소</button>
+              </div>
+            </div>
+          )}
           <div className={styles.creditGrid}>
             <div className={styles.creditItem}>
               <span className={styles.creditLabel}>신용 수량</span>

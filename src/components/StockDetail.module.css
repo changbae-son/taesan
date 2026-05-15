@@ -792,6 +792,86 @@
   font-style: italic;
 }
 
+.creditEditBtn {
+  margin-left: auto;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #fff;
+  color: #e65100;
+  border: 1px solid #ffb74d;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.creditEditBtn:hover {
+  background: #fff3e0;
+}
+
+.creditEditPanel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fffaf3;
+  border: 1px dashed #ffb74d;
+  border-radius: 6px;
+}
+
+.creditEditRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.creditEditRow label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #555;
+  min-width: 70px;
+}
+
+.creditEditRow input {
+  flex: 0 0 140px;
+  padding: 5px 8px;
+  border: 1px solid #ffb74d;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.creditEditHint {
+  font-size: 10px;
+  color: #888;
+  font-style: italic;
+}
+
+.creditEditActions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.creditSaveBtn {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  background: #ff9800;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.creditCancelBtn {
+  padding: 5px 12px;
+  font-size: 12px;
+  background: #eee;
+  color: #666;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
 .editConfirmBtn {
   padding: 8px 20px;
   background: #1565c0;
