@@ -4583,6 +4583,8 @@ export const inspectStockTrades = functions
             ? {
               totalQuantity: stock.totalQuantity,
               avgPrice: stock.avgPrice,
+              isCreditTrade: stock.isCreditTrade,
+              positions: stock.positions,
               buyPlansCount: (stock.buyPlans || []).length,
               sellPlansCount: (stock.sellPlans || []).length,
               buyPlans: stock.buyPlans,
