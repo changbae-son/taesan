@@ -1666,6 +1666,76 @@ async function syncToFirestore(
     trades: syncedTrades,
   });
 
+  // ✅ Phase 1a step 7: 동기화 후 positions 자동 분리
+  // 다음 조건 중 하나라도 해당하면 reconcileStockPlans 호출:
+  //   ① isCreditTrade=true 마킹된 종목
+  //   ② trades에 isCreditTrade=true 거래 있는 종목
+  //   ③ 키움 평단가 vs trades 평단가 2% 이상 차이 (= 잠재 신용 포지션)
+  try {
+    const stocksToReconcile = new Set<string>();
+    const stocksSnap = await db.collection("stocks").get();
+
+    // 종목별 trades 조회 (성능: 한 번에 받아서 메모리 매핑)
+    const allTradesSnap = await db.collection("trades").get();
+    const tradesByStock: Record<string, any[]> = {};
+    allTradesSnap.forEach((doc) => {
+      const t = doc.data();
+      if (!t.stockName) return;
+      if (!tradesByStock[t.stockName]) tradesByStock[t.stockName] = [];
+      tradesByStock[t.stockName].push(t);
+    });
+
+    stocksSnap.forEach((doc) => {
+      const data = doc.data();
+      const name = data.name;
+      if (!name || (data.totalQuantity || 0) === 0) return;
+
+      // 조건 ①: 종목에 신용 플래그
+      if (data.isCreditTrade === true) {
+        stocksToReconcile.add(name);
+        return;
+      }
+      const stockTrades = tradesByStock[name] || [];
+      // 조건 ②: trades에 신용 매수
+      if (stockTrades.some((t) => t.isCreditTrade === true)) {
+        stocksToReconcile.add(name);
+        return;
+      }
+      // 조건 ③: 키움 평단 vs trades 평단 차이 (잠재 신용)
+      const stockAvg = Number(data.avgPrice) || 0;
+      let tradeBoughtAmt = 0;
+      let tradeBoughtQty = 0;
+      for (const t of stockTrades) {
+        if (t.type !== "buy") continue;
+        const q = Number(t.quantity) || 0;
+        const p = Number(t.price) || 0;
+        tradeBoughtAmt += q * p;
+        tradeBoughtQty += q;
+      }
+      if (tradeBoughtQty > 0 && stockAvg > 0) {
+        const tradesAvg = tradeBoughtAmt / tradeBoughtQty;
+        const diff = Math.abs(tradesAvg - stockAvg) / stockAvg;
+        if (diff > 0.02) {
+          // 2% 이상 차이 = 추가 매수분(신용 추정) 존재 가능성
+          stocksToReconcile.add(name);
+        }
+      }
+    });
+
+    if (stocksToReconcile.size > 0) {
+      console.log(`[kiwoomSync→reconcile] ${stocksToReconcile.size}개 종목 positions 재계산: ${Array.from(stocksToReconcile).join(", ")}`);
+      for (const name of stocksToReconcile) {
+        try {
+          await reconcileStockPlans(name);
+        } catch (e: any) {
+          console.warn(`[kiwoomSync→reconcile] ${name} 실패: ${e.message}`);
+        }
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[kiwoomSync→reconcile] positions 자동 분리 실패: ${e.message}`);
+  }
+
   return {syncedStocks, syncedTrades, soldOutStocks};
 }
 
