@@ -782,6 +782,107 @@ async function fetchTradeHistory(
     console.log(`[kt00015] 조회 실패:`, err);
   }
 
+  // ─── kt00007 (계좌별주문체결내역상세) — 신용/융자 매수 보강 ───
+  // kt00015는 위탁(현금)만 반환 → 신용 매수가 누락됨
+  // kt00007은 crd_tp 필드로 신용 거래 식별 가능 + loan_dt(대출일)도 함께
+  // io_tp_nm 예: "현금매수 K", "융자매수 K", "현금매도 K", "융자매도 K"
+  for (const dt of dates) {
+    try {
+      let creditBuyAdded = 0;
+      let creditSellAdded = 0;
+      let cashAdded = 0;
+      const r7 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "authorization": `Bearer ${token}`,
+          "api-id": "kt00007",
+        },
+        body: JSON.stringify({
+          ord_dt: dt,
+          qry_tp: "1", // 전체 (체결+미체결)
+          stk_bond_tp: "0",
+          sell_tp: "0",
+          stk_cd: "",
+          fr_ord_no: "",
+          dmst_stex_tp: "%",
+        }),
+      });
+      const d7 = await r7.json() as any;
+      if (d7.return_code && d7.return_code !== 0 && d7.return_code !== "0") {
+        console.log(`[kt00007 ${dt}] return_code=${d7.return_code} msg=${d7.return_msg}`);
+        continue;
+      }
+      let items7: any[] = [];
+      for (const k of Object.keys(d7)) {
+        if (Array.isArray(d7[k]) && d7[k].length > 0) {
+          items7 = d7[k];
+          break;
+        }
+      }
+      for (const item of items7) {
+        const qty = parseInt(item.cntr_qty || "0");
+        if (qty <= 0) continue;
+        const ioTp = (item.io_tp_nm || "").trim();
+        const crdTp = (item.crd_tp || "").trim();
+        // 매수/매도 판정
+        let type7: "buy" | "sell" | null = null;
+        if (ioTp.includes("매수")) type7 = "buy";
+        else if (ioTp.includes("매도")) type7 = "sell";
+        if (!type7) continue;
+        // 신용 거래 판정 (crd_tp 또는 io_tp_nm에 "융자"/"신용")
+        const isCredit = ioTp.includes("융자") || ioTp.includes("신용") ||
+          crdTp.includes("융자") || crdTp.includes("신용");
+
+        // ✅ kt00015가 이미 위탁 매수+매도를 처리하므로 여기서는 신용만 추가
+        // (중복 방지)
+        if (!isCredit) {
+          // kt00007의 현금 거래는 kt00015와 중복 → 스킵
+          continue;
+        }
+
+        const rawNm7 = (item.stk_nm || "").trim();
+        const rawCd7 = (item.stk_cd || "").trim();
+        const name7 = cleanKiwoomField(item.stk_nm);
+        const code7 = cleanKiwoomField(item.stk_cd).replace(/^[A-Za-z]/, "");
+        if (!name7 || !code7) continue;
+        const price7 = parseInt(item.cntr_uv || "0");
+        const ordNo7 = String(item.ord_no || "").trim();
+        const cntrNo7 = String(item.cntr_no || "").trim();
+        const orderNo = ordNo7 || cntrNo7 || `kt07_${dt}_${code7}_${price7}_${qty}`;
+        const loanDt = String(item.loan_dt || "").trim();
+
+        console.log(
+          `[kt00007 ${dt}] ${name7}(${code7}) ${type7} ${qty}주 @${price7} ` +
+          `credit=${isCredit} (${crdTp || ioTp}) loan_dt=${loanDt || "(없음)"} ord=${orderNo}`
+        );
+
+        allTrades.push({
+          name: name7,
+          code: code7,
+          type: type7,
+          price: price7,
+          quantity: qty,
+          date: dt,
+          time: item.ord_tm || item.cnfm_tm || "",
+          orderNo,
+          isCreditTrade: isCredit,
+          loanDt: loanDt || undefined,
+          rawCreditType: crdTp || ioTp,
+          // raw raw_nm/cd 보존 (디버깅용)
+          _rawNm: rawNm7,
+          _rawCd: rawCd7,
+        });
+        if (type7 === "buy") creditBuyAdded++;
+        else creditSellAdded++;
+      }
+      console.log(`[kt00007] ${dt} 완료: 신용 매수 ${creditBuyAdded}건 / 신용 매도 ${creditSellAdded}건 / 현금 ${cashAdded}건 (위탁은 kt00015 담당)`);
+      await new Promise((r) => setTimeout(r, 200));
+    } catch (err) {
+      console.log(`[kt00007] ${dt} 조회 실패:`, err);
+    }
+  }
+
   // ─── In-memory dedup: 두 API 가 같은 체결을 중복 반환할 경우 방어 ───
   // 기준: (code, date, type, price, qty) 가 모두 같으면 동일 체결 후보
   // 규칙:
@@ -1098,6 +1199,9 @@ async function saveKiwoomTradesBackfill(trades: any[]): Promise<number> {
       tags,
       // ✅ Phase 1a: 신용/융자거래 여부 trade에 보존
       isCreditTrade: t.isCreditTrade === true,
+      // ✅ Phase 2 보강: 키움 신용 대출일 (kt00007 loan_dt) 보존 — 정확한 만기 계산용
+      ...(t.loanDt ? {loanDt: t.loanDt} : {}),
+      ...(t.rawCreditType ? {rawCreditType: t.rawCreditType} : {}),
       createdAt: now,
     });
     saved++;
@@ -1700,6 +1804,9 @@ async function syncToFirestore(
         tags,
         // ✅ Phase 1a: 신용/융자거래 여부 trade에 보존
         isCreditTrade: t.isCreditTrade === true,
+        // ✅ Phase 2 보강: 키움 신용 대출일 (kt00007 loan_dt) 보존
+        ...(t.loanDt ? {loanDt: t.loanDt} : {}),
+        ...(t.rawCreditType ? {rawCreditType: t.rawCreditType} : {}),
         createdAt: now,
       });
       syncedTrades++;
@@ -8194,7 +8301,9 @@ export const diagKiwoomTrades = functions
           const filtered = filterName
             ? items.filter((x: any) => {
                 const nm = (x.stk_nm || "").trim();
-                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName);
+                const cd = (x.stk_cd || "").trim();
+                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName) ||
+                  cd.includes(filterName) || cd.replace(/^\*+/, "").replace(/^A/, "").includes(filterName);
               })
             : items;
           results.ka10076 = {
@@ -8233,7 +8342,9 @@ export const diagKiwoomTrades = functions
           const filtered = filterName
             ? items.filter((x: any) => {
                 const nm = (x.stk_nm || "").trim();
-                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName);
+                const cd = (x.stk_cd || "").trim();
+                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName) ||
+                  cd.includes(filterName) || cd.replace(/^\*+/, "").replace(/^A/, "").includes(filterName);
               })
             : items;
           results.kt00015 = {
@@ -8277,7 +8388,9 @@ export const diagKiwoomTrades = functions
           const filtered = filterName
             ? items.filter((x: any) => {
                 const nm = (x.stk_nm || "").trim();
-                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName);
+                const cd = (x.stk_cd || "").trim();
+                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName) ||
+                  cd.includes(filterName) || cd.replace(/^\*+/, "").replace(/^A/, "").includes(filterName);
               })
             : items;
           results.kt00009 = {
@@ -8322,7 +8435,9 @@ export const diagKiwoomTrades = functions
           const filtered = filterName
             ? items.filter((x: any) => {
                 const nm = (x.stk_nm || "").trim();
-                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName);
+                const cd = (x.stk_cd || "").trim();
+                return nm.includes(filterName) || nm.replace(/^\*+/, "").includes(filterName) ||
+                  cd.includes(filterName) || cd.replace(/^\*+/, "").replace(/^A/, "").includes(filterName);
               })
             : items;
           results.kt00007 = {
