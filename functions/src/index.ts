@@ -8657,11 +8657,13 @@ async function screenerFetchBars(
 
     for (const c of chart) {
       const close = num(c.cur_prc || c.cls_prc);
-      const open = num(c.opn_prc || c.strt_prc);
-      const low = num(c.low_prc || c.lwst_prc);
-      const tv = num(c.trde_prica); // 거래대금 (억원 추정)
+      const open = num(c.opn_prc || c.open_pric || c.strt_prc);
+      const low = num(c.low_prc || c.lwst_prc || c.low_pric);
+      // ka10081의 trde_prica는 백만원 단위 → 억원으로 환산 (÷100)
+      const tvRaw = num(c.trde_prica);
+      const tvEok = Math.round(tvRaw / 100);
       const date = String(c.stk_bsop_date || c.dt || "");
-      if (close > 0 && date) bars.push({date, open, close, low, tradeValueEok: tv});
+      if (close > 0 && date) bars.push({date, open, close, low, tradeValueEok: tvEok});
     }
 
     if (contYn !== "Y" || !nextKey) break;
@@ -8893,6 +8895,81 @@ export const sScreenerDailyS2Now = functions
     });
   });
 
+// 특정 종목 일봉 raw 데이터 조회 (단위 검증용)
+export const screenerRawBars = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 30,
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const code = (req.query.code as string || "").trim();
+        if (!/^\d{6}$/.test(code)) {
+          res.status(400).json({error: "code (6자리) 필요"});
+          return;
+        }
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const r = await fetch(`${config.baseUrl}/api/dostk/chart`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "authorization": `Bearer ${token}`,
+            "api-id": "ka10081",
+          },
+          body: JSON.stringify({
+            stk_cd: code,
+            base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+            upd_stkpc_tp: "1",
+            qry_tp: "0",
+          }),
+        });
+        const data: any = await r.json();
+        const chart: any[] = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
+        res.json({
+          code,
+          dataKeys: Object.keys(data),
+          firstFiveBars: chart.slice(0, 5),
+          allFieldsOfFirstBar: chart[0] ? Object.keys(chart[0]) : [],
+        });
+      } catch (e: any) {
+        res.status(500).json({error: e.message});
+      }
+    });
+  });
+
+// 단일 종목 S2 정보 조회 (디버그)
+export const screenerStockInfo = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const code = (req.query.code as string || "").trim();
+        if (!/^\d{6}$/.test(code)) {
+          res.status(400).json({error: "code (6자리) 필요"});
+          return;
+        }
+        const [sDoc, s2Doc, alertDoc] = await Promise.all([
+          db.collection("sScreener").doc("sEligible").collection("stocks").doc(code).get(),
+          db.collection("sScreener").doc("s2Eligible").collection("stocks").doc(code).get(),
+          db.collection("sScreener").doc("alerts").collection("items").doc(code).get(),
+        ]);
+        res.json({
+          code,
+          sEligible: sDoc.exists ? sDoc.data() : null,
+          s2Eligible: s2Doc.exists ? s2Doc.data() : null,
+          alert: alertDoc.exists ? alertDoc.data() : null,
+        });
+      } catch (e: any) {
+        res.status(500).json({error: e.message});
+      }
+    });
+  });
+
 // 진단: ka10099를 다양한 URI에서 시도
 export const screenerDiag = functions
   .region("asia-northeast3")
@@ -9000,6 +9077,16 @@ export const sScreenerCheck = functions
 
       const eligible = Array.from(map.values());
       console.log(`[S체크] eligible ${eligible.length}종목 체크 중`);
+
+      // 이전 alerts 초기화 (stale 데이터 제거)
+      const prevAlerts = await db.collection("sScreener").doc("alerts").collection("items").get();
+      if (!prevAlerts.empty) {
+        for (let i = 0; i < prevAlerts.docs.length; i += 400) {
+          const b = db.batch();
+          prevAlerts.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
+          await b.commit();
+        }
+      }
 
       const now = Date.now();
       const alertItems: any[] = [];
@@ -9121,6 +9208,17 @@ export const sScreenerCheckNow = functions
           } else map.set(d.id, {...d.data()});
         });
         const eligible = Array.from(map.values());
+
+        // 이전 alerts 초기화
+        const prevAlerts = await db.collection("sScreener").doc("alerts").collection("items").get();
+        if (!prevAlerts.empty) {
+          for (let i = 0; i < prevAlerts.docs.length; i += 400) {
+            const b = db.batch();
+            prevAlerts.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
+            await b.commit();
+          }
+        }
+
         const now = Date.now();
         const alertItems: any[] = [];
         for (const stk of eligible) {
