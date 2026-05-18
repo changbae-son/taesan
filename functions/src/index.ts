@@ -13,7 +13,7 @@ import cors = require("cors");
 
 // JB Trader Web 브릿지 — 별도 파일로 격리 (태산 로직과 무관)
 // 같은 VPC connector / 정적 IP를 공유. 키와 Auth 토큰만 분리.
-export {jbQuote, jbScreenerResults} from "./jb-bridge";
+export {jbQuote, jbScreenerResults, jbScreenerEligible} from "./jb-bridge";
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -8935,6 +8935,23 @@ export const screenerRawBars = functions
           firstFiveBars: chart.slice(0, 5),
           allFieldsOfFirstBar: chart[0] ? Object.keys(chart[0]) : [],
         });
+      } catch (e: any) {
+        res.status(500).json({error: e.message});
+      }
+    });
+  });
+
+// S2 eligible 종목 전체 리스트 (디버그)
+export const screenerS2List = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const snap = await db.collection("sScreener").doc("s2Eligible").collection("stocks").get();
+        const items = snap.docs.map((d) => d.data());
+        items.sort((a: any, b: any) => (b.bigVolTradeValueEok || 0) - (a.bigVolTradeValueEok || 0));
+        res.json({count: snap.size, items});
       } catch (e: any) {
         res.status(500).json({error: e.message});
       }

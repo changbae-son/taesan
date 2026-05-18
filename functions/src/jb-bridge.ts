@@ -193,3 +193,48 @@ export const jbScreenerResults = functions
       }
     });
   });
+
+/**
+ * jb-s-web → S/S2 eligible 종목 전체 리스트
+ * GET /jbScreenerEligible?type=S|S2
+ * headers: Authorization: Bearer <jb-s-web Firebase ID Token>
+ */
+export const jbScreenerEligible = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "GET") {
+          res.status(405).json({error: "GET only"});
+          return;
+        }
+        await verifyJbAuth(req);
+
+        const type = String(req.query.type || "").toUpperCase();
+        if (type !== "S" && type !== "S2") {
+          res.status(400).json({error: "type=S or S2 required"});
+          return;
+        }
+
+        const db = admin.firestore();
+        const collName = type === "S" ? "sEligible" : "s2Eligible";
+        const snap = await db.collection("sScreener").doc(collName).collection("stocks").get();
+        const items = snap.docs.map((d) => d.data());
+
+        // S는 시총 큰 순, S2는 거래대금 큰 순으로 정렬
+        if (type === "S") {
+          items.sort((a: any, b: any) => (b.marketCapEok || 0) - (a.marketCapEok || 0));
+        } else {
+          items.sort((a: any, b: any) => (b.bigVolTradeValueEok || 0) - (a.bigVolTradeValueEok || 0));
+        }
+
+        res.json({type, count: items.length, items});
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status =
+          msg.includes("authorization") || msg.includes("token") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
