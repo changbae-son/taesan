@@ -3972,35 +3972,44 @@ export const stockListUpdate = functions
           const config = await getKiwoomConfig();
           const token = await getAccessToken(config);
 
-          // ka10099: 주식종목조회 (KOSPI + KOSDAQ)
+          // ka10099: 주식종목정보 (KOSPI + KOSDAQ)
+          // URI: /api/dostk/stkinfo, body: {mrkt_tp: "0"=KOSPI, "10"=KOSDAQ}
+          // 응답: { list: [{code, name, marketCode, marketName, state, ...}] }
           for (const marketCode of ["0", "10"]) {
-            const apiRes = await fetch(`${config.baseUrl}/api/dostk/sise`, {
+            const apiRes = await fetch(`${config.baseUrl}/api/dostk/stkinfo`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json; charset=utf-8",
                 "authorization": `Bearer ${token}`,
                 "api-id": "ka10099",
               },
-              body: JSON.stringify({mkt_gb: marketCode}),
+              body: JSON.stringify({mrkt_tp: marketCode}),
             });
             const data = await apiRes.json() as any;
-            console.log(`[종목리스트] ka10099 mkt_gb=${marketCode}: keys=${Object.keys(data).join(",")}, sample=${JSON.stringify(data).substring(0, 300)}`);
+            const items: any[] = Array.isArray(data.list) ? data.list : [];
+            console.log(`[종목리스트] ka10099 mrkt_tp=${marketCode}: ${items.length}개 수신`);
 
-            // 응답 구조에서 종목 리스트 추출
-            const listKey = Object.keys(data).find((k) => Array.isArray(data[k]));
-            if (listKey) {
-              const items = data[listKey];
-              const marketName = marketCode === "0" ? "KOSPI" : "KOSDAQ";
-              for (const item of items) {
-                const code = item.stk_cd || item.shcode || item.종목코드 || "";
-                const name = item.stk_nm || item.hname || item.종목명 || "";
-                if (code && name) {
-                  await db.collection("stockCodes").doc(`stock_${code}`).set({
-                    name, code, market: marketName,
+            const marketName = marketCode === "0" ? "KOSPI" : "KOSDAQ";
+            // Firestore 배치 저장 (400개씩)
+            for (let i = 0; i < items.length; i += 400) {
+              const batch = db.batch();
+              for (const item of items.slice(i, i + 400)) {
+                const code = item.code || item.stk_cd || "";
+                const name = item.name || item.stk_nm || "";
+                if (code && /^\d{6}$/.test(code) && name) {
+                  // ETF/ETN/우선주 등 제외: kind=A 일반종목만 (kind 값이 있으면)
+                  // state에 "투자유의" 등 포함되어도 일단 저장 (필터링은 별도)
+                  batch.set(db.collection("stockCodes").doc(`stock_${code}`), {
+                    name: name.trim(),
+                    code,
+                    market: marketName,
+                    state: item.state || "",
+                    upSizeName: item.upSizeName || "",
                   });
                   totalCount++;
                 }
               }
+              await batch.commit();
             }
             await new Promise((r) => setTimeout(r, 300));
           }
@@ -8683,49 +8692,38 @@ async function sendTelegramSScreener(text: string): Promise<void> {
   }
 }
 
-// ── S기법 일일 업데이트 (평일 08:45 KST) ─────────────────────────────────────
-export const sScreenerDailyS = functions
-  .region("asia-northeast3")
-  .runWith({
-    vpcConnector: "kiwoom-connector",
-    vpcConnectorEgressSettings: "ALL_TRAFFIC",
-    timeoutSeconds: 540,
-    memory: "512MB",
-  })
-  .pubsub.schedule("45 8 * * 1-5")
-  .timeZone("Asia/Seoul")
-  .onRun(async () => {
-    console.log("[S스크리너] S기법 일일 업데이트 시작");
-    try {
-      const config = await getKiwoomConfig();
-      const token = await getAccessToken(config);
+// S기법 일일 업데이트 로직 (스케줄/수동 공용)
+async function runSScreenerDailyS(): Promise<{processed: number; eligible: number}> {
+  console.log("[S스크리너] S기법 일일 업데이트 시작");
+  const config = await getKiwoomConfig();
+  const token = await getAccessToken(config);
 
-      const snap = await db.collection("stockCodes").where("market", "==", "KOSPI").get();
-      const stocks = snap.docs.map((d) => ({
-        code: d.data().code as string,
-        name: d.data().name as string,
-      }));
-      console.log(`[S스크리너] KOSPI ${stocks.length}종목 스캔`);
+  const snap = await db.collection("stockCodes").where("market", "==", "KOSPI").get();
+  const stocks = snap.docs.map((d) => ({
+    code: d.data().code as string,
+    name: d.data().name as string,
+  }));
+  console.log(`[S스크리너] KOSPI ${stocks.length}종목 스캔`);
 
-      // 기존 S eligible 초기화
-      const prev = await db.collection("sScreener").doc("sEligible").collection("stocks").get();
-      if (!prev.empty) {
-        for (let i = 0; i < prev.docs.length; i += 400) {
-          const batch = db.batch();
-          prev.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
-          await batch.commit();
-        }
-      }
+  // 기존 S eligible 초기화
+  const prev = await db.collection("sScreener").doc("sEligible").collection("stocks").get();
+  if (!prev.empty) {
+    for (let i = 0; i < prev.docs.length; i += 400) {
+      const batch = db.batch();
+      prev.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  }
 
-      let eligibleCount = 0;
-      let processed = 0;
-      for (const stk of stocks) {
-        processed++;
-        await new Promise((r) => setTimeout(r, 180));
+  let eligibleCount = 0;
+  let processed = 0;
+  for (const stk of stocks) {
+    processed++;
+    await new Promise((r) => setTimeout(r, 180));
 
-        const info = await screenerFetchStockInfo(config, token, stk.code);
-        if (!info) continue;
-        if (info.marketCapEok < S_MARKET_CAP_MIN_EOK) continue;
+    const info = await screenerFetchStockInfo(config, token, stk.code);
+    if (!info) continue;
+    if (info.marketCapEok < S_MARKET_CAP_MIN_EOK) continue;
 
         await new Promise((r) => setTimeout(r, 180));
         const ma = await fetchAndCalcMA(config, token, stk.code);
@@ -8742,15 +8740,122 @@ export const sScreenerDailyS = functions
           types: ["S"],
           updatedAt: Date.now(),
         });
-        eligibleCount++;
-      }
-      console.log(`[S스크리너] S기법 완료: ${processed}처리, ${eligibleCount}종목 eligible`);
+    eligibleCount++;
+  }
+  console.log(`[S스크리너] S기법 완료: ${processed}처리, ${eligibleCount}종목 eligible`);
+  return {processed, eligible: eligibleCount};
+}
+
+export const sScreenerDailyS = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 540,
+    memory: "512MB",
+  })
+  .pubsub.schedule("45 8 * * 1-5")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    try {
+      await runSScreenerDailyS();
     } catch (e: any) {
       console.error("[S스크리너] S기법 오류:", e.message);
     }
   });
 
-// ── S2기법 일일 업데이트 (평일 08:52 KST) ────────────────────────────────────
+// 수동 트리거 (테스트/즉시 실행용)
+export const sScreenerDailySNow = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 540,
+    memory: "512MB",
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const r = await runSScreenerDailyS();
+        res.json({success: true, ...r});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
+// S2기법 일일 업데이트 로직 (스케줄/수동 공용)
+async function runSScreenerDailyS2(): Promise<{processed: number; eligible: number}> {
+  console.log("[S스크리너] S2기법 일일 업데이트 시작");
+  const config = await getKiwoomConfig();
+  const token = await getAccessToken(config);
+
+  // S2: KOSPI 대형주/중형주만 (소형주는 거래대금 5천억 사실상 거의 없고, 9분 타임아웃 회피)
+  const snap = await db.collection("stockCodes").where("market", "==", "KOSPI").get();
+  const stocks = snap.docs
+    .map((d) => ({
+      code: d.data().code as string,
+      name: d.data().name as string,
+      upSizeName: (d.data().upSizeName as string) || "",
+    }))
+    .filter((s) => s.upSizeName === "대형주" || s.upSizeName === "중형주");
+  console.log(`[S스크리너] S2 KOSPI 대형/중형 ${stocks.length}종목 스캔`);
+
+  const prev = await db.collection("sScreener").doc("s2Eligible").collection("stocks").get();
+  if (!prev.empty) {
+    for (let i = 0; i < prev.docs.length; i += 400) {
+      const batch = db.batch();
+      prev.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+  }
+
+  let eligibleCount = 0;
+  let processed = 0;
+  for (const stk of stocks) {
+    processed++;
+    await new Promise((r) => setTimeout(r, 180));
+
+    const bars = await screenerFetchBars(config, token, stk.code, S2_LOOKBACK_DAYS);
+    if (bars.length < 20) continue;
+
+    const ma20 = Math.round(bars.slice(0, 20).reduce((s, b) => s + b.close, 0) / 20);
+    if (ma20 <= 0) continue;
+    const lowerBand = Math.round(ma20 * 0.8);
+
+    // 가장 최근 5천억+ 양봉 찾기 (bars는 최신→오래된 순, idx 작을수록 최근)
+    let bigVolIdx = -1;
+    for (let i = 0; i < bars.length; i++) {
+      const b = bars[i];
+      if (b.tradeValueEok >= S2_VOLUME_MIN_EOK && b.close > b.open) {
+        bigVolIdx = i;
+        break;
+      }
+    }
+    if (bigVolIdx < 0) continue;
+
+    // bigVol일 이후(더 최신) = bars[0..bigVolIdx-1]
+    // 이 구간에서 close가 하단선 ±2% 안에 한번이라도 닿았다면 이미 접근한 것 → 제외
+    const after = bars.slice(0, bigVolIdx);
+    const alreadyTouched = after.some((b) => b.low <= lowerBand * 1.02);
+    if (alreadyTouched) continue;
+
+    await db.collection("sScreener").doc("s2Eligible").collection("stocks").doc(stk.code).set({
+      code: stk.code,
+      name: stk.name,
+      ma20,
+      lowerBand,
+      bigVolDay: bars[bigVolIdx].date,
+      bigVolTradeValueEok: bars[bigVolIdx].tradeValueEok,
+      types: ["S2"],
+      updatedAt: Date.now(),
+    });
+    eligibleCount++;
+  }
+  console.log(`[S스크리너] S2기법 완료: ${processed}처리, ${eligibleCount}종목 eligible`);
+  return {processed, eligible: eligibleCount};
+}
+
 export const sScreenerDailyS2 = functions
   .region("asia-northeast3")
   .runWith({
@@ -8762,74 +8867,91 @@ export const sScreenerDailyS2 = functions
   .pubsub.schedule("52 8 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
-    console.log("[S스크리너] S2기법 일일 업데이트 시작");
     try {
-      const config = await getKiwoomConfig();
-      const token = await getAccessToken(config);
-
-      // S2는 시총 무관. KOSPI만 우선 (KOSDAQ에서 5천억+ 양봉은 드묾)
-      const snap = await db.collection("stockCodes").where("market", "==", "KOSPI").get();
-      const stocks = snap.docs.map((d) => ({
-        code: d.data().code as string,
-        name: d.data().name as string,
-      }));
-      console.log(`[S스크리너] S2 KOSPI ${stocks.length}종목 스캔`);
-
-      const prev = await db.collection("sScreener").doc("s2Eligible").collection("stocks").get();
-      if (!prev.empty) {
-        for (let i = 0; i < prev.docs.length; i += 400) {
-          const batch = db.batch();
-          prev.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
-          await batch.commit();
-        }
-      }
-
-      let eligibleCount = 0;
-      let processed = 0;
-      for (const stk of stocks) {
-        processed++;
-        await new Promise((r) => setTimeout(r, 180));
-
-        const bars = await screenerFetchBars(config, token, stk.code, S2_LOOKBACK_DAYS);
-        if (bars.length < 20) continue;
-
-        const ma20 = Math.round(bars.slice(0, 20).reduce((s, b) => s + b.close, 0) / 20);
-        if (ma20 <= 0) continue;
-        const lowerBand = Math.round(ma20 * 0.8);
-
-        // 가장 최근 5천억+ 양봉 찾기 (bars는 최신→오래된 순, idx 작을수록 최근)
-        let bigVolIdx = -1;
-        for (let i = 0; i < bars.length; i++) {
-          const b = bars[i];
-          if (b.tradeValueEok >= S2_VOLUME_MIN_EOK && b.close > b.open) {
-            bigVolIdx = i;
-            break;
-          }
-        }
-        if (bigVolIdx < 0) continue;
-
-        // bigVol일 이후(더 최신) = bars[0..bigVolIdx-1]
-        // 이 구간에서 close가 하단선 ±2% 안에 한번이라도 닿았다면 이미 접근한 것 → 제외
-        const after = bars.slice(0, bigVolIdx);
-        const alreadyTouched = after.some((b) => b.low <= lowerBand * 1.02);
-        if (alreadyTouched) continue;
-
-        await db.collection("sScreener").doc("s2Eligible").collection("stocks").doc(stk.code).set({
-          code: stk.code,
-          name: stk.name,
-          ma20,
-          lowerBand,
-          bigVolDay: bars[bigVolIdx].date,
-          bigVolTradeValueEok: bars[bigVolIdx].tradeValueEok,
-          types: ["S2"],
-          updatedAt: Date.now(),
-        });
-        eligibleCount++;
-      }
-      console.log(`[S스크리너] S2기법 완료: ${processed}처리, ${eligibleCount}종목 eligible`);
+      await runSScreenerDailyS2();
     } catch (e: any) {
       console.error("[S스크리너] S2기법 오류:", e.message);
     }
+  });
+
+export const sScreenerDailyS2Now = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 540,
+    memory: "512MB",
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const r = await runSScreenerDailyS2();
+        res.json({success: true, ...r});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
+// 진단: ka10099를 다양한 URI에서 시도
+export const screenerDiag = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 60,
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+
+        const uris = [
+          "/api/dostk/stkinfo",
+          "/api/dostk/mrkcond",
+          "/api/dostk/sect",
+          "/api/dostk/elw",
+          "/api/dostk/etf",
+          "/api/dostk/rkinfo",
+          "/api/dostk/slb",
+          "/api/dostk/master",
+        ];
+
+        const tryUri = async (uri: string) => {
+          const r = await fetch(`${config.baseUrl}${uri}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "authorization": `Bearer ${token}`,
+              "api-id": "ka10099",
+            },
+            body: JSON.stringify({mrkt_tp: "0"}),
+          });
+          const data = await r.json() as any;
+          return {
+            uri,
+            status: r.status,
+            keys: Object.keys(data),
+            sample: JSON.stringify(data).substring(0, 400),
+          };
+        };
+
+        const results = [];
+        for (const u of uris) {
+          results.push(await tryUri(u));
+          await new Promise((r) => setTimeout(r, 200));
+        }
+
+        const codesSnap = await db.collection("stockCodes").get();
+        res.json({
+          attempts: results,
+          stockCodesTotal: codesSnap.size,
+        });
+      } catch (e: any) {
+        res.status(500).json({error: e.message});
+      }
+    });
   });
 
 // ── 장중 10분 체크 (평일 09:00~15:30 KST) ───────────────────────────────────
