@@ -219,8 +219,24 @@ export const jbScreenerEligible = functions
 
         const db = admin.firestore();
         const collName = type === "S" ? "sEligible" : "s2Eligible";
-        const snap = await db.collection("sScreener").doc(collName).collection("stocks").get();
-        const items = snap.docs.map((d) => d.data());
+        const [eligibleSnap, statusSnap] = await Promise.all([
+          db.collection("sScreener").doc(collName).collection("stocks").get(),
+          db.collection("sScreener").doc("checkStatus").collection("items").get(),
+        ]);
+
+        const statusMap = new Map<string, any>();
+        statusSnap.docs.forEach((d) => statusMap.set(d.id, d.data()));
+
+        const items = eligibleSnap.docs.map((d) => {
+          const base = d.data() as any;
+          const status = statusMap.get(d.id);
+          if (status) {
+            base.currentPrice = status.currentPrice;
+            base.gap = status.gap;
+            base.checkedAt = status.checkedAt;
+          }
+          return base;
+        });
 
         // S는 시총 큰 순, S2는 거래대금 큰 순으로 정렬
         if (type === "S") {
@@ -229,7 +245,18 @@ export const jbScreenerEligible = functions
           items.sort((a: any, b: any) => (b.bigVolTradeValueEok || 0) - (a.bigVolTradeValueEok || 0));
         }
 
-        res.json({type, count: items.length, items});
+        // S2 lookback 기준일 (오늘 - 150일 = 약 5달 전)
+        const S2_LOOKBACK_DAYS = 150;
+        const lookbackStartMs = Date.now() - S2_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+        const lookbackStart = new Date(lookbackStartMs).toISOString().slice(0, 10);
+
+        res.json({
+          type,
+          count: items.length,
+          items,
+          lookbackDays: type === "S2" ? S2_LOOKBACK_DAYS : null,
+          lookbackStart: type === "S2" ? lookbackStart : null,
+        });
       } catch (e: any) {
         const msg = e?.message || String(e);
         const status =

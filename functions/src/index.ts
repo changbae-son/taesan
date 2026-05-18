@@ -8573,7 +8573,7 @@ export const creditMaturityCheck = functions
 
 const S_MARKET_CAP_MIN_EOK = 13000;   // 1조 3천억 = 13,000억원
 const S2_VOLUME_MIN_EOK = 5000;       // 5,000억원
-const S2_LOOKBACK_DAYS = 60;          // 2달치 거래일
+const S2_LOOKBACK_DAYS = 150;         // 5달치 거래일
 const SCREENER_ALERT_THRESHOLD_PCT = 2.0;
 
 // ka10001 단건 시세/시총 조회 (스크리너 전용)
@@ -8627,7 +8627,7 @@ async function screenerFetchBars(
   let contYn = "N";
   let nextKey = "";
 
-  for (let page = 0; page < 4 && bars.length < days; page++) {
+  for (let page = 0; page < 6 && bars.length < days; page++) {
     const headers: Record<string, string> = {
       "Content-Type": "application/json; charset=utf-8",
       "authorization": `Bearer ${token}`,
@@ -9095,18 +9095,23 @@ export const sScreenerCheck = functions
       const eligible = Array.from(map.values());
       console.log(`[S체크] eligible ${eligible.length}종목 체크 중`);
 
-      // 이전 alerts 초기화 (stale 데이터 제거)
-      const prevAlerts = await db.collection("sScreener").doc("alerts").collection("items").get();
-      if (!prevAlerts.empty) {
-        for (let i = 0; i < prevAlerts.docs.length; i += 400) {
+      // 이전 alerts/checkStatus 초기화 (stale 데이터 제거)
+      const [prevAlerts, prevStatus] = await Promise.all([
+        db.collection("sScreener").doc("alerts").collection("items").get(),
+        db.collection("sScreener").doc("checkStatus").collection("items").get(),
+      ]);
+      for (const snap of [prevAlerts, prevStatus]) {
+        if (snap.empty) continue;
+        for (let i = 0; i < snap.docs.length; i += 400) {
           const b = db.batch();
-          prevAlerts.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
+          snap.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
           await b.commit();
         }
       }
 
       const now = Date.now();
       const alertItems: any[] = [];
+      const checkStatusItems: any[] = [];
       let alertCount = 0;
 
       for (const stk of eligible) {
@@ -9117,6 +9122,14 @@ export const sScreenerCheck = functions
 
         const cur = info.currentPrice;
         const gap = ((cur - stk.lowerBand) / stk.lowerBand) * 100;
+
+        // 전체 eligible 종목 현재가/gap 캐시 (모달용)
+        checkStatusItems.push({
+          code: stk.code,
+          currentPrice: cur,
+          gap: parseFloat(gap.toFixed(2)),
+          checkedAt: now,
+        });
 
         let level: "below" | "1pct" | "2pct" | "none";
         if (gap <= 0) level = "below";
@@ -9184,6 +9197,17 @@ export const sScreenerCheck = functions
         }
       }
 
+      // 전체 eligible 종목 현재가/gap 캐시 (모달용)
+      if (checkStatusItems.length > 0) {
+        for (let i = 0; i < checkStatusItems.length; i += 400) {
+          const b = db.batch();
+          checkStatusItems.slice(i, i + 400).forEach((a) => {
+            b.set(db.collection("sScreener").doc("checkStatus").collection("items").doc(a.code), a);
+          });
+          await b.commit();
+        }
+      }
+
       await db.collection("sScreener").doc("lastCheck").set({
         checkedAt: now,
         eligibleCount: eligible.length,
@@ -9226,23 +9250,34 @@ export const sScreenerCheckNow = functions
         });
         const eligible = Array.from(map.values());
 
-        // 이전 alerts 초기화
-        const prevAlerts = await db.collection("sScreener").doc("alerts").collection("items").get();
-        if (!prevAlerts.empty) {
-          for (let i = 0; i < prevAlerts.docs.length; i += 400) {
+        // 이전 alerts/checkStatus 초기화
+        const [prevAlerts, prevStatus] = await Promise.all([
+          db.collection("sScreener").doc("alerts").collection("items").get(),
+          db.collection("sScreener").doc("checkStatus").collection("items").get(),
+        ]);
+        for (const snap of [prevAlerts, prevStatus]) {
+          if (snap.empty) continue;
+          for (let i = 0; i < snap.docs.length; i += 400) {
             const b = db.batch();
-            prevAlerts.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
+            snap.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
             await b.commit();
           }
         }
 
         const now = Date.now();
         const alertItems: any[] = [];
+        const checkStatusItems: any[] = [];
         for (const stk of eligible) {
           await new Promise((r) => setTimeout(r, 130));
           const info = await screenerFetchStockInfo(config, token, stk.code);
           if (!info || info.currentPrice <= 0) continue;
           const gap = ((info.currentPrice - stk.lowerBand) / stk.lowerBand) * 100;
+          checkStatusItems.push({
+            code: stk.code,
+            currentPrice: info.currentPrice,
+            gap: parseFloat(gap.toFixed(2)),
+            checkedAt: now,
+          });
           if (gap > SCREENER_ALERT_THRESHOLD_PCT) continue;
           const level = gap <= 0 ? "below" : gap <= 1 ? "1pct" : "2pct";
           alertItems.push({
@@ -9253,18 +9288,20 @@ export const sScreenerCheckNow = functions
             checkedAt: now,
           });
         }
-        if (alertItems.length > 0) {
-          for (let i = 0; i < alertItems.length; i += 400) {
+        for (const items of [alertItems, checkStatusItems]) {
+          if (items.length === 0) continue;
+          const coll = items === alertItems ? "alerts" : "checkStatus";
+          for (let i = 0; i < items.length; i += 400) {
             const b = db.batch();
-            alertItems.slice(i, i + 400).forEach((a) =>
-              b.set(db.collection("sScreener").doc("alerts").collection("items").doc(a.code), a));
+            items.slice(i, i + 400).forEach((a) =>
+              b.set(db.collection("sScreener").doc(coll).collection("items").doc(a.code), a));
             await b.commit();
           }
         }
         await db.collection("sScreener").doc("lastCheck").set({
           checkedAt: now, eligibleCount: eligible.length, alertItemCount: alertItems.length,
         });
-        res.json({success: true, eligible: eligible.length, alerts: alertItems.length});
+        res.json({success: true, eligible: eligible.length, alerts: alertItems.length, checkStatus: checkStatusItems.length});
       } catch (e: any) {
         res.status(500).json({success: false, error: e.message});
       }
