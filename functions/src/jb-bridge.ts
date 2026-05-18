@@ -141,3 +141,55 @@ export const jbQuote = functions
       }
     });
   });
+
+/**
+ * jb-s-web → S기법/S2기법 스크리너 결과 조회
+ * GET /jbScreenerResults
+ * headers: Authorization: Bearer <jb-s-web Firebase ID Token>
+ *
+ * Response: {
+ *   alerts: [{ code, name, currentPrice, lowerBand, ma20, gap, level, types, ... }],
+ *   eligibleCounts: { s: number, s2: number },
+ *   lastCheckedAt: number | null
+ * }
+ */
+export const jbScreenerResults = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "GET") {
+          res.status(405).json({error: "GET only"});
+          return;
+        }
+        await verifyJbAuth(req);
+
+        const db = admin.firestore(); // taesan default app
+        const [alertsSnap, lastCheckSnap, sEligibleSnap, s2EligibleSnap] = await Promise.all([
+          db.collection("sScreener").doc("alerts").collection("items")
+            .orderBy("gap", "asc").limit(200).get(),
+          db.collection("sScreener").doc("lastCheck").get(),
+          db.collection("sScreener").doc("sEligible").collection("stocks").get(),
+          db.collection("sScreener").doc("s2Eligible").collection("stocks").get(),
+        ]);
+
+        const alerts = alertsSnap.docs.map((d) => d.data());
+        const lastCheck = lastCheckSnap.data();
+
+        res.json({
+          alerts,
+          eligibleCounts: {
+            s: sEligibleSnap.size,
+            s2: s2EligibleSnap.size,
+          },
+          lastCheckedAt: lastCheck?.checkedAt || null,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status =
+          msg.includes("authorization") || msg.includes("token") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
