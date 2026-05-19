@@ -135,16 +135,31 @@ export const jbQuote = functions
           return;
         }
         const token = await getJbKiwoomToken();
-        const r = await fetch(`${KIWOOM_BASE}/api/dostk/stkinfo`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json;charset=UTF-8",
-            "authorization": `Bearer ${token}`,
-            "api-id": "ka10001",
-          },
-          body: JSON.stringify({stk_cd: code}),
-        });
-        const data: any = await r.json();
+        // 통합(KRX+NXT) 가격 조회: stk_cd 접미사 "_AL"
+        // NXT 미지원 종목은 빈 응답 → 일반 코드로 폴백
+        const callKa10001 = async (stkCd: string) => {
+          const r = await fetch(`${KIWOOM_BASE}/api/dostk/stkinfo`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json;charset=UTF-8",
+              "authorization": `Bearer ${token}`,
+              "api-id": "ka10001",
+            },
+            body: JSON.stringify({stk_cd: stkCd}),
+          });
+          const d: any = await r.json();
+          return d && d.cur_prc ? d : null;
+        };
+        let data = await callKa10001(code + "_AL");
+        let source: "KRX+NXT" | "KRX" = "KRX+NXT";
+        if (!data) {
+          data = await callKa10001(code);
+          source = "KRX";
+        }
+        if (!data) {
+          res.status(502).json({error: "kiwoom 응답 없음"});
+          return;
+        }
         res.json({
           code,
           name: typeof data.stk_nm === "string" ? data.stk_nm : undefined,
@@ -152,6 +167,7 @@ export const jbQuote = functions
           changeRate: numField(data.flu_rt),
           tradingValue: numField(data.trde_prica),
           marketCap: numField(data.mac),
+          source,
         });
       } catch (e: any) {
         const msg = e?.message || String(e);
