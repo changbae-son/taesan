@@ -265,3 +265,154 @@ export const jbScreenerEligible = functions
       }
     });
   });
+
+/**
+ * S 스크리너 텔레그램 설정 검증 + 즉시 테스트 발송
+ * GET /jbTelegramTest
+ * 응답:
+ *   stage: success | firestore_doc_missing | field_missing | telegram_api_failed | exception
+ *   fields: settings/telegram_s 도큐먼트의 실제 필드 이름 (값은 노출 안함)
+ *   telegramOk / telegramErrorCode / telegramErrorDescription: Telegram API의 응답
+ */
+export const jbTelegramTest = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        const doc = await admin.firestore()
+          .collection("settings").doc("telegram_s").get();
+        const cfg = doc.data();
+
+        if (!cfg) {
+          res.status(400).json({
+            stage: "firestore_doc_missing",
+            hasDoc: false,
+            hint: "settings/telegram_s 도큐먼트 없음. 정확히 'telegram_s'로 만드세요.",
+          });
+          return;
+        }
+
+        const fields = Object.keys(cfg);
+        const hasBotToken = typeof cfg.botToken === "string" &&
+          cfg.botToken.length > 10;
+        const hasChatId = cfg.chatId !== undefined && cfg.chatId !== null;
+        const chatIdType = typeof cfg.chatId;
+        const botTokenPreview = hasBotToken ?
+          `${cfg.botToken.slice(0, 6)}...${cfg.botToken.slice(-4)}` :
+          null;
+
+        if (!hasBotToken || !hasChatId) {
+          res.status(400).json({
+            stage: "field_missing",
+            hasDoc: true,
+            fields,
+            hasBotToken,
+            hasChatId,
+            chatIdType,
+            hint: "필드명이 정확히 botToken, chatId 인지 (대소문자) 확인하세요.",
+          });
+          return;
+        }
+
+        const text = [
+          "✅ <b>S 스크리너 텔레그램 테스트</b>",
+          `시각: ${new Date().toLocaleString("ko-KR",
+            {timeZone: "Asia/Seoul"})}`,
+          "이 메시지가 보이면 설정이 정상 동작 중입니다.",
+        ].join("\n");
+
+        const tgRes = await fetch(
+          "https://api.telegram.org/bot" + cfg.botToken + "/sendMessage", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              chat_id: cfg.chatId,
+              text,
+              parse_mode: "HTML",
+            }),
+          });
+        const data: any = await tgRes.json();
+
+        res.json({
+          stage: data.ok ? "success" : "telegram_api_failed",
+          hasDoc: true,
+          fields,
+          botTokenPreview,
+          chatIdType,
+          chatIdPreview: String(cfg.chatId).slice(0, 4) + "...",
+          telegramOk: data.ok === true,
+          telegramErrorCode: data.error_code,
+          telegramErrorDescription: data.description,
+        });
+      } catch (e: any) {
+        res.status(500).json({
+          stage: "exception",
+          error: e?.message || String(e),
+        });
+      }
+    });
+  });
+
+/**
+ * jb-s-web → 텔레그램 발송 프록시
+ * POST /jbSendTelegram
+ * headers: Authorization: Bearer <jb-s-web Firebase ID Token>
+ * body: { text: string (1~4000 chars) }
+ *
+ * 봇 토큰은 서버 settings/telegram_s에만 있고, 클라이언트는 text만 전달.
+ */
+export const jbSendTelegram = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 15})
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        await verifyJbAuth(req);
+
+        const text = String(req.body?.text || "");
+        if (!text || text.length > 4000) {
+          res.status(400).json({error: "text required (1~4000 chars)"});
+          return;
+        }
+
+        const doc = await admin.firestore()
+          .collection("settings").doc("telegram_s").get();
+        const cfg = doc.data();
+        if (!cfg?.botToken || !cfg?.chatId) {
+          res.status(500).json({
+            error: "settings/telegram_s 미설정",
+          });
+          return;
+        }
+
+        const tgRes = await fetch(
+          "https://api.telegram.org/bot" + cfg.botToken + "/sendMessage", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              chat_id: cfg.chatId,
+              text,
+              parse_mode: "HTML",
+              disable_web_page_preview: true,
+            }),
+          });
+        const data: any = await tgRes.json();
+
+        res.json({
+          ok: data.ok === true,
+          errorCode: data.error_code,
+          description: data.description,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status =
+          msg.includes("authorization") || msg.includes("token") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
