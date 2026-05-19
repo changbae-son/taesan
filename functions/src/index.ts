@@ -21,6 +21,7 @@ export {
   jbSendTelegram,
   jbKiwoomKeysStatus,
   jbKiwoomKeysSet,
+  jbOrder,
 } from "./jb-bridge";
 
 admin.initializeApp();

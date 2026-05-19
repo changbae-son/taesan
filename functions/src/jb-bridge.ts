@@ -567,3 +567,172 @@ export const jbKiwoomKeysSet = functions
       }
     });
   });
+
+/* ============================================================================
+ * jbOrder — 키움 매수/매도 발주
+ *
+ * ★ 격리 가드:
+ *  - jb-s-web Auth 토큰 강제 (verifyJbAuth)
+ *  - 계좌번호 화이트리스트 (JB_ALLOWED_ACCOUNTS)
+ *  - jb 키움 키 (loadJbKiwoomCreds)만 사용
+ *  - 모든 호출을 jbOrderAudit 컬렉션에 기록 (감사 추적)
+ *
+ * 이 함수는 절대 태산 계좌·태산 키·태산 Firestore 매매 컬렉션을 만지지 않음.
+ * ========================================================================= */
+
+const JB_ALLOWED_ACCOUNTS = ["64981611"]; // 하이픈 제거된 형태
+
+function normalizeAccount(s: string): string {
+  return String(s || "").replace(/[^0-9]/g, "");
+}
+
+export const jbOrder = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 30,
+    secrets: ["KIWOOM_JB_APP_KEY", "KIWOOM_JB_APP_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      const auditBase: Record<string, unknown> = {
+        method: req.method,
+        ip: req.headers["x-forwarded-for"] || null,
+        ua: req.headers["user-agent"] || null,
+        createdAt: Date.now(),
+      };
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        const uid = await verifyJbAuth(req);
+        auditBase.uid = uid;
+
+        const body = req.body || {};
+        const accountNoRaw = String(body.accountNo || "");
+        const accountNo = normalizeAccount(accountNoRaw);
+        const stockCode = String(body.stockCode || "");
+        const side = body.side === "BUY" ? "BUY" : body.side === "SELL" ? "SELL" : "";
+        const quantity = Number(body.quantity);
+        const price = Number(body.price ?? 0);
+        const mock = body.mock === true;
+
+        auditBase.accountNoRaw = accountNoRaw;
+        auditBase.accountNo = accountNo;
+        auditBase.stockCode = stockCode;
+        auditBase.side = side;
+        auditBase.quantity = quantity;
+        auditBase.price = price;
+        auditBase.mock = mock;
+
+        // [GUARD 1] 계좌 화이트리스트
+        if (!JB_ALLOWED_ACCOUNTS.includes(accountNo)) {
+          auditBase.rejected = "account_not_allowed";
+          await admin.firestore().collection("jbOrderAudit").add(auditBase);
+          res.status(403).json({
+            error: `허용되지 않은 계좌: ${accountNoRaw}. ` +
+              "jb-bridge는 jb 전용 계좌만 처리합니다.",
+          });
+          return;
+        }
+
+        // [GUARD 2] 유효성 검사
+        if (!/^\d{6}$/.test(stockCode)) {
+          auditBase.rejected = "invalid_stock_code";
+          await admin.firestore().collection("jbOrderAudit").add(auditBase);
+          res.status(400).json({error: "stockCode 6자리 숫자"});
+          return;
+        }
+        if (!side) {
+          auditBase.rejected = "invalid_side";
+          await admin.firestore().collection("jbOrderAudit").add(auditBase);
+          res.status(400).json({error: "side는 BUY 또는 SELL"});
+          return;
+        }
+        if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 1_000_000) {
+          auditBase.rejected = "invalid_quantity";
+          await admin.firestore().collection("jbOrderAudit").add(auditBase);
+          res.status(400).json({error: "quantity는 1~1,000,000 정수"});
+          return;
+        }
+        if (!Number.isFinite(price) || price < 0 || price > 100_000_000) {
+          auditBase.rejected = "invalid_price";
+          await admin.firestore().collection("jbOrderAudit").add(auditBase);
+          res.status(400).json({error: "price는 0 이상"});
+          return;
+        }
+
+        // [GUARD 3] 모의 모드 — 키움 호출 안 함
+        if (mock) {
+          auditBase.outcome = "mock";
+          const fakeOrderId = `MOCK-${Date.now()}`;
+          auditBase.orderId = fakeOrderId;
+          await admin.firestore().collection("jbOrderAudit").add(auditBase);
+          res.json({
+            mode: "mock",
+            ok: true,
+            orderId: fakeOrderId,
+            accountNo: accountNoRaw,
+            stockCode,
+            side,
+            quantity,
+            price,
+            note: "모의 모드 — 실제 키움 호출 없음. 실주문은 mock=false로",
+          });
+          return;
+        }
+
+        // [GUARD 4] 실주문 — jb 키만 사용
+        const token = await getJbKiwoomToken();
+        const apiId = side === "BUY" ? "kt10000" : "kt10001";
+        const tradeType = price === 0 ? "03" : "00"; // 03 시장가, 00 지정가
+        const ordPrice = tradeType === "03" ? "" : String(price);
+
+        const r = await fetch(`${KIWOOM_BASE}/api/dostk/ordr`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json;charset=UTF-8",
+            "authorization": `Bearer ${token}`,
+            "api-id": apiId,
+          },
+          body: JSON.stringify({
+            dmst_stex_tp: "KRX",
+            stk_cd: stockCode,
+            ord_qty: String(quantity),
+            ord_uv: ordPrice,
+            trde_tp: tradeType,
+            cond_uv: "",
+          }),
+        });
+        const data: any = await r.json();
+
+        const ok = data.return_code === 0 || data.return_code === "0";
+        auditBase.outcome = ok ? "live_ok" : "live_failed";
+        auditBase.orderId = data.ord_no || null;
+        auditBase.kiwoomResponse = data;
+        await admin.firestore().collection("jbOrderAudit").add(auditBase);
+
+        res.json({
+          mode: "live",
+          ok,
+          orderId: data.ord_no || null,
+          returnCode: data.return_code,
+          returnMsg: data.return_msg,
+          kiwoomResponse: data,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        auditBase.outcome = "exception";
+        auditBase.error = msg;
+        try {
+          await admin.firestore().collection("jbOrderAudit").add(auditBase);
+        } catch {
+          /* ignore audit failure */
+        }
+        const status = msg.includes("authorization") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
