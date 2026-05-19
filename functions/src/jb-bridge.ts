@@ -817,14 +817,19 @@ export const jbHoldingsSync = functions
           return Number.isFinite(n) ? Math.abs(n) : 0;
         };
         const clean = (v: unknown): string => String(v || "").replace(/^\*+/, "").trim();
+        // 키움 종목코드는 종종 'A042700'처럼 앞에 알파벳 1자 prefix → 숫자 6자리만 추출
+        const cleanCode = (v: unknown): string => {
+          const s = clean(v).replace(/^[A-Za-z]+/, "");
+          return /^\d{6}$/.test(s) ? s : "";
+        };
 
         const holdings = stockList
-          .filter((it) => num(it.cur_qty) > 0)
+          .filter((it) => num(it.cur_qty) > 0 && cleanCode(it.stk_cd))
           .map((it) => {
             const rawName = String(it.stk_nm || "").trim();
             const rawCode = String(it.stk_cd || "").trim();
             return {
-              code: clean(it.stk_cd),
+              code: cleanCode(it.stk_cd),
               name: clean(it.stk_nm),
               quantity: num(it.cur_qty),
               avgPrice: num(it.buy_uv),
