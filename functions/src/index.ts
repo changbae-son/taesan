@@ -13,7 +13,7 @@ import cors = require("cors");
 
 // JB Trader Web 브릿지 — 별도 파일로 격리 (태산 로직과 무관)
 // 같은 VPC connector / 정적 IP를 공유. 키와 Auth 토큰만 분리.
-export {jbQuote, jbScreenerResults, jbScreenerEligible} from "./jb-bridge";
+export {jbQuote, jbScreenerResults, jbScreenerEligible, jbTelegramTest} from "./jb-bridge";
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -8322,6 +8322,86 @@ export const manualInjectTrade = functions
         });
       } catch (error: any) {
         console.error("[manualInjectTrade] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+/**
+ * 텔레그램 작동 테스트
+ * POST /telegramTest body: { message?: string }
+ */
+export const telegramTest = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        // 설정 확인
+        const settingsDoc = await db.collection("settings").doc("telegram").get();
+        const settings = settingsDoc.exists ? settingsDoc.data() || {} : {};
+        const hasBotToken = !!settings.botToken;
+        const hasChatId = !!settings.chatId;
+        const chatIdMasked = settings.chatId
+          ? String(settings.chatId).slice(0, 3) + "***" + String(settings.chatId).slice(-3)
+          : null;
+
+        if (!hasBotToken || !hasChatId) {
+          res.json({
+            success: false,
+            hasBotToken,
+            hasChatId,
+            error: "텔레그램 설정 누락 (settings/telegram doc의 botToken 또는 chatId 비어있음)",
+          });
+          return;
+        }
+
+        // 테스트 메시지 발송
+        const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const ts = `${kst.getFullYear()}-${String(kst.getMonth() + 1).padStart(2, "0")}-${String(kst.getDate()).padStart(2, "0")} ${String(kst.getHours()).padStart(2, "0")}:${String(kst.getMinutes()).padStart(2, "0")}:${String(kst.getSeconds()).padStart(2, "0")}`;
+        const msgText = (req.body && req.body.message)
+          ? String(req.body.message)
+          : `<b>🧪 태산 텔레그램 작동 테스트</b>\n<i>${ts} KST</i>\n\n` +
+            `✅ 봇 토큰 정상\n` +
+            `✅ 채팅 ID 정상 (${chatIdMasked})\n` +
+            `✅ Cloud Function 정상\n\n` +
+            `이 메시지가 보이면 알림 시스템 OK`;
+
+        const url = `https://api.telegram.org/bot${settings.botToken}/sendMessage`;
+        const r = await fetch(url, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            chat_id: settings.chatId,
+            text: msgText,
+            parse_mode: "HTML",
+          }),
+        });
+        const data = await r.json() as any;
+
+        res.json({
+          success: data.ok === true,
+          hasBotToken: true,
+          hasChatId: true,
+          chatIdMasked,
+          telegramResponse: {
+            ok: data.ok,
+            result: data.ok ? {
+              message_id: data.result?.message_id,
+              date: data.result?.date,
+              chat: data.result?.chat ? {
+                id: data.result.chat.id,
+                type: data.result.chat.type,
+                title: data.result.chat.title,
+                username: data.result.chat.username,
+              } : null,
+            } : null,
+            description: data.description,
+            error_code: data.error_code,
+          },
+        });
+      } catch (error: any) {
+        console.error("[telegramTest] 오류:", error.message);
         res.status(500).json({success: false, error: error.message});
       }
     });
