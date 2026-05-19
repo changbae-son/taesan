@@ -13,7 +13,15 @@ import cors = require("cors");
 
 // JB Trader Web 브릿지 — 별도 파일로 격리 (태산 로직과 무관)
 // 같은 VPC connector / 정적 IP를 공유. 키와 Auth 토큰만 분리.
-export {jbQuote, jbScreenerResults, jbScreenerEligible, jbTelegramTest, jbSendTelegram} from "./jb-bridge";
+export {
+  jbQuote,
+  jbScreenerResults,
+  jbScreenerEligible,
+  jbTelegramTest,
+  jbSendTelegram,
+  jbKiwoomKeysStatus,
+  jbKiwoomKeysSet,
+} from "./jb-bridge";
 
 admin.initializeApp();
 const db = admin.firestore();

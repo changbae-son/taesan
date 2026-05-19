@@ -48,16 +48,36 @@ async function verifyJbAuth(req: functions.https.Request): Promise<string> {
 
 /** 키움 토큰 캐시 (인스턴스 메모리, ~23h) */
 let jbTokenCache: { token: string; exp: number } | null = null;
-async function getJbKiwoomToken(): Promise<string> {
-  if (jbTokenCache && jbTokenCache.exp > Date.now() + 60_000) {
-    return jbTokenCache.token;
+
+/**
+ * 키움 키 우선순위:
+ *   1순위: Firestore settings/kiwoom_jb (어디서든 갱신 가능)
+ *   2순위: Secret Manager KIWOOM_JB_APP_KEY/SECRET (초기 부트스트랩용)
+ */
+async function loadJbKiwoomCreds(): Promise<{appKey: string; appSecret: string}> {
+  try {
+    const doc = await admin.firestore()
+      .collection("settings").doc("kiwoom_jb").get();
+    const cfg = doc.data();
+    if (cfg?.appKey && cfg?.appSecret) {
+      return {appKey: cfg.appKey, appSecret: cfg.appSecret};
+    }
+  } catch {
+    /* fall through to Secret */
   }
   const appKey = process.env.KIWOOM_JB_APP_KEY;
   const appSecret = process.env.KIWOOM_JB_APP_SECRET;
   if (!appKey || !appSecret) {
-    throw new Error("KIWOOM_JB_APP_KEY/SECRET secret 미설정");
+    throw new Error("키움 키 미설정 (Firestore settings/kiwoom_jb 또는 Secret 둘 다 비어있음)");
   }
+  return {appKey, appSecret};
+}
 
+async function getJbKiwoomToken(): Promise<string> {
+  if (jbTokenCache && jbTokenCache.exp > Date.now() + 60_000) {
+    return jbTokenCache.token;
+  }
+  const {appKey, appSecret} = await loadJbKiwoomCreds();
   const res = await fetch(`${KIWOOM_BASE}/oauth2/token`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -412,6 +432,137 @@ export const jbSendTelegram = functions
         const msg = e?.message || String(e);
         const status =
           msg.includes("authorization") || msg.includes("token") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
+
+function mask(v: string): string {
+  if (!v || v.length < 8) return "***";
+  return v.slice(0, 6) + "..." + v.slice(-4);
+}
+
+/**
+ * jb-s-web → 키움 키 등록 상태 + 마스킹된 미리보기
+ * GET /jbKiwoomKeysStatus
+ * 응답: { source: "firestore"|"secret"|"none", appKeyPreview, appSecretPreview, updatedAt }
+ */
+export const jbKiwoomKeysStatus = functions
+  .region("asia-northeast3")
+  .runWith({
+    timeoutSeconds: 15,
+    secrets: ["KIWOOM_JB_APP_KEY", "KIWOOM_JB_APP_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "GET") {
+          res.status(405).json({error: "GET only"});
+          return;
+        }
+        await verifyJbAuth(req);
+
+        let source: "firestore" | "secret" | "none" = "none";
+        let appKey: string | undefined;
+        let appSecret: string | undefined;
+        let updatedAt: number | undefined;
+
+        const doc = await admin.firestore()
+          .collection("settings").doc("kiwoom_jb").get();
+        const cfg = doc.data();
+        if (cfg?.appKey && cfg?.appSecret) {
+          source = "firestore";
+          appKey = cfg.appKey;
+          appSecret = cfg.appSecret;
+          updatedAt = cfg.updatedAt;
+        } else {
+          appKey = process.env.KIWOOM_JB_APP_KEY;
+          appSecret = process.env.KIWOOM_JB_APP_SECRET;
+          if (appKey && appSecret) source = "secret";
+        }
+
+        res.json({
+          source,
+          appKeyPreview: appKey ? mask(appKey) : null,
+          appSecretPreview: appSecret ? mask(appSecret) : null,
+          updatedAt: updatedAt || null,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("authorization") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
+
+/**
+ * jb-s-web → 키움 키 저장 (Firestore settings/kiwoom_jb)
+ * POST /jbKiwoomKeysSet
+ * body: { appKey: string, appSecret: string }
+ * 저장 후 토큰 캐시 무효화 → 다음 호출부터 새 키로 토큰 발급
+ */
+export const jbKiwoomKeysSet = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 15})
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        await verifyJbAuth(req);
+
+        const appKey = String(req.body?.appKey || "").trim();
+        const appSecret = String(req.body?.appSecret || "").trim();
+        if (appKey.length < 10 || appSecret.length < 10) {
+          res.status(400).json({error: "appKey/appSecret 너무 짧음 (>=10자)"});
+          return;
+        }
+
+        // 키움 OAuth로 즉시 검증 (잘못된 키는 저장 안 함)
+        const verifyRes = await fetch(`${KIWOOM_BASE}/oauth2/token`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            grant_type: "client_credentials",
+            appkey: appKey,
+            secretkey: appSecret,
+          }),
+        });
+        const verifyData: any = await verifyRes.json();
+        if (!verifyData.token) {
+          res.status(400).json({
+            error: "키움 인증 실패 — 키 값을 확인하세요",
+            kiwoomResponse: verifyData,
+          });
+          return;
+        }
+
+        await admin.firestore()
+          .collection("settings").doc("kiwoom_jb")
+          .set({
+            appKey,
+            appSecret,
+            updatedAt: Date.now(),
+          });
+
+        // 새 토큰을 캐시에 미리 넣어두기 (다음 호출부터 즉시 사용)
+        jbTokenCache = {
+          token: verifyData.token,
+          exp: verifyData.expires_dt ?
+            new Date(verifyData.expires_dt).getTime() :
+            Date.now() + 23 * 60 * 60 * 1000,
+        };
+
+        res.json({
+          ok: true,
+          appKeyPreview: mask(appKey),
+          appSecretPreview: mask(appSecret),
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("authorization") ? 401 : 500;
         res.status(status).json({error: msg});
       }
     });
