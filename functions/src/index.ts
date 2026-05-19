@@ -23,6 +23,7 @@ export {
   jbKiwoomKeysSet,
   jbOrder,
   jbHoldingsSync,
+  jbTradesSync,
 } from "./jb-bridge";
 
 admin.initializeApp();

@@ -860,3 +860,174 @@ export const jbHoldingsSync = functions
       }
     });
   });
+
+/**
+ * jb-s-web → JB 계좌 체결 내역 동기화 (Phase B-2)
+ * POST /jbTradesSync
+ * body: { dates: ["20260519", "20260518", ...] }  // 조회할 일자 리스트 (최대 30일)
+ *
+ * Response: {
+ *   accountNo: "64981611",
+ *   asOf: <ms>,
+ *   trades: [{
+ *     orderId: string,
+ *     date: "YYYYMMDD",
+ *     time: "HHMMSS",
+ *     code: string,
+ *     name: string,
+ *     side: "BUY" | "SELL",
+ *     price: number,
+ *     quantity: number,
+ *     amount: number,
+ *     isCreditTrade: boolean,
+ *   }],
+ *   countByDate: { "20260519": 3, ... }
+ * }
+ */
+export const jbTradesSync = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 60,
+    secrets: ["KIWOOM_JB_APP_KEY", "KIWOOM_JB_APP_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        const uid = await verifyJbAuth(req);
+
+        const dates: string[] = Array.isArray(req.body?.dates) ? req.body.dates : [];
+        if (dates.length === 0) {
+          // 기본: 오늘 (KST)
+          const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+          const y = kst.getFullYear();
+          const m = String(kst.getMonth() + 1).padStart(2, "0");
+          const d = String(kst.getDate()).padStart(2, "0");
+          dates.push(`${y}${m}${d}`);
+        }
+        if (dates.length > 30) {
+          res.status(400).json({error: "max 30 days"});
+          return;
+        }
+        for (const d of dates) {
+          if (!/^\d{8}$/.test(d)) {
+            res.status(400).json({error: `invalid date: ${d}`});
+            return;
+          }
+        }
+
+        const token = await getJbKiwoomToken();
+        const num = (v: unknown): number => {
+          if (typeof v === "number") return v;
+          if (typeof v !== "string") return 0;
+          const n = Number(v.replace(/[+,\s]/g, ""));
+          return Number.isFinite(n) ? Math.abs(n) : 0;
+        };
+        const clean = (v: unknown): string => String(v || "").replace(/^\*+/, "").trim();
+
+        const allTrades: any[] = [];
+        const countByDate: Record<string, number> = {};
+
+        for (const dt of dates) {
+          try {
+            const r = await fetch(`${KIWOOM_BASE}/api/dostk/acnt`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": `Bearer ${token}`,
+                "api-id": "kt00007",
+              },
+              body: JSON.stringify({
+                ord_dt: dt,
+                qry_tp: "1",      // 전체 (체결+미체결)
+                stk_bond_tp: "0",
+                sell_tp: "0",
+                stk_cd: "",
+                fr_ord_no: "",
+                dmst_stex_tp: "%",
+              }),
+            });
+            const data: any = await r.json();
+            if (data.return_code && data.return_code !== 0 && data.return_code !== "0") {
+              countByDate[dt] = 0;
+              continue;
+            }
+            // 응답에서 배열 찾기
+            let items: any[] = [];
+            for (const k of Object.keys(data)) {
+              if (Array.isArray(data[k]) && data[k].length > 0) {
+                items = data[k];
+                break;
+              }
+            }
+            let dateCount = 0;
+            for (const it of items) {
+              const qty = num(it.cntr_qty);
+              if (qty <= 0) continue;
+              const ioTp = String(it.io_tp_nm || "").trim();
+              const crdTp = String(it.crd_tp || "").trim();
+              let side: "BUY" | "SELL" | null = null;
+              if (ioTp.includes("매수")) side = "BUY";
+              else if (ioTp.includes("매도")) side = "SELL";
+              if (!side) continue;
+
+              const isCredit = ioTp.includes("융자") || ioTp.includes("신용") ||
+                crdTp.includes("융자") || crdTp.includes("신용");
+
+              const code = clean(it.stk_cd).replace(/^[A-Za-z]/, "");
+              const name = clean(it.stk_nm);
+              if (!code || !/^\d{6}$/.test(code)) continue;
+
+              const price = num(it.cntr_uv);
+              const ordNo = String(it.ord_no || "").trim();
+              const cntrNo = String(it.cntr_no || "").trim();
+              const orderId = ordNo || cntrNo || `kt07_${dt}_${code}_${price}_${qty}_${side}`;
+
+              allTrades.push({
+                orderId,
+                date: dt,
+                time: String(it.ord_tm || it.cnfm_tm || ""),
+                code,
+                name,
+                side,
+                price,
+                quantity: qty,
+                amount: price * qty,
+                isCreditTrade: isCredit,
+              });
+              dateCount++;
+            }
+            countByDate[dt] = dateCount;
+            await new Promise((r) => setTimeout(r, 150));
+          } catch {
+            countByDate[dt] = 0;
+          }
+        }
+
+        // 중복 제거 (orderId 기준)
+        const dedupMap = new Map<string, any>();
+        for (const t of allTrades) {
+          if (!dedupMap.has(t.orderId)) dedupMap.set(t.orderId, t);
+        }
+        const trades = Array.from(dedupMap.values());
+
+        res.json({
+          accountNo: "64981611",
+          asOf: Date.now(),
+          uid,
+          trades,
+          countByDate,
+          totalCount: trades.length,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("authorization") || msg.includes("token") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
