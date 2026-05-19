@@ -8666,35 +8666,44 @@ const S2_LOOKBACK_DAYS = 150;         // 5달치 거래일
 const SCREENER_ALERT_THRESHOLD_PCT = 2.0;
 
 // ka10001 단건 시세/시총 조회 (스크리너 전용)
+// stk_cd 접미사 "_AL"로 KRX+NXT 통합 데이터 조회. 미지원시 일반 코드 폴백.
 async function screenerFetchStockInfo(
   config: KiwoomConfig,
   token: string,
   code: string,
 ): Promise<{ currentPrice: number; marketCapEok: number; name: string } | null> {
-  try {
-    const res = await fetch(`${config.baseUrl}/api/dostk/stkinfo`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json;charset=UTF-8",
-        "authorization": `Bearer ${token}`,
-        "api-id": "ka10001",
-      },
-      body: JSON.stringify({stk_cd: code}),
-    });
-    const data = await res.json() as any;
-    const n = (v: unknown): number => {
-      const s = typeof v === "string" ? v.replace(/[+,\s]/g, "") : String(v);
-      const num = Number(s);
-      return Number.isFinite(num) ? Math.abs(num) : 0;
-    };
-    return {
-      currentPrice: n(data.cur_prc),
-      marketCapEok: n(data.mac),
-      name: typeof data.stk_nm === "string" ? data.stk_nm.trim() : code,
-    };
-  } catch {
-    return null;
-  }
+  const n = (v: unknown): number => {
+    const s = typeof v === "string" ? v.replace(/[+,\s]/g, "") : String(v);
+    const num = Number(s);
+    return Number.isFinite(num) ? Math.abs(num) : 0;
+  };
+  const callKa10001 = async (stkCd: string): Promise<any | null> => {
+    try {
+      const res = await fetch(`${config.baseUrl}/api/dostk/stkinfo`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json;charset=UTF-8",
+          "authorization": `Bearer ${token}`,
+          "api-id": "ka10001",
+        },
+        body: JSON.stringify({stk_cd: stkCd}),
+      });
+      const data = await res.json() as any;
+      // 빈 응답 체크 (NXT 미지원 등)
+      if (!data.cur_prc && !data.mac) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  };
+  // _AL만 시도 (NXT 미지원 종목 = 거의 모두 시총 1.3조 미만 잡주 → 어차피 필터링됨)
+  const data = await callKa10001(code + "_AL");
+  if (!data) return null;
+  return {
+    currentPrice: n(data.cur_prc),
+    marketCapEok: n(data.mac),
+    name: typeof data.stk_nm === "string" ? data.stk_nm.trim() : code,
+  };
 }
 
 // 2달치 일봉 조회 (스크리너 S2 전용)
@@ -8712,11 +8721,10 @@ async function screenerFetchBars(
   code: string,
   days = S2_LOOKBACK_DAYS,
 ): Promise<ScreenerBar[]> {
-  const bars: ScreenerBar[] = [];
-  let contYn = "N";
-  let nextKey = "";
+  // stk_cd 접미사 "_AL"로 KRX+NXT 통합 일봉 조회 (정규장만보다 정확)
+  const num = (v: unknown): number => Math.abs(parseInt(String(v || "0").replace(/[+,\s]/g, "")) || 0);
 
-  for (let page = 0; page < 6 && bars.length < days; page++) {
+  const fetchPage = async (stkCd: string, contYn: string, nextKey: string) => {
     const headers: Record<string, string> = {
       "Content-Type": "application/json; charset=utf-8",
       "authorization": `Bearer ${token}`,
@@ -8726,40 +8734,48 @@ async function screenerFetchBars(
       headers["cont-yn"] = "Y";
       headers["next-key"] = nextKey;
     }
-
     const res = await fetch(`${config.baseUrl}/api/dostk/chart`, {
       method: "POST",
       headers,
       body: JSON.stringify({
-        stk_cd: code,
+        stk_cd: stkCd,
         base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
         upd_stkpc_tp: "1",
         qry_tp: "0",
       }),
     });
-    contYn = res.headers.get("cont-yn") || res.headers.get("Cont-Yn") || "";
-    nextKey = res.headers.get("next-key") || res.headers.get("Next-Key") || "";
-
+    const respContYn = res.headers.get("cont-yn") || res.headers.get("Cont-Yn") || "";
+    const respNextKey = res.headers.get("next-key") || res.headers.get("Next-Key") || "";
     const data = await res.json() as any;
-    const chart: any[] = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
-    const num = (v: unknown): number => Math.abs(parseInt(String(v || "0").replace(/[+,\s]/g, "")) || 0);
+    return {data, respContYn, respNextKey};
+  };
 
-    for (const c of chart) {
-      const close = num(c.cur_prc || c.cls_prc);
-      const open = num(c.opn_prc || c.open_pric || c.strt_prc);
-      const low = num(c.low_prc || c.lwst_prc || c.low_pric);
-      // ka10081의 trde_prica는 백만원 단위 → 억원으로 환산 (÷100)
-      const tvRaw = num(c.trde_prica);
-      const tvEok = Math.round(tvRaw / 100);
-      const date = String(c.stk_bsop_date || c.dt || "");
-      if (close > 0 && date) bars.push({date, open, close, low, tradeValueEok: tvEok});
+  const tryFetch = async (stkCd: string): Promise<ScreenerBar[]> => {
+    const out: ScreenerBar[] = [];
+    let contYn = "N", nextKey = "";
+    for (let page = 0; page < 6 && out.length < days; page++) {
+      const {data, respContYn, respNextKey} = await fetchPage(stkCd, contYn, nextKey);
+      const chart: any[] = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
+      for (const c of chart) {
+        const close = num(c.cur_prc || c.cls_prc);
+        const open = num(c.opn_prc || c.open_pric || c.strt_prc);
+        const low = num(c.low_prc || c.lwst_prc || c.low_pric);
+        // trde_prica는 백만원 단위 → 억원으로 환산 (÷100)
+        const tvEok = Math.round(num(c.trde_prica) / 100);
+        const date = String(c.stk_bsop_date || c.dt || "");
+        if (close > 0 && date) out.push({date, open, close, low, tradeValueEok: tvEok});
+      }
+      if (respContYn !== "Y" || !respNextKey) break;
+      contYn = "Y";
+      nextKey = respNextKey;
+      await new Promise((r) => setTimeout(r, 150));
     }
+    return out;
+  };
 
-    if (contYn !== "Y" || !nextKey) break;
-    await new Promise((r) => setTimeout(r, 150));
-  }
-
-  return bars.slice(0, days); // 최신→오래된 순
+  // _AL만 시도 (S기법은 시총 1.3조+, S2도 거래대금 큰 종목 위주 — 모두 NXT 지원)
+  const bars = await tryFetch(code + "_AL");
+  return bars.slice(0, days);
 }
 
 // S스크리너 전용 텔레그램 발송 (taesan Firestore: settings/telegram_s)
@@ -8810,27 +8826,30 @@ async function runSScreenerDailyS(): Promise<{processed: number; eligible: numbe
   let processed = 0;
   for (const stk of stocks) {
     processed++;
-    await new Promise((r) => setTimeout(r, 180));
+    await new Promise((r) => setTimeout(r, 100));
 
     const info = await screenerFetchStockInfo(config, token, stk.code);
     if (!info) continue;
     if (info.marketCapEok < S_MARKET_CAP_MIN_EOK) continue;
 
-        await new Promise((r) => setTimeout(r, 180));
-        const ma = await fetchAndCalcMA(config, token, stk.code);
-        if (!ma || ma.ma20 <= 0) continue;
+    await new Promise((r) => setTimeout(r, 100));
+    // 통합(KRX+NXT) 일봉으로 MA20 계산 — screenerFetchBars 사용
+    const bars = await screenerFetchBars(config, token, stk.code, 25);
+    if (bars.length < 20) continue;
+    const ma20 = Math.round(bars.slice(0, 20).reduce((s, b) => s + b.close, 0) / 20);
+    if (ma20 <= 0) continue;
 
-        const lowerBand = Math.round(ma.ma20 * 0.8);
+    const lowerBand = Math.round(ma20 * 0.8);
 
-        await db.collection("sScreener").doc("sEligible").collection("stocks").doc(stk.code).set({
-          code: stk.code,
-          name: info.name || stk.name,
-          ma20: ma.ma20,
-          lowerBand,
-          marketCapEok: info.marketCapEok,
-          types: ["S"],
-          updatedAt: Date.now(),
-        });
+    await db.collection("sScreener").doc("sEligible").collection("stocks").doc(stk.code).set({
+      code: stk.code,
+      name: info.name || stk.name,
+      ma20,
+      lowerBand,
+      marketCapEok: info.marketCapEok,
+      types: ["S"],
+      updatedAt: Date.now(),
+    });
     eligibleCount++;
   }
   console.log(`[S스크리너] S기법 완료: ${processed}처리, ${eligibleCount}종목 eligible`);
@@ -8905,7 +8924,7 @@ async function runSScreenerDailyS2(): Promise<{processed: number; eligible: numb
   let processed = 0;
   for (const stk of stocks) {
     processed++;
-    await new Promise((r) => setTimeout(r, 180));
+    await new Promise((r) => setTimeout(r, 100));
 
     const bars = await screenerFetchBars(config, token, stk.code, S2_LOOKBACK_DAYS);
     if (bars.length < 20) continue;
@@ -8980,6 +8999,70 @@ export const sScreenerDailyS2Now = functions
         res.json({success: true, ...r});
       } catch (e: any) {
         res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
+// 다양한 API/파라미터 조합으로 일봉 데이터 비교 (정규장 vs 통합 검증)
+export const screenerCompareApis = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 60,
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const code = (req.query.code as string || "066570").trim();
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+
+        const baseDate = (req.query.date as string) ||
+          new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}))
+            .toISOString().slice(0, 10).replace(/-/g, "");
+
+        const callApi = async (apiId: string, uri: string, body: any, extraHeaders: Record<string, string> = {}) => {
+          try {
+            const r = await fetch(`${config.baseUrl}${uri}`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": `Bearer ${token}`,
+                "api-id": apiId,
+                ...extraHeaders,
+              },
+              body: JSON.stringify(body),
+            });
+            const data: any = await r.json();
+            return {
+              apiId, uri, body, extraHeaders,
+              status: r.status,
+              keys: Object.keys(data),
+              sample: JSON.stringify(data).substring(0, 800),
+            };
+          } catch (e: any) {
+            return {apiId, uri, body, extraHeaders, error: e.message};
+          }
+        };
+
+        // ka10001(현재가/시총)도 _AL 지원하는지 검증
+        const tests = [
+          // ka10001 (주식기본정보) - 일반 vs _AL 비교
+          {apiId: "ka10001", uri: "/api/dostk/stkinfo", body: {stk_cd: code}},
+          {apiId: "ka10001", uri: "/api/dostk/stkinfo", body: {stk_cd: code + "_AL"}},
+          {apiId: "ka10001", uri: "/api/dostk/stkinfo", body: {stk_cd: code + "_NX"}},
+        ];
+
+        const results = [];
+        for (const t of tests) {
+          results.push(await callApi(t.apiId, t.uri, t.body, (t as any).headers || {}));
+          await new Promise((r) => setTimeout(r, 200));
+        }
+
+        res.json({code, baseDate, results});
+      } catch (e: any) {
+        res.status(500).json({error: e.message});
       }
     });
   });
