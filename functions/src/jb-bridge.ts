@@ -736,3 +736,127 @@ export const jbOrder = functions
       }
     });
   });
+
+/**
+ * jb-s-web → JB 계좌 보유종목 동기화 (Phase B-1)
+ * POST /jbHoldingsSync
+ * headers: Authorization: Bearer <jb-s-web Firebase ID Token>
+ * body: {} (계좌는 키움 API 키에 바인딩되어 있음 = 64981611)
+ *
+ * Response: {
+ *   accountNo: "64981611",
+ *   asOf: <ms>,
+ *   holdings: [{ code, name, quantity, avgPrice, currentPrice,
+ *                profitRate, profitAmount, totalBuyAmount, isCreditTrade,
+ *                positions: [{type, quantity, avgPrice}] }]
+ * }
+ *
+ * 격리:
+ *   1. jb-s-web ID Token 검증
+ *   2. JB 전용 키 (settings/kiwoom_jb) 사용 → 64981611 계좌만 접근 가능
+ *   3. taesan Firestore에 쓰지 않음 — 응답만 반환
+ */
+export const jbHoldingsSync = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 30,
+    secrets: ["KIWOOM_JB_APP_KEY", "KIWOOM_JB_APP_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        const uid = await verifyJbAuth(req);
+        const token = await getJbKiwoomToken();
+
+        const r = await fetch(`${KIWOOM_BASE}/api/dostk/acnt`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "authorization": `Bearer ${token}`,
+            "api-id": "kt00005",
+          },
+          body: JSON.stringify({dmst_stex_tp: "KRX"}),
+        });
+        const data: any = await r.json();
+
+        if (data.return_code && data.return_code !== "0" && data.return_code !== 0) {
+          res.status(502).json({
+            error: `잔고조회 실패: ${data.return_msg || "unknown"}`,
+            kiwoomResponse: data,
+          });
+          return;
+        }
+
+        const stockList: any[] = data.stk_cntr_remn || [];
+        const num = (v: unknown): number => {
+          if (typeof v === "number") return v;
+          if (typeof v !== "string") return 0;
+          const n = Number(v.replace(/[+,\s]/g, ""));
+          return Number.isFinite(n) ? Math.abs(n) : 0;
+        };
+        const clean = (v: unknown): string => String(v || "").replace(/^\*+/, "").trim();
+
+        const holdings = stockList
+          .filter((it) => num(it.cur_qty) > 0)
+          .map((it) => {
+            const rawName = String(it.stk_nm || "").trim();
+            const rawCode = String(it.stk_cd || "").trim();
+            return {
+              code: clean(it.stk_cd),
+              name: clean(it.stk_nm),
+              quantity: num(it.cur_qty),
+              avgPrice: num(it.buy_uv),
+              currentPrice: num(it.cur_prc),
+              profitRate: parseFloat(String(it.pl_rt || "0").replace(/[+,\s]/g, "")) || 0,
+              profitAmount: num(it.evltv_prft),
+              totalBuyAmount: num(it.pur_amt),
+              isCreditTrade: rawName.startsWith("*") || rawCode.startsWith("*"),
+            };
+          });
+
+        // 같은 종목(코드) 통합: 현물+신용 합산
+        const consolidatedMap = new Map<string, any>();
+        for (const h of holdings) {
+          const key = h.code || h.name;
+          const ex = consolidatedMap.get(key);
+          if (!ex) {
+            consolidatedMap.set(key, {
+              ...h,
+              positions: [{type: h.isCreditTrade ? "credit" : "cash", quantity: h.quantity, avgPrice: h.avgPrice}],
+            });
+          } else {
+            const newQty = ex.quantity + h.quantity;
+            ex.avgPrice = newQty > 0 ? Math.round((ex.avgPrice * ex.quantity + h.avgPrice * h.quantity) / newQty) : 0;
+            ex.quantity = newQty;
+            ex.totalBuyAmount = (ex.totalBuyAmount || 0) + (h.totalBuyAmount || 0);
+            ex.profitAmount = (ex.profitAmount || 0) + (h.profitAmount || 0);
+            ex.positions.push({type: h.isCreditTrade ? "credit" : "cash", quantity: h.quantity, avgPrice: h.avgPrice});
+            if (ex.totalBuyAmount > 0) {
+              ex.profitRate = parseFloat(((ex.profitAmount / ex.totalBuyAmount) * 100).toFixed(2));
+            }
+            ex.isCreditTrade = ex.isCreditTrade || h.isCreditTrade;
+          }
+        }
+        const consolidated = Array.from(consolidatedMap.values());
+
+        res.json({
+          accountNo: "64981611",
+          asOf: Date.now(),
+          uid,
+          holdings: consolidated,
+          rawCount: stockList.length,
+          consolidatedCount: consolidated.length,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("authorization") || msg.includes("token") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
