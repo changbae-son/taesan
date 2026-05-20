@@ -24,6 +24,8 @@ export {
   jbOrder,
   jbHoldingsSync,
   jbTradesSync,
+  jbScreenerFilters,
+  jbScreenerFiltersSet,
 } from "./jb-bridge";
 
 admin.initializeApp();
@@ -8801,6 +8803,32 @@ async function sendTelegramSScreener(text: string): Promise<void> {
   }
 }
 
+// 설정에서 S/S2 텔레그램 필터 로드
+async function loadScreenerFilters(): Promise<{enableS: boolean; enableS2: boolean}> {
+  try {
+    const doc = await db.collection("settings").doc("telegram_s").get();
+    const cfg = doc.data();
+    return {
+      enableS: cfg?.enableS !== false,
+      enableS2: cfg?.enableS2 !== false,
+    };
+  } catch {
+    return {enableS: true, enableS2: true};
+  }
+}
+
+function shouldSendByFilter(
+  types: string[],
+  filters: {enableS: boolean; enableS2: boolean},
+): boolean {
+  const isS = types.includes("S");
+  const isS2 = types.includes("S2");
+  if (isS && isS2) return filters.enableS || filters.enableS2;
+  if (isS) return filters.enableS;
+  if (isS2) return filters.enableS2;
+  return true;
+}
+
 // S기법 일일 업데이트 로직 (스케줄/수동 공용)
 async function runSScreenerDailyS(
   market: "KOSPI" | "KOSDAQ" = "KOSPI",
@@ -9382,6 +9410,10 @@ export const sScreenerCheck = functions
       const checkStatusItems: any[] = [];
       let alertCount = 0;
 
+      // S/S2 텔레그램 필터 (settings/telegram_s.{enableS, enableS2}, 기본 둘 다 true)
+      const screenerFilters = await loadScreenerFilters();
+      let filteredOutCount = 0;
+
       for (const stk of eligible) {
         await new Promise((r) => setTimeout(r, 130));
 
@@ -9437,15 +9469,25 @@ export const sScreenerCheck = functions
         });
 
         const typeTag = stk.types.join("+");
+
+        // S/S2 토글 필터 (사용자가 설정에서 S 또는 S2 알림을 꺼둔 경우 건너뛰기)
+        if (!shouldSendByFilter(stk.types, screenerFilters)) {
+          filteredOutCount++;
+          continue;
+        }
+
         const emoji = level === "below" ? "🚨" : level === "1pct" ? "⚠️" : "📊";
         const lvText = level === "below" ? "하단선 이탈" : level === "1pct" ? "1% 이내 접근" : "2% 이내 접근";
         const gapText = gap <= 0 ? `${gap.toFixed(1)}%` : `+${gap.toFixed(1)}%`;
+        const stockName = info.name || stk.name;
 
+        // 종목명/코드를 <code>로 감싸서 텔레그램에서 탭하면 클립보드 복사 가능
         const msg = [
-          `${emoji} <b>[${typeTag}]</b> ${info.name || stk.name} (${stk.code})`,
+          `${emoji} <b>[${typeTag}]</b> ${lvText}`,
+          `📌 <code>${stockName}</code>  <code>${stk.code}</code>`,
           `현재가: ${cur.toLocaleString()}원`,
           `EN하단선: ${stk.lowerBand.toLocaleString()}원`,
-          `근접도: ${gapText} → ${lvText}`,
+          `근접도: ${gapText}`,
           stk.marketCapEok ? `시총: ${stk.marketCapEok.toLocaleString()}억원` : "",
           stk.bigVolDay ? `5천억양봉일: ${stk.bigVolDay} (${stk.bigVolTradeValueEok?.toLocaleString() || "?"}억)` : "",
         ].filter(Boolean).join("\n");

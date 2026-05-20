@@ -585,6 +585,91 @@ export const jbKiwoomKeysSet = functions
   });
 
 /* ============================================================================
+ * 스크리너 텔레그램 필터 — S / S2 별 ON/OFF
+ *
+ * Firestore: settings/telegram_s 도큐먼트 안에 enableS, enableS2 필드 (기본 둘 다 true).
+ * sScreenerCheck 발송 직전에 시그널 type별로 체크해서 필터링.
+ * ========================================================================= */
+
+interface ScreenerFilters {
+  enableS: boolean;
+  enableS2: boolean;
+}
+
+async function loadScreenerFilters(): Promise<ScreenerFilters> {
+  try {
+    const doc = await admin.firestore()
+      .collection("settings").doc("telegram_s").get();
+    const cfg = doc.data();
+    return {
+      enableS: cfg?.enableS !== false,   // undefined/true → true
+      enableS2: cfg?.enableS2 !== false, // undefined/true → true
+    };
+  } catch {
+    return {enableS: true, enableS2: true};
+  }
+}
+
+export const jbScreenerFilters = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 10})
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "GET") {
+          res.status(405).json({error: "GET only"});
+          return;
+        }
+        await verifyJbAuth(req);
+        const filters = await loadScreenerFilters();
+        res.json(filters);
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("authorization") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
+
+export const jbScreenerFiltersSet = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 10})
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        await verifyJbAuth(req);
+        const enableS = req.body?.enableS !== false;
+        const enableS2 = req.body?.enableS2 !== false;
+        await admin.firestore().collection("settings").doc("telegram_s")
+          .set({enableS, enableS2}, {merge: true}); // 다른 필드(botToken/chatId) 보존
+        res.json({enableS, enableS2});
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("authorization") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
+
+// 시그널 types와 필터로 발송 여부 판단 (다른 모듈에서도 사용 가능)
+export function shouldSendByFilter(
+  types: string[],
+  filters: ScreenerFilters,
+): boolean {
+  const isS = types.includes("S");
+  const isS2 = types.includes("S2");
+  // S만 있으면 enableS, S2만 있으면 enableS2, 둘 다면 둘 중 하나라도 on이면 발송
+  if (isS && isS2) return filters.enableS || filters.enableS2;
+  if (isS) return filters.enableS;
+  if (isS2) return filters.enableS2;
+  return true; // 알 수 없는 type은 통과
+}
+
+/* ============================================================================
  * jbOrder — 키움 매수/매도 발주
  *
  * ★ 격리 가드:
