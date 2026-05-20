@@ -8979,11 +8979,45 @@ async function runSScreenerDailyS2(
     }
     if (bigVolIdx < 0) continue;
 
-    // bigVol일 이후(더 최신) = bars[0..bigVolIdx-1]
-    // 이 구간에서 close가 하단선 ±2% 안에 한번이라도 닿았다면 이미 접근한 것 → 제외
-    const after = bars.slice(0, bigVolIdx);
-    const alreadyTouched = after.some((b) => b.low <= lowerBand * 1.02);
-    if (alreadyTouched) continue;
+    // bigVol일 이후(더 최신) 구간 bars[0..bigVolIdx-1] 에서
+    // "그 일자 시점의 MA20×0.8" 을 lowerBand로 사용해 첫 하단선 접근 판정.
+    // (기존 버그: "오늘 lowerBand" 로 과거를 평가하면 양봉 사이클이 이미 끝났어도
+    //  하단선 자체가 시간에 따라 내려와 과거 접근이 "안 닿음" 으로 잘못 판정됨.)
+    //
+    // bars 정렬: 최신 → 오래된. i 일자 시점의 MA20 = bars[i..i+19] (i 일자 포함 직전 20일).
+    let firstTouchIdx = -1;
+    let firstTouchInfo: {
+      date: string;
+      low: number;
+      lowerBandAtDay: number;
+    } | null = null;
+    for (let i = bigVolIdx - 1; i >= 0; i--) {
+      const window = bars.slice(i, i + 20);
+      if (window.length < 20) continue;
+      const ma20AtDay = Math.round(
+        window.reduce((s, b) => s + b.close, 0) / 20,
+      );
+      const lowerBandAtDay = Math.round(ma20AtDay * 0.8);
+      const threshold = lowerBandAtDay * 1.02;
+      if (bars[i].low <= threshold) {
+        firstTouchIdx = i;
+        firstTouchInfo = {
+          date: bars[i].date,
+          low: bars[i].low,
+          lowerBandAtDay,
+        };
+        break;
+      }
+    }
+    // 양봉 이후 이미 한 번 하단선 접근이 일어났다면 사이클 종료 → 제외
+    if (firstTouchIdx >= 0) {
+      console.log(
+        `[S2] ${stk.code} ${stk.name} 사이클 종료 (양봉 ${bars[bigVolIdx].date} → ` +
+          `첫 접근 ${firstTouchInfo?.date} @ low ${firstTouchInfo?.low}, ` +
+          `당시 lowerBand ${firstTouchInfo?.lowerBandAtDay})`,
+      );
+      continue;
+    }
 
     await db.collection("sScreener").doc("s2Eligible").collection("stocks").doc(stk.code).set({
       code: stk.code,
