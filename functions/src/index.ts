@@ -9523,9 +9523,15 @@ export const sScreenerCheck = functions
         eligibleCount: eligible.length,
         alertItemCount: alertItems.length,
         sentCount: alertCount,
+        filteredOutCount,
+        filters: screenerFilters, // {enableS, enableS2} 도큐먼트에도 저장 (UI 확인용)
       });
 
-      console.log(`[S체크] 완료. ${alertItems.length}건 알림범위, ${alertCount}건 신규 발송`);
+      console.log(
+        `[S체크] 완료. ${alertItems.length}건 알림범위, ${alertCount}건 신규 발송, ` +
+          `${filteredOutCount}건 필터 차단 ` +
+          `(필터: S=${screenerFilters.enableS}, S2=${screenerFilters.enableS2})`,
+      );
     } catch (e: any) {
       console.error("[S체크] 오류:", e.message);
     }
