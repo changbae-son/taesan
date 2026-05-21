@@ -8890,7 +8890,7 @@ async function runSScreenerDailyS(
   return {processed, eligible: eligibleCount, market};
 }
 
-// KOSPI 스케줄 (평일 08:45 KST)
+// KOSPI 스케줄 (평일 21:00 KST — NXT 종료 후 1시간 마진 → 오늘 종가 정확 반영)
 export const sScreenerDailyS = functions
   .region("asia-northeast3")
   .runWith({
@@ -8899,7 +8899,7 @@ export const sScreenerDailyS = functions
     timeoutSeconds: 540,
     memory: "512MB",
   })
-  .pubsub.schedule("45 8 * * 1-5")
+  .pubsub.schedule("0 21 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
@@ -8909,7 +8909,7 @@ export const sScreenerDailyS = functions
     }
   });
 
-// KOSDAQ 스케줄 (평일 08:47 KST, KOSPI 직후)
+// KOSDAQ 스케줄 (평일 21:02 KST — KOSPI S 직후)
 export const sScreenerDailyS_KOSDAQ = functions
   .region("asia-northeast3")
   .runWith({
@@ -8918,7 +8918,7 @@ export const sScreenerDailyS_KOSDAQ = functions
     timeoutSeconds: 540,
     memory: "512MB",
   })
-  .pubsub.schedule("47 8 * * 1-5")
+  .pubsub.schedule("2 21 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
@@ -9073,7 +9073,8 @@ export const sScreenerDailyS2 = functions
     timeoutSeconds: 540,
     memory: "512MB",
   })
-  .pubsub.schedule("52 8 * * 1-5")
+  // 평일 21:05 KST — KOSPI S 완료 후 (S 처리 시간 ~5분 가정)
+  .pubsub.schedule("5 21 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
@@ -9083,7 +9084,7 @@ export const sScreenerDailyS2 = functions
     }
   });
 
-// KOSDAQ 스케줄 (평일 08:54 KST)
+// KOSDAQ 스케줄 (평일 21:07 KST)
 export const sScreenerDailyS2_KOSDAQ = functions
   .region("asia-northeast3")
   .runWith({
@@ -9092,7 +9093,7 @@ export const sScreenerDailyS2_KOSDAQ = functions
     timeoutSeconds: 540,
     memory: "512MB",
   })
-  .pubsub.schedule("54 8 * * 1-5")
+  .pubsub.schedule("7 21 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
