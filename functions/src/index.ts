@@ -4331,10 +4331,15 @@ async function reconcileStockPlans(stockName: string): Promise<{
         const prevPrice = prev.filledPrice || prev.price || 0;
         if (prevPrice > 0) correctPrice = Math.round(prevPrice * 0.9);
       }
-      // 미체결 수량은 1차 수량과 동일하게 유지
+      // ✅ 미체결 수량 = 1차 매수금액 / 해당 차수 예상가 (비중 동일 원칙)
       const firstBp = buyPlans[0];
-      const firstQty = firstBp.filledQuantity || firstBp.quantity || 0;
-      if (firstQty > 0) correctQty = firstQty;
+      const firstBuyPrice = firstBp.filledPrice || firstBp.price || 0;
+      const firstBuyQty = firstBp.filledQuantity || firstBp.quantity || 0;
+      const firstBuyAmt = firstBuyPrice * firstBuyQty;
+      const levelQty = correctPrice > 0 && firstBuyAmt > 0
+        ? Math.round(firstBuyAmt / correctPrice)
+        : firstBuyQty;
+      if (levelQty > 0) correctQty = levelQty;
     }
 
     if (correctPrice !== bp.price || correctQty !== bp.quantity) {
@@ -4358,10 +4363,13 @@ async function reconcileStockPlans(stockName: string): Promise<{
     return qty > 0 ? Math.round(amt / qty) : 0;
   })();
   const stockAvg = stockAvgFromBuyPlans > 0 ? stockAvgFromBuyPlans : (Number(stock.avgPrice) || 0);
-  // buyPlans filled 합계 (계획수량 = 매수합계 × 20%)
+  // buyPlans filled 합계
   const totalFilledBuyQty = buyPlans.reduce((sum: number, bp: any) =>
     bp.filled ? sum + ((bp.filledQuantity as number) || (bp.quantity as number) || 0) : sum, 0);
-  const correctSellQty = totalFilledBuyQty > 0 ? Math.round(totalFilledBuyQty * 0.2) : 0;
+  // ✅ 매도 슬롯 수량 = 현재 보유수량 / 5 (추가매수 시 리셋 원칙)
+  const totalSoldQtyForSell = sortedSells.reduce((sum: number, s: any) => sum + (Number(s.quantity) || 0), 0);
+  const currentHoldingForSell = Math.max(0, totalFilledBuyQty - totalSoldQtyForSell);
+  const correctSellQty = currentHoldingForSell > 0 ? Math.round(currentHoldingForSell / 5) : 0;
 
   for (let i = 0; i < sellPlans.length; i++) {
     const plan = sellPlans[i];
