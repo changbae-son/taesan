@@ -8782,6 +8782,65 @@ async function screenerFetchBars(
   return bars.slice(0, days);
 }
 
+// 오늘 알림 이력 기록 (sScreener/alertHistory/items/{YYYYMMDD-code})
+// 매번 알림 발송 또는 알림 조건 충족 시 호출.
+async function recordAlertHistory(
+  code: string,
+  name: string,
+  types: string[],
+  cur: number,
+  lowerBand: number,
+  gap: number,
+  level: "below" | "1pct" | "2pct",
+  marketCapEok: number | null,
+  bigVolDay: string | null,
+  bigVolTradeValueEok: number | null,
+): Promise<void> {
+  try {
+    const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+    const yyyy = kstNow.getFullYear();
+    const mm = String(kstNow.getMonth() + 1).padStart(2, "0");
+    const dd = String(kstNow.getDate()).padStart(2, "0");
+    const dateKey = `${yyyy}${mm}${dd}`;
+    const historyId = `${dateKey}-${code}`;
+    const historyRef = db.collection("sScreener").doc("alertHistory").collection("items").doc(historyId);
+    const histDoc = await historyRef.get();
+    const histData = histDoc.data();
+    const now = Date.now();
+    const levelRank: Record<string, number> = {below: 3, "1pct": 2, "2pct": 1};
+    if (histData) {
+      const prevRank = levelRank[histData.worstLevel] || 0;
+      const currRank = levelRank[level] || 0;
+      await historyRef.set({
+        lastAlertAt: now,
+        currentPrice: cur,
+        minGap: Math.min(histData.minGap ?? 999, gap),
+        worstLevel: currRank > prevRank ? level : histData.worstLevel,
+        alertCount: (histData.alertCount || 0) + 1,
+      }, {merge: true});
+    } else {
+      await historyRef.set({
+        date: dateKey,
+        code,
+        name,
+        types,
+        firstAlertAt: now,
+        lastAlertAt: now,
+        currentPrice: cur,
+        lowerBand,
+        minGap: gap,
+        worstLevel: level,
+        alertCount: 1,
+        marketCapEok,
+        bigVolDay,
+        bigVolTradeValueEok,
+      });
+    }
+  } catch (e: any) {
+    console.error("[alertHistory] 저장 실패:", e.message);
+  }
+}
+
 // S스크리너 전용 텔레그램 발송 (taesan Firestore: settings/telegram_s)
 async function sendTelegramSScreener(text: string): Promise<void> {
   try {
@@ -8961,7 +9020,9 @@ async function runSScreenerDailyS2(
   const config = await getKiwoomConfig();
   const token = await getAccessToken(config);
 
-  // S2: 대형주/중형주만 (소형주는 거래대금 5천억 사실상 거의 없고, 9분 타임아웃 회피)
+  // S2 종목 필터링:
+  //  - KOSPI: 대형/중형/소형 전부 (광전자(017900) 같은 중소형 경계 종목도 5천억 양봉 발생 가능)
+  //  - KOSDAQ: 대형/중형만 (소형주 1,500+ 개 시간 부담)
   const snap = await db.collection("stockCodes").where("market", "==", market).get();
   const stocks = snap.docs
     .map((d) => ({
@@ -8969,8 +9030,15 @@ async function runSScreenerDailyS2(
       name: d.data().name as string,
       upSizeName: (d.data().upSizeName as string) || "",
     }))
-    .filter((s) => s.upSizeName === "대형주" || s.upSizeName === "중형주");
-  console.log(`[S스크리너] S2 ${market} 대형/중형 ${stocks.length}종목 스캔`);
+    .filter((s) => {
+      if (market === "KOSPI") {
+        // KOSPI: 모든 크기 포함 (소형주 광전자 케이스 잡기 위함)
+        return s.upSizeName === "대형주" || s.upSizeName === "중형주" || s.upSizeName === "소형주";
+      }
+      // KOSDAQ: 대형/중형만 (시간 절약)
+      return s.upSizeName === "대형주" || s.upSizeName === "중형주";
+    });
+  console.log(`[S스크리너] S2 ${market} ${stocks.length}종목 스캔`);
 
   // 해당 market의 기존 s2Eligible만 초기화 (다른 market 보존)
   const prev = await db.collection("sScreener").doc("s2Eligible").collection("stocks")
@@ -9193,12 +9261,13 @@ export const screenerCompareApis = functions
   });
 
 // 특정 종목 일봉 raw 데이터 조회 (단위 검증용)
+// stockCodes 도큐먼트 + 60일치 일봉 + 5천억 양봉 후보 추출
 export const screenerRawBars = functions
   .region("asia-northeast3")
   .runWith({
     vpcConnector: "kiwoom-connector",
     vpcConnectorEgressSettings: "ALL_TRAFFIC",
-    timeoutSeconds: 30,
+    timeoutSeconds: 60,
   })
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
@@ -9210,27 +9279,68 @@ export const screenerRawBars = functions
         }
         const config = await getKiwoomConfig();
         const token = await getAccessToken(config);
-        const r = await fetch(`${config.baseUrl}/api/dostk/chart`, {
-          method: "POST",
-          headers: {
+
+        // 1) stockCodes 도큐먼트 조회 (upSizeName 등)
+        const stkDoc = await db.collection("stockCodes").doc(`stock_${code}`).get();
+        const stkData = stkDoc.exists ? stkDoc.data() : null;
+
+        // 2) 일봉 데이터 — 여러 페이지 받아서 150일치 확보 (_AL 통합)
+        const num = (v: unknown): number => Math.abs(parseInt(String(v || "0").replace(/[+,\s]/g, "")) || 0);
+        const bars: any[] = [];
+        let contYn = "N", nextKey = "";
+        const stkCd = code + "_AL";
+        for (let page = 0; page < 6 && bars.length < 160; page++) {
+          const headers: Record<string, string> = {
             "Content-Type": "application/json; charset=utf-8",
             "authorization": `Bearer ${token}`,
             "api-id": "ka10081",
-          },
-          body: JSON.stringify({
-            stk_cd: code,
-            base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
-            upd_stkpc_tp: "1",
-            qry_tp: "0",
-          }),
-        });
-        const data: any = await r.json();
-        const chart: any[] = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
+          };
+          if (contYn === "Y" && nextKey) {
+            headers["cont-yn"] = "Y";
+            headers["next-key"] = nextKey;
+          }
+          const r = await fetch(`${config.baseUrl}/api/dostk/chart`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              stk_cd: stkCd,
+              base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+              upd_stkpc_tp: "1",
+              qry_tp: "0",
+            }),
+          });
+          contYn = r.headers.get("cont-yn") || r.headers.get("Cont-Yn") || "";
+          nextKey = r.headers.get("next-key") || r.headers.get("Next-Key") || "";
+          const data: any = await r.json();
+          const chart: any[] = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
+          for (const c of chart) {
+            const open = num(c.opn_prc || c.open_pric || c.strt_prc);
+            const close = num(c.cur_prc || c.cls_prc);
+            const tvEok = Math.round(num(c.trde_prica) / 100);
+            bars.push({
+              dt: c.dt || c.stk_bsop_date,
+              open, close,
+              tvEok,
+              isYangBong: close > open,
+              isBig5kEok: tvEok >= 5000,
+            });
+          }
+          if (contYn !== "Y" || !nextKey) break;
+          await new Promise((r) => setTimeout(r, 150));
+        }
+
+        // 3) 5천억+ 양봉 후보만 추출
+        const bigVolDays = bars.filter((b) => b.isBig5kEok && b.isYangBong);
+
         res.json({
           code,
-          dataKeys: Object.keys(data),
-          firstFiveBars: chart.slice(0, 5),
-          allFieldsOfFirstBar: chart[0] ? Object.keys(chart[0]) : [],
+          stockCodes: stkData,
+          totalBars: bars.length,
+          oldestDate: bars[bars.length - 1]?.dt,
+          newestDate: bars[0]?.dt,
+          bigVolDays,
+          allBigVolDays: bars.filter((b) => b.isBig5kEok),
+          firstFiveBars: bars.slice(0, 5),
         });
       } catch (e: any) {
         res.status(500).json({error: e.message});
