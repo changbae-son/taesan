@@ -1121,10 +1121,15 @@ function mapTradesToPlans(
         nextPrice = prevPrice > 0 ? Math.round(prevPrice * 0.9) : 0;
       }
 
+      // ✅ Bug1 fix: 미체결 차수 수량 = 1차 매수 총금액 / 해당 차수 예상가 (비중 동일 원칙)
+      const firstBuyAmt = firstBuyPrice * firstBuyQty;
+      const levelQty = nextPrice > 0 && firstBuyAmt > 0
+        ? Math.round(firstBuyAmt / nextPrice)
+        : firstBuyQty;
       buyPlans.push({
         level: i + 1,
         price: nextPrice,
-        quantity: firstBuyQty,
+        quantity: levelQty,
         filled: false,
         filledDate: "",
       });
@@ -1142,37 +1147,55 @@ function mapTradesToPlans(
   }
   const avgPrice = totalQty > 0 ? Math.round(totalCost / totalQty) : firstBuyPrice;
 
-  // 매도 차수 매핑: 개별 체결 건을 순차적으로 슬롯에 매핑
-  // (날짜+시간 정렬은 위의 stockTrades.sort()에서 이미 처리됨)
-  // 같은 날짜 여러 건도 각각 별도 슬롯으로 배정 (분할 매도 정확 반영)
+  // ✅ Bug2 fix: 추가매수 시 매도계획 완전 리셋
+  // 현재 보유수량 = 전체 체결매수 - 전체 매도
+  const currentHoldingQty = Math.max(0, totalQty - totalSoldQty);
+
+  // 날짜 정규화 헬퍼 (YYYYMMDD → YYYY-MM-DD, 이미 대시형이면 그대로)
+  const normDate = (d: string): string => {
+    if (!d) return "";
+    if (d.length === 8 && !d.includes("-")) {
+      return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    }
+    return d;
+  };
+
+  // 최근 매수 일자 (가장 마지막 체결 매수 날짜)
+  const lastBuyDateNorm = buyDates.length > 0 ? normDate(buyDates[buyDates.length - 1]) : "";
+
+  // 최근 매수 이후 매도만 현재 라운드 슬롯에 매핑
+  // (이전 라운드에서 매도된 내역은 매매일지에만 기록 — 슬롯 초기화)
+  const currentRoundSells = lastBuyDateNorm
+    ? sells.filter((s) => normDate(s.date || "") > lastBuyDateNorm)
+    : sells;
+
   const sellCount = sells.length;
 
-  // 수익 매도 계획 (5단계)
+  // 수익 매도 계획 (5단계) — 추가매수 시 완전 리셋, 슬롯 수량 = 현재보유 / 5
+  const slotQty = currentHoldingQty > 0 ? Math.round(currentHoldingQty / 5) : 0;
   const percents = [5, 10, 15, 20, 25];
   const sellPlans = percents.map((p, i) => {
-    const sellTrade = sells[i]; // i번째 체결 → i번 슬롯 1:1 매핑
-    // 목표가는 항상 평단가 × (1+%) 로 유지 (실제 체결가와 분리)
+    const sellTrade = currentRoundSells[i]; // 최근 매수 이후 i번째 체결만 매핑
+    // 목표가는 현재 평단가 × (1+%) 로 유지 (실제 체결가와 분리)
     const targetPrice = avgPrice > 0 ? Math.round(avgPrice * (1 + p / 100)) : 0;
 
     if (sellTrade) {
       const dt = sellTrade.date || "";
-      const formattedDate = dt.length === 8
-        ? `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`
-        : dt;
+      const formattedDate = normDate(dt);
       return {
         percent: p,
-        price: targetPrice,                  // 🔧 목표가 (실제가 아님) - 평단 기반 계산값
+        price: targetPrice,
         quantity: sellTrade.quantity,
         filled: true,
         filledDate: formattedDate,
         filledQuantity: sellTrade.quantity,
-        filledPrice: sellTrade.price,        // 실제 체결가
+        filledPrice: sellTrade.price,
       };
     }
     return {
       percent: p,
       price: targetPrice,
-      quantity: totalQty > 0 ? Math.round(totalQty * 0.2) : 0,
+      quantity: slotQty,
       filled: false,
       filledDate: "",
     };
