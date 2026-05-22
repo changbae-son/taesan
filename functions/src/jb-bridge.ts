@@ -1137,3 +1137,61 @@ export const jbTradesSync = functions
       }
     });
   });
+
+/**
+ * jb-s-web → 오늘 알림 이력 조회 (또는 특정 날짜)
+ * GET /jbScreenerHistory?date=YYYYMMDD (기본: 오늘 KST)
+ * headers: Authorization: Bearer <jb-s-web Firebase ID Token>
+ *
+ * Response: {
+ *   date: "YYYYMMDD",
+ *   count: number,
+ *   items: [{
+ *     date, code, name, types, firstAlertAt, lastAlertAt,
+ *     currentPrice, lowerBand, minGap, worstLevel, alertCount,
+ *     marketCapEok?, bigVolDay?, bigVolTradeValueEok?
+ *   }]
+ * }
+ */
+export const jbScreenerHistory = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "GET") {
+          res.status(405).json({error: "GET only"});
+          return;
+        }
+        await verifyJbAuth(req);
+
+        let dateKey = String(req.query.date || "").replace(/[^0-9]/g, "");
+        if (!dateKey || dateKey.length !== 8) {
+          const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+          const yyyy = kstNow.getFullYear();
+          const mm = String(kstNow.getMonth() + 1).padStart(2, "0");
+          const dd = String(kstNow.getDate()).padStart(2, "0");
+          dateKey = `${yyyy}${mm}${dd}`;
+        }
+
+        const db = admin.firestore();
+        const snap = await db.collection("sScreener").doc("alertHistory").collection("items")
+          .where("date", "==", dateKey)
+          .get();
+
+        const items = snap.docs.map((d) => d.data());
+        // 최저 gap 오름차순 (가장 위험했던 종목 위에)
+        items.sort((a: any, b: any) => (a.minGap ?? 999) - (b.minGap ?? 999));
+
+        res.json({
+          date: dateKey,
+          count: items.length,
+          items,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("authorization") || msg.includes("token") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });

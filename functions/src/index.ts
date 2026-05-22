@@ -26,6 +26,7 @@ export {
   jbTradesSync,
   jbScreenerFilters,
   jbScreenerFiltersSet,
+  jbScreenerHistory,
 } from "./jb-bridge";
 
 admin.initializeApp();
@@ -9602,6 +9603,19 @@ export const sScreenerCheck = functions
             bigVolTradeValueEok: stk.bigVolTradeValueEok || null,
             checkedAt: now,
           });
+          // 오늘 알림 이력 기록 (날짜별 종목 누적)
+          await recordAlertHistory(
+            stk.code,
+            info.name || stk.name,
+            stk.types,
+            cur,
+            stk.lowerBand,
+            gap,
+            level as "below" | "1pct" | "2pct",
+            stk.marketCapEok || null,
+            stk.bigVolDay || null,
+            stk.bigVolTradeValueEok || null,
+          );
         }
 
         if (level === "none") continue;
@@ -9752,6 +9766,19 @@ export const sScreenerCheckNow = functions
             marketCapEok: stk.marketCapEok || null, bigVolDay: stk.bigVolDay || null,
             checkedAt: now,
           });
+          // 오늘 알림 이력 기록
+          await recordAlertHistory(
+            stk.code,
+            info.name || stk.name,
+            stk.types,
+            info.currentPrice,
+            stk.lowerBand,
+            gap,
+            level as "below" | "1pct" | "2pct",
+            stk.marketCapEok || null,
+            stk.bigVolDay || null,
+            stk.bigVolTradeValueEok || null,
+          );
         }
         for (const items of [alertItems, checkStatusItems]) {
           if (items.length === 0) continue;
