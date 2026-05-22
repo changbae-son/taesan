@@ -4010,7 +4010,7 @@ export const stockListUpdate = functions
                 const code = item.code || item.stk_cd || "";
                 const name = item.name || item.stk_nm || "";
                 if (code && /^\d{6}$/.test(code) && name) {
-                  // ETF/ETN/우선주 등 제외: kind=A 일반종목만 (kind 값이 있으면)
+                  // kind="A"는 일반종목, 다른 값은 ETF/ETN 등 (S/S2 필터에서 활용)
                   // state에 "투자유의" 등 포함되어도 일단 저장 (필터링은 별도)
                   batch.set(db.collection("stockCodes").doc(`stock_${code}`), {
                     name: name.trim(),
@@ -4018,6 +4018,7 @@ export const stockListUpdate = functions
                     market: marketName,
                     state: item.state || "",
                     upSizeName: item.upSizeName || "",
+                    kind: item.kind || "",
                   });
                   totalCount++;
                 }
@@ -8782,6 +8783,38 @@ async function screenerFetchBars(
   return bars.slice(0, days);
 }
 
+// ETF/ETN/스팩 제외 필터
+// S/S2 분할매매에 적합하지 않은 종목을 종목명 패턴으로 식별.
+// kind="A" (일반종목)는 통과, kind 값이 다르거나 패턴 매칭되면 제외.
+function isExcludedSecurity(name: string, kind?: string): boolean {
+  // 1) kind 필드 활용 (ka10099의 kind="A"가 일반종목)
+  if (kind && kind !== "" && kind !== "A") return true;
+
+  if (!name) return false;
+  const upper = name.toUpperCase().trim();
+
+  // 2) ETF/ETN — 발행사 prefix 매칭
+  const etfPrefixes = [
+    "KODEX", "TIGER", "ARIRANG", "HANARO", "KOSEF",
+    "ACE ", "ACE_", "PLUS ", "PLUS_", "SOL ", "SOL_",
+    "KBSTAR", "TIMEFOLIO", "1Q ", "HK ", "KIWOOM",
+    "TREX", "WON ", "WOORI", "DAISHIN", "히어로즈",
+    "KCGI", "BNK", "FOCUS", "VITA",
+  ];
+  for (const p of etfPrefixes) {
+    if (upper.startsWith(p.toUpperCase())) return true;
+  }
+
+  // 3) ETN — "ETN" 또는 "QV" 포함
+  if (upper.includes("ETN") || upper.includes(" QV") || upper.startsWith("QV")) return true;
+
+  // 4) 스팩 (SPAC)
+  if (name.includes("스팩") || upper.includes("SPAC")) return true;
+  if (name.includes("기업인수목적")) return true;
+
+  return false;
+}
+
 // 오늘 알림 이력 기록 (sScreener/alertHistory/items/{YYYYMMDD-code})
 // 매번 알림 발송 또는 알림 조건 충족 시 호출.
 async function recordAlertHistory(
@@ -8897,11 +8930,15 @@ async function runSScreenerDailyS(
   const token = await getAccessToken(config);
 
   const snap = await db.collection("stockCodes").where("market", "==", market).get();
-  const stocks = snap.docs.map((d) => ({
+  const allStocks = snap.docs.map((d) => ({
     code: d.data().code as string,
     name: d.data().name as string,
+    kind: (d.data().kind as string) || "",
   }));
-  console.log(`[S스크리너] ${market} ${stocks.length}종목 스캔`);
+  // ETF/ETN/스팩 제외
+  const stocks = allStocks.filter((s) => !isExcludedSecurity(s.name, s.kind));
+  const excludedCount = allStocks.length - stocks.length;
+  console.log(`[S스크리너] ${market} ${stocks.length}종목 스캔 (ETF/ETN/스팩 ${excludedCount}개 제외)`);
 
   // 해당 market의 기존 S eligible만 초기화 (다른 market 보존)
   const prev = await db.collection("sScreener").doc("sEligible").collection("stocks")
@@ -9021,24 +9058,25 @@ async function runSScreenerDailyS2(
   const token = await getAccessToken(config);
 
   // S2 종목 필터링:
-  //  - KOSPI: 대형/중형/소형 전부 (광전자(017900) 같은 중소형 경계 종목도 5천억 양봉 발생 가능)
+  //  - KOSPI: 대형/중형/소형 전부 (광전자 같은 중소형 경계 종목도 5천억 양봉 발생 가능)
   //  - KOSDAQ: 대형/중형만 (소형주 1,500+ 개 시간 부담)
+  //  - ETF/ETN/스팩 제외 (분할매매 부적합)
   const snap = await db.collection("stockCodes").where("market", "==", market).get();
-  const stocks = snap.docs
-    .map((d) => ({
-      code: d.data().code as string,
-      name: d.data().name as string,
-      upSizeName: (d.data().upSizeName as string) || "",
-    }))
-    .filter((s) => {
-      if (market === "KOSPI") {
-        // KOSPI: 모든 크기 포함 (소형주 광전자 케이스 잡기 위함)
-        return s.upSizeName === "대형주" || s.upSizeName === "중형주" || s.upSizeName === "소형주";
-      }
-      // KOSDAQ: 대형/중형만 (시간 절약)
-      return s.upSizeName === "대형주" || s.upSizeName === "중형주";
-    });
-  console.log(`[S스크리너] S2 ${market} ${stocks.length}종목 스캔`);
+  const allMapped = snap.docs.map((d) => ({
+    code: d.data().code as string,
+    name: d.data().name as string,
+    upSizeName: (d.data().upSizeName as string) || "",
+    kind: (d.data().kind as string) || "",
+  }));
+  const sizeFiltered = allMapped.filter((s) => {
+    if (market === "KOSPI") {
+      return s.upSizeName === "대형주" || s.upSizeName === "중형주" || s.upSizeName === "소형주";
+    }
+    return s.upSizeName === "대형주" || s.upSizeName === "중형주";
+  });
+  const stocks = sizeFiltered.filter((s) => !isExcludedSecurity(s.name, s.kind));
+  const excludedCount = sizeFiltered.length - stocks.length;
+  console.log(`[S스크리너] S2 ${market} ${stocks.length}종목 스캔 (ETF/ETN/스팩 ${excludedCount}개 제외)`);
 
   // 해당 market의 기존 s2Eligible만 초기화 (다른 market 보존)
   const prev = await db.collection("sScreener").doc("s2Eligible").collection("stocks")
