@@ -2574,7 +2574,8 @@ export default function StockDetail({
                   return sum + (bp.filledQuantity || bp.quantity);
                 }, 0);
                 const maSold = displayMaSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
-                let remaining = totalBought - maSold;
+                // 복기 모드: 해당 라운드 시작 보유수량부터 차감 시작
+                let remaining = !isCurrentRound ? roundView.holdingAtStart : (totalBought - maSold);
 
                 // MA 행 렌더 헬퍼 (드래그 가능)
                 const renderMARow = (m: typeof local.maSells[0], mi: number) => {
@@ -2738,18 +2739,34 @@ export default function StockDetail({
                 });
 
                 local.sellPlans.forEach((sp, i) => {
-                  // manualOverride: sp 값 우선 (분리/편집 보호)
-                  const useSpOnly = sp.manualOverride === true;
-                  const actual = useSpOnly ? null : sellsByDate[i];
-                  const realPrice = actual ? Math.round(actual.amt / actual.qty) : sp.filledPrice || 0;
-                  const realQty = actual ? actual.qty : sp.filledQuantity || 0;
-                  const realDate = actual?.date || sp.filledDate || '';
-                  const isFilled = sp.filled || !!actual;
-                  const realProfit = isFilled && local.avgPrice > 0 && realPrice > 0
-                    ? ((realPrice - local.avgPrice) / local.avgPrice) * 100 : null;
-                  const metTarget = isFilled && realPrice >= sp.price;
-                  const sellNearInfo = !isFilled ? getNearInfo(sp.price) : null;
-                  const soldThisRound = isFilled ? (realQty || sp.quantity) : 0;
+                  // 복기 모드: roundView.sellSlots[i] 데이터 우선 (해당 라운드 날짜 범위 내 실매도)
+                  const rvSlot = !isCurrentRound && i < roundView.sellSlots.length ? roundView.sellSlots[i] : undefined;
+
+                  // manualOverride: sp 값 우선 (분리/편집 보호) — 현재 라운드에서만 적용
+                  const useSpOnly = !rvSlot && sp.manualOverride === true;
+                  const actual = (useSpOnly || !!rvSlot) ? null : sellsByDate[i];
+
+                  // 복기 모드: rvSlot 기반 / 현재 모드: sp+actual 기반
+                  const isFilled = rvSlot ? rvSlot.filled : (sp.filled || !!actual);
+                  const realPrice = rvSlot
+                    ? (rvSlot.filledPrice || 0)
+                    : (actual ? Math.round(actual.amt / actual.qty) : sp.filledPrice || 0);
+                  const realQty = rvSlot
+                    ? (isFilled ? rvSlot.quantity : 0)
+                    : (actual ? actual.qty : sp.filledQuantity || 0);
+                  const realDate = rvSlot ? (rvSlot.filledDate || '') : (actual?.date || sp.filledDate || '');
+                  // 목표가: 복기 모드 → 해당 라운드 평단 기반 / 현재 → sp.price
+                  const targetPrice = rvSlot ? rvSlot.price : sp.price;
+                  // 계획 수량: 복기 모드 → roundView.slotQty / 현재 → sp.quantity
+                  const planQty = rvSlot ? roundView.slotQty : sp.quantity;
+
+                  // 수익률: displayAvgPrice 사용 (복기=라운드평단, 현재=local.avgPrice)
+                  const realProfit = isFilled && displayAvgPrice > 0 && realPrice > 0
+                    ? ((realPrice - displayAvgPrice) / displayAvgPrice) * 100 : null;
+                  const metTarget = isFilled && realPrice >= targetPrice;
+                  // 복기 모드: 근접도 표시 불필요
+                  const sellNearInfo = !isFilled && !rvSlot ? getNearInfo(sp.price) : null;
+                  const soldThisRound = isFilled ? (realQty || planQty) : 0;
                   remaining -= soldThisRound;
                   const remainingAfter = Math.max(0, remaining);
                   const shortDate = realDate ? realDate.slice(5) : '';
@@ -2798,12 +2815,12 @@ export default function StockDetail({
                       <td className={styles.numCell}>
                         <span className={styles.colLabel}>목표가</span>
                         <span className={i === nextSellIdx && !isFilled ? styles.nextSellPrice : styles.planPrice}>
-                          {sp.price.toLocaleString()}
+                          {targetPrice.toLocaleString()}
                         </span>
-                        {i === nextSellIdx && !isFilled && local.currentPrice > 0 && (
+                        {isCurrentRound && i === nextSellIdx && !isFilled && local.currentPrice > 0 && (
                           <span className={`${styles.currentPriceTag} ${sellNearInfo?.urgency === 3 ? styles.priceTagUrgentSell : ''}`}>
                             현재 {local.currentPrice.toLocaleString()}
-                            <span className={styles.priceGap}>{priceGapText(sp.price)}</span>
+                            <span className={styles.priceGap}>{priceGapText(targetPrice)}</span>
                           </span>
                         )}
                       </td>
@@ -2832,7 +2849,7 @@ export default function StockDetail({
                       <td className={styles.numCell}>
                         <span className={styles.colLabel}>수량</span>
                         {isFilled
-                          ? <span className={styles.filledQty}>{(realQty || sp.quantity).toLocaleString()}</span>
+                          ? <span className={styles.filledQty}>{(realQty || planQty).toLocaleString()}</span>
                           : <span className={styles.dashText}>-</span>}
                         <span className={styles.cumulativeQty} style={{ color: remainingAfter <= 0 && isFilled ? '#f44336' : '#888' }}>
                           {isFilled
@@ -2842,21 +2859,24 @@ export default function StockDetail({
                       </td>
                       {/* 체결 + MA버튼 + 수동편집 */}
                       <td className={styles.btnCell}>
+                        {/* 복기 모드: 체결 버튼 비활성 (현재 라운드 데이터 보호) */}
                         <button
                           className={`${styles.fillBtn} ${isFilled ? styles.sellBtnActive : ''}`}
-                          onClick={() => toggleSellFilled(i)}
+                          onClick={() => { if (isCurrentRound) toggleSellFilled(i); }}
+                          style={!isCurrentRound ? { opacity: 0.4, cursor: 'default' } : undefined}
+                          title={!isCurrentRound ? '복기 모드에서는 편집 불가' : undefined}
                         >
                           {isFilled ? '체결' : '미체결'}
                         </button>
-                        {/* MA + 이동 2단 스택 (체결된 슬롯만) */}
-                        {isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
+                        {/* MA + 이동 2단 스택 (체결된 슬롯만, 현재 라운드에서만) */}
+                        {isCurrentRound && isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
                           <span className={styles.btnVStack}>
                             <button className={styles.splitBtn} onClick={() => openSplitToMA(i)} title="이 차수의 일부/전체를 MA 매도로 분리">🔀 MA</button>
                             <button className={styles.moveSellBtn} onClick={() => openMoveSell(i)} title="이 체결을 다른 차수로 이동">↕️ 이동</button>
                           </span>
                         )}
-                        {/* 연필 + 수동 2단 스택 */}
-                        {sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
+                        {/* 연필 + 수동 2단 스택 (현재 라운드에서만) */}
+                        {isCurrentRound && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
                           <span className={styles.btnVStack}>
                             <button className={styles.sellEditBtn} onClick={() => openSellEdit(i)}>✏️</button>
                             {sp.manualOverride && (
