@@ -1421,12 +1421,34 @@ export default function StockDetail({
     const holdingAtStart = Math.max(0, totalBought - soldBeforeRound);
     const slotQty = holdingAtStart > 0 ? Math.round(holdingAtStart / 5) : 0;
 
-    // 이 라운드의 매도 = 이 매수 이후 ~ 다음 매수 이전
+    // MA 매도가 소비한 trade 수량 차감 (이중 표시 방지)
+    // local.maSells 중 이 라운드 날짜 범위 안에 있고 consumedTradeIds가 있는 항목의 qty를 trade별로 집계
+    const maConsumedQty: Record<string, number> = {};
+    local.maSells.forEach(m => {
+      if (!m.filled || !m.filledDate) return;
+      const mDate = normDate(m.filledDate);
+      if (!(mDate > thisBuyDate && (!nextBuyDate || mDate < nextBuyDate))) return;
+      if (!Array.isArray(m.consumedTradeIds) || m.consumedTradeIds.length === 0) return;
+      // 여러 trade를 하나의 MA 슬롯이 소비한 경우 균등 배분
+      const qtyPerTrade = m.quantity / m.consumedTradeIds.length;
+      m.consumedTradeIds.forEach(id => {
+        maConsumedQty[String(id)] = (maConsumedQty[String(id)] || 0) + qtyPerTrade;
+      });
+    });
+
+    // 이 라운드의 매도 = 이 매수 이후 ~ 다음 매수 이전 (MA 소비분 차감)
     const roundSells = [...actualSells]
       .filter(s => {
         const d = normDate(s.date);
         return d > thisBuyDate && (!nextBuyDate || d < nextBuyDate);
       })
+      .map(s => {
+        // MA가 소비한 수량 차감
+        const consumed = maConsumedQty[String(s.id)] || 0;
+        const remainQty = Math.max(0, s.quantity - consumed);
+        return { ...s, quantity: remainQty };
+      })
+      .filter(s => s.quantity > 0)
       .sort((a, b) => a.date.localeCompare(b.date) || a.price - b.price);
 
     // 5슬롯 구성 — 순차 매핑 대신 체결가 구간으로 슬롯 배정
