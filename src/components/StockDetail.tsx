@@ -82,6 +82,10 @@ export default function StockDetail({
     setEditCreditMeta(null);
   };
 
+  // ── 라운드 선택 (매수 차수 클릭 → 해당 라운드 매도계획 표시) ──
+  const lastFilledLevelInit = local.buyPlans.reduce((last, bp) => bp.filled ? bp.level : last, 0);
+  const [selectedBuyLevel, setSelectedBuyLevel] = useState<number>(lastFilledLevelInit || 1);
+
   // ── 수익매도 수동 편집 ──
   const [sellEditIdx, setSellEditIdx] = useState<number | null>(null);
   const [sellEditDraft, setSellEditDraft] = useState<{
@@ -1366,6 +1370,65 @@ export default function StockDetail({
   // 다음 매도 차수 인덱스 (manualOverride 종목은 sellPlans만 보고 판단)
   const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsByDate[i]);
 
+  // ── 라운드 뷰 계산 (선택된 매수 차수 기준 매도계획) ──
+  const lastFilledLevel = local.buyPlans.reduce((last, bp) => bp.filled ? bp.level : last, 0);
+  const isCurrentRound = selectedBuyLevel === lastFilledLevel;
+
+  const roundView = (() => {
+    const levelIdx = selectedBuyLevel - 1; // 0-based
+    const normDate = (d: string) => {
+      if (!d) return '';
+      if (d.length === 8 && !d.includes('-')) return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+      return d;
+    };
+    const thisBuyDate = normDate(buysByDate[levelIdx]?.date || local.buyPlans[levelIdx]?.filledDate || '');
+    const nextBuyDate = normDate(buysByDate[levelIdx + 1]?.date || local.buyPlans[levelIdx + 1]?.filledDate || '');
+
+    // 이 라운드까지의 평단 계산
+    let totalCost = 0, totalBought = 0;
+    for (let i = 0; i <= levelIdx; i++) {
+      const bg = buysByDate[i];
+      if (bg) { totalCost += bg.amt; totalBought += bg.qty; }
+      else {
+        const bp = local.buyPlans[i];
+        if (bp?.filled) {
+          totalCost += (bp.filledPrice || bp.price) * (bp.filledQuantity || bp.quantity);
+          totalBought += (bp.filledQuantity || bp.quantity);
+        }
+      }
+    }
+    const roundAvgPrice = totalBought > 0 ? Math.round(totalCost / totalBought) : 0;
+
+    // 이 라운드 시작 전에 이미 매도된 수량
+    const soldBeforeRound = actualSells
+      .filter(s => normDate(s.date) < thisBuyDate)
+      .reduce((sum, s) => sum + s.quantity, 0);
+    const holdingAtStart = Math.max(0, totalBought - soldBeforeRound);
+    const slotQty = holdingAtStart > 0 ? Math.round(holdingAtStart / 5) : 0;
+
+    // 이 라운드의 매도 = 이 매수 이후 ~ 다음 매수 이전
+    const roundSells = [...actualSells]
+      .filter(s => {
+        const d = normDate(s.date);
+        return d > thisBuyDate && (!nextBuyDate || d < nextBuyDate);
+      })
+      .sort((a, b) => a.date.localeCompare(b.date) || a.price - b.price);
+
+    // 5슬롯 구성
+    const percents = [5, 10, 15, 20, 25];
+    const sellSlots = percents.map((p, i) => {
+      const trade = roundSells[i];
+      const targetPrice = roundAvgPrice > 0 ? Math.round(roundAvgPrice * (1 + p / 100)) : 0;
+      if (trade) {
+        return { percent: p, price: targetPrice, quantity: trade.quantity, filled: true,
+          filledDate: normDate(trade.date), filledPrice: trade.price };
+      }
+      return { percent: p, price: targetPrice, quantity: slotQty, filled: false, filledDate: '' };
+    });
+
+    return { roundAvgPrice, holdingAtStart, slotQty, sellSlots, roundSells, thisBuyDate };
+  })();
+
   // 1차 매수 참고 정보 (헤더 배지용)
   const firstBuyPlan = local.buyPlans[0];
   const firstBuyActual = buysByDate[0];
@@ -2308,8 +2371,15 @@ export default function StockDetail({
                   return (
                     <tr
                       key={i}
-                      className={`${bp.filled ? styles.filledRow : ''} ${nearInfo ? styles.nearbyBuyRow : ''}`}
+                      className={[
+                        bp.filled ? styles.filledRow : '',
+                        nearInfo ? styles.nearbyBuyRow : '',
+                        bp.filled ? styles.buyRowClickable : '',
+                        bp.filled && selectedBuyLevel === bp.level ? styles.selectedBuyRow : '',
+                      ].filter(Boolean).join(' ')}
                       style={!nearInfo && i === nextBuyIdx && !bp.filled ? { background: '#fffde7' } : undefined}
+                      onClick={() => { if (bp.filled) setSelectedBuyLevel(bp.level); }}
+                      title={bp.filled ? `${bp.level}차 라운드 매도계획 보기` : undefined}
                     >
                       {/* 차수 + 날짜 */}
                       <td className={styles.levelCell}>
@@ -2403,9 +2473,29 @@ export default function StockDetail({
         {/* 수익 매도 계획 */}
         <div className={`${styles.card} ${styles.planCard}`}>
           <div className={styles.planCardHeader}>
-            <h3 className={styles.cardTitle} style={{ color: '#1565c0', margin: 0 }}>수익 매도 계획</h3>
+            <div className={styles.roundBadgeRow}>
+              <h3 className={styles.cardTitle} style={{ color: '#1565c0', margin: 0 }}>수익 매도 계획</h3>
+              {lastFilledLevel > 1 && (
+                isCurrentRound
+                  ? <span className={styles.badgeCurrent}>▶ {selectedBuyLevel}차 현재</span>
+                  : <span className={styles.badgeReview}>📖 {selectedBuyLevel}차 복기</span>
+              )}
+            </div>
             {(() => {
-              // ✅ 수익매도 + MA매도 통합 합산 (같은 카드에 모두 표시되므로 헤더도 통합)
+              if (!isCurrentRound) {
+                // 복기 모드: 해당 라운드 통계
+                const roundFilled = roundView.sellSlots.filter(s => s.filled);
+                const rqty = roundFilled.reduce((s, sl) => s + sl.quantity, 0);
+                const ramt = roundFilled.reduce((s, sl) => s + sl.quantity * (sl.filledPrice || sl.price), 0);
+                return (
+                  <span className={styles.planStatsSell}>
+                    {roundFilled.length > 0
+                      ? `${roundFilled.length}회 · ${rqty.toLocaleString()}주 · ${Math.round(ramt / 10000).toLocaleString()}만원 회수`
+                      : '해당 라운드 매도 없음'}
+                  </span>
+                );
+              }
+              // 현재 모드: 기존 통계
               let cnt = 0, qty = 0, amt = 0;
               local.sellPlans.forEach((sp, i) => {
                 const act = sellsByDate[i];
@@ -2414,7 +2504,7 @@ export default function StockDetail({
                 const p = act ? Math.round(act.amt / act.qty) : (sp.filledPrice || sp.price);
                 cnt++; qty += q; amt += q * p;
               });
-              // MA 매도도 포함 (수익 매도 계획 카드 본문에 같이 표시됨)
+              // MA 매도도 포함
               local.maSells.forEach((m) => {
                 if (!m.filled) return;
                 cnt++;
@@ -2431,7 +2521,60 @@ export default function StockDetail({
               );
             })()}
           </div>
-          <table className={styles.planTableCompact}>
+          {/* 복기 모드: 심플 읽기 전용 뷰 */}
+          {!isCurrentRound && (
+            <div>
+              <div className={styles.reviewMeta}>
+                <div className={styles.reviewMetaItem}>
+                  <span className={styles.reviewMetaLabel}>평단</span>
+                  <span className={styles.reviewMetaValue}>{roundView.roundAvgPrice.toLocaleString()}원</span>
+                </div>
+                <div className={styles.reviewMetaItem}>
+                  <span className={styles.reviewMetaLabel}>라운드 시작 보유</span>
+                  <span className={styles.reviewMetaValue}>{roundView.holdingAtStart.toLocaleString()}주</span>
+                </div>
+                <div className={styles.reviewMetaItem}>
+                  <span className={styles.reviewMetaLabel}>슬롯당 수량</span>
+                  <span className={styles.reviewMetaValue}>{roundView.slotQty.toLocaleString()}주</span>
+                </div>
+              </div>
+              <table className={styles.reviewTable}>
+                <tbody>
+                  {roundView.sellSlots.map((sl, i) => (
+                    <tr key={i} className={sl.filled ? styles.reviewFilledRow : styles.reviewUnfilledRow}>
+                      <td>
+                        <span className={styles.reviewPercent}>+{sl.percent}%</span>
+                      </td>
+                      <td>
+                        <span className={styles.reviewPrice}>{sl.price.toLocaleString()}원</span>
+                      </td>
+                      <td>
+                        <span className={styles.reviewQty}>{sl.quantity.toLocaleString()}주</span>
+                      </td>
+                      <td>
+                        {sl.filled ? (
+                          <>
+                            <span className={styles.reviewFilled}>✓ 체결</span>
+                            {sl.filledPrice && (
+                              <span className={styles.reviewDate}> {sl.filledPrice.toLocaleString()}원</span>
+                            )}
+                            {sl.filledDate && (
+                              <span className={styles.reviewDate}> · {sl.filledDate.slice(5)}</span>
+                            )}
+                          </>
+                        ) : (
+                          <span className={styles.reviewUnfilled}>미체결</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* 현재 라운드: 기존 풀 뷰 */}
+          {isCurrentRound && <table className={styles.planTableCompact}>
             <tbody>
               {(() => {
                 const totalBought = local.buyPlans.reduce((sum, bp) => {
@@ -2888,14 +3031,14 @@ export default function StockDetail({
                 return rows;
               })()}
             </tbody>
-          </table>
-          <div className={styles.sellNote}>
+          </table>}
+          {isCurrentRound && <div className={styles.sellNote}>
             누적 매도: {sellsIndividual.length}회 ({actualSells.length}건)
             {sellsIndividual.length >= 3 && <span className={styles.chip}>룰B 전환 가능</span>}
-          </div>
+          </div>}
 
-          {/* 미분류 매도 영역: sellPlans/maSells에 매핑되지 않은 trade */}
-          {unmappedTrades.length > 0 && (
+          {/* 미분류 매도 영역: 현재 라운드에서만 표시 */}
+          {isCurrentRound && unmappedTrades.length > 0 && (
             <div className={styles.unmappedSection}>
               <div className={styles.unmappedHeader}>
                 🔄 미분류 매도 — <strong>{unmappedSellQty.toLocaleString()}주</strong> ({unmappedTrades.length}건)
