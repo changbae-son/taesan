@@ -684,6 +684,21 @@ export default function StockDetail({
 
   // 수익매도 수동 편집 열기
   const openSellEdit = (i: number) => {
+    // 복기 모드: roundHistory 또는 roundView.sellSlots 데이터로 초기화
+    if (!isCurrentRound) {
+      const savedEntry = (local.roundHistory || []).find(r => r.level === selectedBuyLevel);
+      const baseSlots = savedEntry?.sellSlots || roundView.sellSlots;
+      const slot = baseSlots[i];
+      setSellEditIdx(i);
+      setSellEditDraft({
+        date: slot?.filledDate || '',
+        price: slot?.filledPrice || slot?.price || 0,
+        qty: slot?.quantity || 0,
+      });
+      setSplitIdx(null);
+      return;
+    }
+    // 현재 라운드
     const sp = local.sellPlans[i];
     setSellEditIdx(i);
     setSellEditDraft({
@@ -1428,6 +1443,60 @@ export default function StockDetail({
 
     return { roundAvgPrice, holdingAtStart, slotQty, sellSlots, roundSells, thisBuyDate, nextBuyDate };
   })();
+
+  // ── 복기 모드: roundHistory 관리 ──
+  // Firestore의 roundHistory에 저장된 수동 수정 데이터 (없으면 roundView.sellSlots 사용)
+  const savedRound = !isCurrentRound
+    ? (local.roundHistory || []).find(r => r.level === selectedBuyLevel)
+    : undefined;
+
+  const saveRoundHistorySlots = (newSlots: {
+    percent: number; price: number; quantity: number; filled: boolean;
+    filledDate?: string; filledPrice?: number;
+  }[]) => {
+    const entry = savedRound || {
+      level: selectedBuyLevel,
+      roundAvgPrice: roundView.roundAvgPrice,
+      holdingAtStart: roundView.holdingAtStart,
+      slotQty: roundView.slotQty,
+      sellSlots: roundView.sellSlots.map(s => ({ ...s })),
+    };
+    const newEntry = { ...entry, sellSlots: newSlots };
+    const newHistory = [
+      ...(local.roundHistory || []).filter(r => r.level !== selectedBuyLevel),
+      newEntry,
+    ];
+    update({ roundHistory: newHistory }, true);
+  };
+
+  const toggleRoundHistoryFilled = (slotIdx: number) => {
+    const baseSlots = savedRound?.sellSlots || roundView.sellSlots;
+    const newSlots = baseSlots.map((slot, i) =>
+      i === slotIdx ? { ...slot, filled: !slot.filled } : slot
+    );
+    saveRoundHistorySlots(newSlots);
+  };
+
+  const confirmRoundHistoryEdit = () => {
+    if (sellEditIdx === null || !sellEditDraft) return;
+    const baseSlots = savedRound?.sellSlots || roundView.sellSlots;
+    const newSlots = baseSlots.map((slot, i) =>
+      i === sellEditIdx
+        ? { ...slot, filled: true, filledDate: sellEditDraft.date, filledPrice: sellEditDraft.price, quantity: sellEditDraft.qty }
+        : slot
+    );
+    saveRoundHistorySlots(newSlots);
+    setSellEditIdx(null);
+    setSellEditDraft(null);
+  };
+
+  const clearRoundHistorySlot = (slotIdx: number) => {
+    const baseSlots = savedRound?.sellSlots || roundView.sellSlots;
+    const newSlots = baseSlots.map((slot, i) =>
+      i === slotIdx ? { ...slot, filled: false, filledDate: '', filledPrice: undefined } : slot
+    );
+    saveRoundHistorySlots(newSlots);
+  };
 
   // 1차 매수 참고 정보 (헤더 배지용)
   const firstBuyPlan = local.buyPlans[0];
@@ -2738,9 +2807,12 @@ export default function StockDetail({
                   }
                 });
 
+                // 복기 모드: savedRound(수동 수정) 우선, 없으면 roundView.sellSlots(자동 계산)
+                const reviewSlots = savedRound?.sellSlots || roundView.sellSlots;
+
                 local.sellPlans.forEach((sp, i) => {
-                  // 복기 모드: roundView.sellSlots[i] 데이터 우선 (해당 라운드 날짜 범위 내 실매도)
-                  const rvSlot = !isCurrentRound && i < roundView.sellSlots.length ? roundView.sellSlots[i] : undefined;
+                  // 복기 모드: savedRound 또는 roundView 기반 슬롯 데이터
+                  const rvSlot = !isCurrentRound && i < reviewSlots.length ? reviewSlots[i] : undefined;
 
                   // manualOverride: sp 값 우선 (분리/편집 보호) — 현재 라운드에서만 적용
                   const useSpOnly = !rvSlot && sp.manualOverride === true;
@@ -2859,28 +2931,33 @@ export default function StockDetail({
                       </td>
                       {/* 체결 + MA버튼 + 수동편집 */}
                       <td className={styles.btnCell}>
-                        {/* 복기 모드: 체결 버튼 비활성 (현재 라운드 데이터 보호) */}
+                        {/* 체결 버튼: 현재→toggleSellFilled, 복기→toggleRoundHistoryFilled */}
                         <button
                           className={`${styles.fillBtn} ${isFilled ? styles.sellBtnActive : ''}`}
-                          onClick={() => { if (isCurrentRound) toggleSellFilled(i); }}
-                          style={!isCurrentRound ? { opacity: 0.4, cursor: 'default' } : undefined}
-                          title={!isCurrentRound ? '복기 모드에서는 편집 불가' : undefined}
+                          onClick={() => {
+                            if (isCurrentRound) toggleSellFilled(i);
+                            else toggleRoundHistoryFilled(i);
+                          }}
+                          title={!isCurrentRound ? '복기 라운드 체결 상태 토글 (roundHistory 저장)' : undefined}
                         >
                           {isFilled ? '체결' : '미체결'}
                         </button>
-                        {/* MA + 이동 2단 스택 (체결된 슬롯만, 현재 라운드에서만) */}
+                        {/* MA + 이동 2단 스택 (현재 라운드 전용) */}
                         {isCurrentRound && isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
                           <span className={styles.btnVStack}>
                             <button className={styles.splitBtn} onClick={() => openSplitToMA(i)} title="이 차수의 일부/전체를 MA 매도로 분리">🔀 MA</button>
                             <button className={styles.moveSellBtn} onClick={() => openMoveSell(i)} title="이 체결을 다른 차수로 이동">↕️ 이동</button>
                           </span>
                         )}
-                        {/* 연필 + 수동 2단 스택 (현재 라운드에서만) */}
-                        {isCurrentRound && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
+                        {/* 연필 편집: 현재/복기 공통 */}
+                        {sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
                           <span className={styles.btnVStack}>
                             <button className={styles.sellEditBtn} onClick={() => openSellEdit(i)}>✏️</button>
-                            {sp.manualOverride && (
+                            {isCurrentRound && sp.manualOverride && (
                               <span className={styles.manualOverrideBadge} title="수동 편집됨 (sync 보호)">수동</span>
+                            )}
+                            {!isCurrentRound && savedRound && (
+                              <span className={styles.manualOverrideBadge} style={{ background: '#7b1fa2', color: '#fff' }} title="복기 수동 편집됨">수정</span>
                             )}
                           </span>
                         )}
@@ -2952,22 +3029,36 @@ export default function StockDetail({
                               />
                             </div>
                             <div className={styles.sellEditActions}>
-                              <button className={styles.sellEditSave} onClick={confirmSellEdit}>저장</button>
+                              {/* 저장: 현재→confirmSellEdit, 복기→confirmRoundHistoryEdit */}
+                              <button
+                                className={styles.sellEditSave}
+                                onClick={isCurrentRound ? confirmSellEdit : confirmRoundHistoryEdit}
+                              >
+                                저장
+                              </button>
                               <button className={styles.sellEditCancel} onClick={() => { setSellEditIdx(null); setSellEditDraft(null); }}>취소</button>
                               {isFilled && (
                                 <button
                                   className={styles.sellEditClear}
                                   onClick={() => {
-                                    if (confirm(`+${sp.percent}% 차수 체결 정보를 비우시겠습니까?\n(보호되어 sync 시 자동 채워지지 않습니다)`)) {
-                                      clearSellSlot(i);
+                                    if (isCurrentRound) {
+                                      if (confirm(`+${sp.percent}% 차수 체결 정보를 비우시겠습니까?\n(보호되어 sync 시 자동 채워지지 않습니다)`)) {
+                                        clearSellSlot(i);
+                                      }
+                                    } else {
+                                      if (confirm(`+${sp.percent}% 복기 차수 체결 정보를 비우시겠습니까?`)) {
+                                        clearRoundHistorySlot(i);
+                                        setSellEditIdx(null);
+                                        setSellEditDraft(null);
+                                      }
                                     }
                                   }}
-                                  title="이 차수의 체결 정보를 비우고 sync 보호 (다른 차수로 이동 시 사용)"
+                                  title={isCurrentRound ? '이 차수의 체결 정보를 비우고 sync 보호' : '복기 차수 체결 정보 비우기'}
                                 >
                                   ⚪ 비우기
                                 </button>
                               )}
-                              {sp.manualOverride && (
+                              {isCurrentRound && sp.manualOverride && (
                                 <button className={styles.sellEditReset} onClick={() => { clearSellOverride(i); setSellEditIdx(null); setSellEditDraft(null); }}>수동해제</button>
                               )}
                             </div>

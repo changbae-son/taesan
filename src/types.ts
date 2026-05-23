@@ -116,6 +116,24 @@ export interface TradingCycle {
   rule: 'A' | 'B';                     // 그 사이클의 룰
 }
 
+// 과거 라운드 수동 수정 저장 (roundHistory)
+export interface RoundSellSlot {
+  percent: number;
+  price: number;       // 해당 라운드 평단 기준 목표가
+  quantity: number;    // 수량
+  filled: boolean;
+  filledDate?: string;
+  filledPrice?: number;
+}
+
+export interface RoundHistory {
+  level: number;           // 매수 차수 (1=1차, 2=2차 ...)
+  roundAvgPrice: number;   // 이 라운드 평단가
+  holdingAtStart: number;  // 라운드 시작 보유수량
+  slotQty: number;         // 슬롯당 계획 수량
+  sellSlots: RoundSellSlot[];
+}
+
 export interface Stock {
   id: string;
   name: string;
@@ -169,6 +187,8 @@ export interface Stock {
   reentry?: ReentryTracking;
   // 사이클 history (영구 보관) - 각 매매완료 시점에 push
   cycles?: TradingCycle[];
+  // 과거 라운드 수동 수정 이력 (복기 모드에서 직접 편집 시 저장)
+  roundHistory?: RoundHistory[];
   // 감자/분할/합병 보정 이력 (Option 1)
   corporateActions?: CorporateAction[];
   createdAt: number;
