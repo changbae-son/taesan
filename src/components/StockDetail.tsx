@@ -1426,7 +1426,7 @@ export default function StockDetail({
       return { percent: p, price: targetPrice, quantity: slotQty, filled: false, filledDate: '' };
     });
 
-    return { roundAvgPrice, holdingAtStart, slotQty, sellSlots, roundSells, thisBuyDate };
+    return { roundAvgPrice, holdingAtStart, slotQty, sellSlots, roundSells, thisBuyDate, nextBuyDate };
   })();
 
   // 1차 매수 참고 정보 (헤더 배지용)
@@ -2483,14 +2483,25 @@ export default function StockDetail({
             </div>
             {(() => {
               if (!isCurrentRound) {
-                // 복기 모드: 해당 라운드 통계
-                const roundFilled = roundView.sellSlots.filter(s => s.filled);
-                const rqty = roundFilled.reduce((s, sl) => s + sl.quantity, 0);
-                const ramt = roundFilled.reduce((s, sl) => s + sl.quantity * (sl.filledPrice || sl.price), 0);
+                // 복기 모드: 해당 라운드 수익매도 + MA매도 통계
+                let cnt = 0, qty = 0, amt = 0;
+                local.sellPlans.forEach((sp) => {
+                  if (!sp.filled) return;
+                  const d = sp.filledDate || '';
+                  if (d <= roundView.thisBuyDate) return;
+                  if (roundView.nextBuyDate && d >= roundView.nextBuyDate) return;
+                  cnt++; qty += sp.filledQuantity || sp.quantity; amt += (sp.filledQuantity || sp.quantity) * (sp.filledPrice || sp.price);
+                });
+                local.maSells.forEach((m) => {
+                  if (!m.filled || !m.filledDate) return;
+                  if (m.filledDate <= roundView.thisBuyDate) return;
+                  if (roundView.nextBuyDate && m.filledDate >= roundView.nextBuyDate) return;
+                  cnt++; qty += m.quantity || 0; amt += (m.price || 0) * (m.quantity || 0);
+                });
                 return (
                   <span className={styles.planStatsSell}>
-                    {roundFilled.length > 0
-                      ? `${roundFilled.length}회 · ${rqty.toLocaleString()}주 · ${Math.round(ramt / 10000).toLocaleString()}만원 회수`
+                    {cnt > 0
+                      ? `${cnt}회 · ${qty.toLocaleString()}주 · ${Math.round(amt / 10000).toLocaleString()}만원 회수`
                       : '해당 라운드 매도 없음'}
                   </span>
                 );
@@ -2521,73 +2532,54 @@ export default function StockDetail({
               );
             })()}
           </div>
-          {/* 복기 모드: 심플 읽기 전용 뷰 */}
+          {/* 복기 모드: 평단·보유 메타 + 현재 라운드로 버튼 */}
           {!isCurrentRound && (
-            <div>
-              <div className={styles.reviewMeta}>
-                <div className={styles.reviewMetaItem}>
-                  <span className={styles.reviewMetaLabel}>평단</span>
-                  <span className={styles.reviewMetaValue}>{roundView.roundAvgPrice.toLocaleString()}원</span>
-                </div>
-                <div className={styles.reviewMetaItem}>
-                  <span className={styles.reviewMetaLabel}>라운드 시작 보유</span>
-                  <span className={styles.reviewMetaValue}>{roundView.holdingAtStart.toLocaleString()}주</span>
-                </div>
-                <div className={styles.reviewMetaItem}>
-                  <span className={styles.reviewMetaLabel}>슬롯당 수량</span>
-                  <span className={styles.reviewMetaValue}>{roundView.slotQty.toLocaleString()}주</span>
-                </div>
+            <div className={styles.reviewMeta}>
+              <div className={styles.reviewMetaItem}>
+                <span className={styles.reviewMetaLabel}>이 라운드 평단</span>
+                <span className={styles.reviewMetaValue}>{roundView.roundAvgPrice.toLocaleString()}원</span>
               </div>
-              <table className={styles.reviewTable}>
-                <tbody>
-                  {roundView.sellSlots.map((sl, i) => (
-                    <tr key={i} className={sl.filled ? styles.reviewFilledRow : styles.reviewUnfilledRow}>
-                      <td>
-                        <span className={styles.reviewPercent}>+{sl.percent}%</span>
-                      </td>
-                      <td>
-                        <span className={styles.reviewPrice}>{sl.price.toLocaleString()}원</span>
-                      </td>
-                      <td>
-                        <span className={styles.reviewQty}>{sl.quantity.toLocaleString()}주</span>
-                      </td>
-                      <td>
-                        {sl.filled ? (
-                          <>
-                            <span className={styles.reviewFilled}>✓ 체결</span>
-                            {sl.filledPrice && (
-                              <span className={styles.reviewDate}> {sl.filledPrice.toLocaleString()}원</span>
-                            )}
-                            {sl.filledDate && (
-                              <span className={styles.reviewDate}> · {sl.filledDate.slice(5)}</span>
-                            )}
-                          </>
-                        ) : (
-                          <span className={styles.reviewUnfilled}>미체결</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className={styles.reviewMetaItem}>
+                <span className={styles.reviewMetaLabel}>라운드 시작 보유</span>
+                <span className={styles.reviewMetaValue}>{roundView.holdingAtStart.toLocaleString()}주</span>
+              </div>
+              <button
+                className={styles.returnToCurrentBtn}
+                onClick={() => setSelectedBuyLevel(lastFilledLevel)}
+              >
+                ▶ 현재 라운드로
+              </button>
             </div>
           )}
 
-          {/* 현재 라운드: 기존 풀 뷰 */}
-          {isCurrentRound && <table className={styles.planTableCompact}>
+          {/* 풀 편집 UI — 현재/복기 공통 */}
+          <table className={styles.planTableCompact}>
             <tbody>
               {(() => {
+                // 복기/현재 공통 변수
+                // 복기 모드: 해당 라운드 평단 사용 / 현재 모드: local.avgPrice
+                const displayAvgPrice = !isCurrentRound && roundView.roundAvgPrice > 0
+                  ? roundView.roundAvgPrice : local.avgPrice;
+                // 복기 모드: 해당 라운드 날짜 범위의 MA 매도만 표시
+                const displayMaSells = !isCurrentRound
+                  ? local.maSells.filter((m) => {
+                      if (!m.filled || !m.filledDate) return false;
+                      const d = m.filledDate;
+                      return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
+                    })
+                  : local.maSells;
+
                 const totalBought = local.buyPlans.reduce((sum, bp) => {
                   if (!bp.filled) return sum;
                   return sum + (bp.filledQuantity || bp.quantity);
                 }, 0);
-                const maSold = local.maSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
+                const maSold = displayMaSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
                 let remaining = totalBought - maSold;
 
                 // MA 행 렌더 헬퍼 (드래그 가능)
                 const renderMARow = (m: typeof local.maSells[0], mi: number) => {
-                  const profit = local.avgPrice > 0 && m.price > 0
-                    ? ((m.price - local.avgPrice) / local.avgPrice) * 100 : null;
+                  const profit = displayAvgPrice > 0 && m.price > 0
+                    ? ((m.price - displayAvgPrice) / displayAvgPrice) * 100 : null;
                   const shortD = m.filledDate ? m.filledDate.slice(5) : '';
                   const isDragging = draggingMaIdx === mi;
                   return (
@@ -2739,7 +2731,7 @@ export default function StockDetail({
                 }
 
                 // [insertAfterPercent === 0] 1차 이전 MA 매도
-                local.maSells.forEach((m, mi) => {
+                displayMaSells.forEach((m, mi) => {
                   if (m.filled && m.insertAfterPercent === 0) {
                     rows.push(renderMARow(m, mi));
                   }
@@ -3022,7 +3014,7 @@ export default function StockDetail({
                   );
 
                   // 이 sellPlan 다음에 끼어드는 MA 매도들
-                  local.maSells.forEach((m, mi) => {
+                  displayMaSells.forEach((m, mi) => {
                     if (m.filled && m.insertAfterPercent === sp.percent) {
                       rows.push(renderMARow(m, mi));
                     }
@@ -3031,11 +3023,11 @@ export default function StockDetail({
                 return rows;
               })()}
             </tbody>
-          </table>}
-          {isCurrentRound && <div className={styles.sellNote}>
+          </table>
+          <div className={styles.sellNote}>
             누적 매도: {sellsIndividual.length}회 ({actualSells.length}건)
             {sellsIndividual.length >= 3 && <span className={styles.chip}>룰B 전환 가능</span>}
-          </div>}
+          </div>
 
           {/* 미분류 매도 영역: 현재 라운드에서만 표시 */}
           {isCurrentRound && unmappedTrades.length > 0 && (
