@@ -1429,11 +1429,49 @@ export default function StockDetail({
       })
       .sort((a, b) => a.date.localeCompare(b.date) || a.price - b.price);
 
-    // 5슬롯 구성
+    // 5슬롯 구성 — 순차 매핑 대신 체결가 구간으로 슬롯 배정
     const percents = [5, 10, 15, 20, 25];
+    const targetPrices = percents.map(p =>
+      roundAvgPrice > 0 ? Math.round(roundAvgPrice * (1 + p / 100)) : 0
+    );
+
+    // 각 체결을 가격 구간에 맞는 슬롯에 배정
+    const slotSells: (typeof roundSells[0] | null)[] = new Array(5).fill(null);
+    const usedSellIdx = new Set<number>();
+
+    if (roundAvgPrice > 0) {
+      // 1단계: 가격 구간 매칭 (슬롯 중간점 기준)
+      for (let i = 0; i < percents.length; i++) {
+        const tp = targetPrices[i];
+        if (tp <= 0) continue;
+        const prevTp = i > 0 ? targetPrices[i - 1] : 0;
+        const nextTp = i < percents.length - 1 ? targetPrices[i + 1] : tp * 2;
+        const lowerBound = i > 0 ? Math.round((prevTp + tp) / 2) : 0;
+        const upperBound = Math.round((tp + nextTp) / 2);
+        for (let j = 0; j < roundSells.length; j++) {
+          if (usedSellIdx.has(j)) continue;
+          const sp = roundSells[j].price;
+          if (sp >= lowerBound && sp <= upperBound) {
+            slotSells[i] = roundSells[j];
+            usedSellIdx.add(j);
+            break;
+          }
+        }
+      }
+    }
+
+    // 2단계: 구간 매칭 안 된 잔여 매도 → 빈 슬롯에 순차 배정 (예비)
+    const remainingRoundSells = roundSells.filter((_, j) => !usedSellIdx.has(j));
+    let rem = 0;
+    for (let i = 0; i < percents.length; i++) {
+      if (slotSells[i] === null && rem < remainingRoundSells.length) {
+        slotSells[i] = remainingRoundSells[rem++];
+      }
+    }
+
     const sellSlots = percents.map((p, i) => {
-      const trade = roundSells[i];
-      const targetPrice = roundAvgPrice > 0 ? Math.round(roundAvgPrice * (1 + p / 100)) : 0;
+      const trade = slotSells[i];
+      const targetPrice = targetPrices[i];
       if (trade) {
         return { percent: p, price: targetPrice, quantity: trade.quantity, filled: true,
           filledDate: normDate(trade.date), filledPrice: trade.price };

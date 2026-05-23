@@ -165,6 +165,7 @@ export default function App() {
           {activeTab === 'detail' &&
             (selectedStock ? (
               <StockDetail
+                key={selectedStock.id}
                 stock={selectedStock}
                 stocks={stocks}
                 trades={trades}
