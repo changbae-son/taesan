@@ -158,7 +158,9 @@ export function useStocks() {
         id: d.id,
         ...d.data(),
       })) as Stock[];
-      setStocks(list);
+      // recalcStock 적용: Firestore의 stale totalQuantity/avgPrice를
+      // buyPlans/sellPlans 실제 체결 데이터 기반으로 재계산 (매매완료 종목이 진행중으로 보이는 문제 방지)
+      setStocks(list.map((s) => recalcStock(s)));
       setLoading(false);
     }, (err) => {
       console.warn('Firestore subscription error:', err);

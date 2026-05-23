@@ -4973,10 +4973,25 @@ async function reconcileStockPlans(stockName: string): Promise<{
       else if (t.type === "sell") tradesNetQty -= q;
     }
     const tradesComplete = tradesNetQty === stockTotalQty;
-    if (stockAvg > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && tradesComplete) {
+
+    // ✅ totalQuantity 보정: trades 기반 순보유수량이 Firestore 값과 다르면 갱신
+    // 특히 매매완료(전량매도) 종목이 "진행중"으로 잘못 표시되는 케이스 방지
+    // tradesNetQty = buyQty - sellQty (trades 원본 기준, 음수는 0으로 처리)
+    const tradesBasedQty = Math.max(0, tradesNetQty);
+    if (tradesBasedQty !== stockTotalQty) {
+      reconcileUpdate.totalQuantity = tradesBasedQty;
+      console.log(`[reconcile] ${stockName} totalQuantity 보정: ${stockTotalQty} → ${tradesBasedQty} (trades 기반)`);
+      // 완전 매도된 경우 avgPrice도 0으로 초기화
+      if (tradesBasedQty === 0) {
+        reconcileUpdate.avgPrice = 0;
+        console.log(`[reconcile] ${stockName} 전량매도 확인 → avgPrice 0 리셋`);
+      }
+    }
+
+    if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && tradesComplete) {
       reconcileUpdate.avgPrice = stockAvg;
       console.log(`[reconcile] ${stockName} avgPrice 보정: ${stock.avgPrice} → ${stockAvg} (trades 완전)`);
-    } else if (stockAvg > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && !tradesComplete) {
+    } else if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && !tradesComplete) {
       console.log(`[reconcile] ${stockName} avgPrice 보정 SKIP (trades 누락: ${tradesNetQty}주 / 키움 ${stockTotalQty}주, 키움 평단 ${stock.avgPrice} 유지)`);
     }
     // ✅ Phase 1a: trades 기반 positions 재계산
