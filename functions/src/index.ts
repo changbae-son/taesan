@@ -4962,6 +4962,24 @@ async function reconcileStockPlans(stockName: string): Promise<{
       mappingAuditAt: Date.now(),
       updatedAt: Date.now(),
     };
+
+    // ✅ firstBuyPrice / firstBuyQuantity 동기화
+    // reconcileStockPlans는 buyPlans[0].price/filledPrice를 실제 체결가로 보정하지만
+    // 상위 firstBuyPrice 필드는 갱신하지 않아 기본정보 패널에 이질감 발생
+    // → 1차 체결가가 확정된 경우에만 상위 필드도 동기화
+    const bp0 = finalBuyPlans[0];
+    if (bp0 && bp0.filled && (Number(bp0.filledPrice) || 0) > 0) {
+      const syncedFirstPrice = Number(bp0.filledPrice);
+      const syncedFirstQty = Number(bp0.filledQuantity) || Number(bp0.quantity) || 0;
+      if (syncedFirstPrice !== (Number(stock.firstBuyPrice) || 0)) {
+        reconcileUpdate.firstBuyPrice = syncedFirstPrice;
+        console.log(`[reconcile] ${stockName} firstBuyPrice 동기화: ${stock.firstBuyPrice} → ${syncedFirstPrice}`);
+      }
+      if (syncedFirstQty > 0 && syncedFirstQty !== (Number(stock.firstBuyQuantity) || 0)) {
+        reconcileUpdate.firstBuyQuantity = syncedFirstQty;
+        console.log(`[reconcile] ${stockName} firstBuyQuantity 동기화: ${stock.firstBuyQuantity} → ${syncedFirstQty}`);
+      }
+    }
     // buyPlans 기반 평단이 stock.avgPrice와 다를 때만 갱신 (액면병합 후 미갱신 보정)
     // ✅ Phase 1a 수정: trades 누락이 있으면 buyPlans avg 부정확 → 키움 값 우선
     // 조건: trades net qty (매수-매도) == 키움 totalQuantity 인 경우에만 override

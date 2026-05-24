@@ -85,10 +85,20 @@ export function recalcStock(stock: Stock): Stock {
         calcPrice = Math.round(prevActualPrice * 0.9);
       }
 
+      // 비중 동일 원칙: 각 차수 계획 수량 = 1차 매수금액 / 해당 차수 가격
+      // 체결된 차수: filledQuantity 우선 (실제 체결 수량), 없으면 저장된 quantity
+      // 미체결 차수: 1차 매수금액(firstBuyPrice × firstBuyQuantity) / 해당 차수 가격으로 비례 계산
+      const firstBuyAmt = firstBuyPrice * firstBuyQuantity;
+      const planQty = bp.filled
+        ? (bp.filledQuantity || bp.quantity || firstBuyQuantity)
+        : (calcPrice > 0 && firstBuyAmt > 0
+          ? Math.round(firstBuyAmt / calcPrice)
+          : firstBuyQuantity);
+
       updated.push({
         ...bp,
         price: bp.filled ? (bp.filledPrice || bp.price) : calcPrice,
-        quantity: firstBuyQuantity,
+        quantity: planQty,
         filledDate: bp.filledDate,
         filledQuantity: bp.filledQuantity,
         filledPrice: bp.filledPrice,
