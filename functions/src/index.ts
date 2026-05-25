@@ -4932,13 +4932,18 @@ async function reconcileStockPlans(stockName: string): Promise<{
       const latest = latestSellPlans[i];
       if (latest?.manualOverride) {
         console.log(`[reconcile race 보호] ${stockName} sell+${latest.percent}% latest manualOverride 유지`);
+        // ✅ filledQuantity > 0 & filledDate 있으면 filled 플래그 동기화 (체결 데이터 있는데 filled=false 버그 수정)
+        const hasFillData = (Number(latest.filledQuantity) || 0) > 0 && !!latest.filledDate;
+        const baseLatest = (hasFillData && !latest.filled)
+          ? (() => { console.log(`[reconcile race 보호] ${stockName} sell+${latest.percent}% filled 동기화 (filledQty=${latest.filledQuantity})`); return {...latest, filled: true}; })()
+          : latest;
         // ✅ consumedTradeIds는 system field이므로 auto-fix 반영 허용 (잘못된 매핑 자동 정정)
         const newIds = newPlan.consumedTradeIds;
         if (Array.isArray(newIds) && JSON.stringify(newIds.sort()) !== JSON.stringify((latest.consumedTradeIds || []).slice().sort())) {
           console.log(`[reconcile race 보호] ${stockName} sell+${latest.percent}% consumedTradeIds 자동정정 반영`);
-          return {...latest, consumedTradeIds: newIds};
+          return {...baseLatest, consumedTradeIds: newIds};
         }
-        return latest;
+        return baseLatest;
       }
       return newPlan;
     });

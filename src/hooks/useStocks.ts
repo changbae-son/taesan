@@ -1,3 +1,4 @@
+// v2.3 - filledQuantity>0 매도 계획도 soldQty 반영 (filled 플래그 누락 버그 대응)
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   collection,
@@ -126,23 +127,33 @@ export function recalcStock(stock: Stock): Stock {
   s.maSells.forEach((ms) => {
     if (ms.filled) soldQty += ms.quantity;
   });
-  // 수익 매도로 차감 (실제 체결 수량 우선)
+  // 수익 매도로 차감
+  // filledQuantity > 0이면 filled 플래그 무관하게 실제 체결로 처리
+  // (reconcile manualOverride 보호 시 filled=false로 남는 버그 대비)
   s.sellPlans.forEach((sp) => {
-    if (sp.filled) soldQty += sp.filledQuantity || sp.quantity;
+    if (sp.filled || (sp.filledQuantity && sp.filledQuantity > 0)) {
+      soldQty += sp.filledQuantity || sp.quantity;
+    }
   });
 
-  s.totalQuantity = Math.max(0, totalQty - soldQty);
+  // 전량매도 감지: 모든 매도 계획이 체결(또는 filledQuantity>0)된 경우 → totalQuantity = 0
+  const allSellsFilled = s.sellPlans.length > 0 && s.sellPlans.every(
+    (sp) => sp.filled || ((sp.filledQuantity || 0) > 0)
+  );
+  s.totalQuantity = allSellsFilled ? 0 : Math.max(0, totalQty - soldQty);
   s.avgPrice = totalQty > 0 ? Math.round(totalCost / totalQty) : 0;
 
   // 매도 계획 자동 계산 (체결된 항목의 실제 데이터는 보존)
+  // filledQuantity > 0이면 실제 체결 데이터가 있으므로 price/quantity 보존 (filled 플래그 무관)
   if (s.avgPrice > 0) {
     const sellQty = Math.round(totalQty * 0.2);
     s.sellPlans = s.sellPlans.map((sp) => {
+      const effectiveFilled = sp.filled || ((sp.filledQuantity || 0) > 0);
       const sellPrice = Math.round(s.avgPrice * (1 + sp.percent / 100));
       return {
         ...sp,
-        price: sp.filled ? sp.price : sellPrice,
-        quantity: sp.filled ? sp.quantity : sellQty,
+        price: effectiveFilled ? sp.price : sellPrice,
+        quantity: effectiveFilled ? sp.quantity : sellQty,
         filledDate: sp.filledDate,
         filledQuantity: sp.filledQuantity,
         filledPrice: sp.filledPrice,
@@ -164,14 +175,26 @@ export function useStocks() {
     const q = query(collection(db, 'stocks'), orderBy('createdAt', 'asc'));
     const unsub = onSnapshot(q, (snap) => {
       clearTimeout(timeout);
-      const list: Stock[] = snap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      })) as Stock[];
-      // recalcStock 적용: Firestore의 stale totalQuantity/avgPrice를
-      // buyPlans/sellPlans 실제 체결 데이터 기반으로 재계산 (매매완료 종목이 진행중으로 보이는 문제 방지)
-      setStocks(list.map((s) => recalcStock(s)));
-      setLoading(false);
+      try {
+        const list: Stock[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        })) as Stock[];
+        // recalcStock 적용: Firestore의 stale totalQuantity/avgPrice를
+        // buyPlans/sellPlans 실제 체결 데이터 기반으로 재계산 (매매완료 종목이 진행중으로 보이는 문제 방지)
+        setStocks(list.map((s) => {
+          try {
+            return recalcStock(s);
+          } catch (e) {
+            console.error(`[recalcStock] ${s?.name} 오류:`, e);
+            return s; // 오류 시 원본 데이터 그대로 사용
+          }
+        }));
+      } catch (e) {
+        console.error('[useStocks] snapshot 처리 오류:', e);
+      } finally {
+        setLoading(false);
+      }
     }, (err) => {
       console.warn('Firestore subscription error:', err);
       clearTimeout(timeout);
