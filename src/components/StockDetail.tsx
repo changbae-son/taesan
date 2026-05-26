@@ -3066,8 +3066,9 @@ export default function StockDetail({
                         >
                           {isFilled ? '체결' : '미체결'}
                         </button>
-                        {/* MA + 이동 2단 스택 (현재 라운드 전용) */}
-                        {isCurrentRound && isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
+                        {/* MA + 이동 2단 스택 — sp에 실제 체결 데이터가 있을 때 표시 (현재/복기 공통) */}
+                        {/* Option A 이후: 복기 라운드에서도 그 라운드의 체결 슬롯을 분리/이동 가능 */}
+                        {isFilled && (sp.filledQuantity || 0) > 0 && sellEditIdx !== i && splitIdx !== i && moveSellIdx !== i && (
                           <span className={styles.btnVStack}>
                             <button className={styles.splitBtn} onClick={() => openSplitToMA(i)} title="이 차수의 일부/전체를 MA 매도로 분리">🔀 MA</button>
                             <button className={styles.moveSellBtn} onClick={() => openMoveSell(i)} title="이 체결을 다른 차수로 이동">↕️ 이동</button>
