@@ -1422,18 +1422,40 @@ export default function StockDetail({
     const slotQty = holdingAtStart > 0 ? Math.round(holdingAtStart / 5) : 0;
 
     // MA 매도가 소비한 trade 수량 차감 (이중 표시 방지)
-    // local.maSells 중 이 라운드 날짜 범위 안에 있고 consumedTradeIds가 있는 항목의 qty를 trade별로 집계
+    // local.maSells/sellPlans 중 이 라운드 날짜 범위 안에 있고 consumedTradeIds가 있는 항목의 qty를 trade별로 집계
+    // ✅ 백엔드와 동일한 로직: 단일 참조면 슬롯 qty 전부 흡수, 다중 참조면 각 trade가 전체 흡수(Infinity)
+    // 균등 배분(qty/N)은 소수 수량 발생 버그 → 제거
     const maConsumedQty: Record<string, number> = {};
     local.maSells.forEach(m => {
       if (!m.filled || !m.filledDate) return;
       const mDate = normDate(m.filledDate);
       if (!(mDate > thisBuyDate && (!nextBuyDate || mDate < nextBuyDate))) return;
       if (!Array.isArray(m.consumedTradeIds) || m.consumedTradeIds.length === 0) return;
-      // 여러 trade를 하나의 MA 슬롯이 소비한 경우 균등 배분
-      const qtyPerTrade = m.quantity / m.consumedTradeIds.length;
-      m.consumedTradeIds.forEach(id => {
-        maConsumedQty[String(id)] = (maConsumedQty[String(id)] || 0) + qtyPerTrade;
-      });
+      if (m.consumedTradeIds.length === 1) {
+        // 단일 참조: MA 전체 qty가 그 trade에서 소비됨
+        const id = String(m.consumedTradeIds[0]);
+        maConsumedQty[id] = (maConsumedQty[id] || 0) + (Number(m.quantity) || 0);
+      } else {
+        // 다중 참조: 각 trade가 전체 흡수 (가중평균 매핑)
+        m.consumedTradeIds.forEach(id => {
+          maConsumedQty[String(id)] = Number.MAX_SAFE_INTEGER;
+        });
+      }
+    });
+    // sellPlans 중 이 라운드 범위 + consumedTradeIds 있는 항목도 동일 처리
+    local.sellPlans.forEach(sp => {
+      if (!sp.filled || !sp.filledDate) return;
+      const spDate = normDate(sp.filledDate);
+      if (!(spDate > thisBuyDate && (!nextBuyDate || spDate < nextBuyDate))) return;
+      if (!Array.isArray(sp.consumedTradeIds) || sp.consumedTradeIds.length === 0) return;
+      if (sp.consumedTradeIds.length === 1) {
+        const id = String(sp.consumedTradeIds[0]);
+        maConsumedQty[id] = (maConsumedQty[id] || 0) + (Number(sp.filledQuantity) || 0);
+      } else {
+        sp.consumedTradeIds.forEach(id => {
+          maConsumedQty[String(id)] = Number.MAX_SAFE_INTEGER;
+        });
+      }
     });
 
     // 이 라운드의 매도 = 이 매수 이후 ~ 다음 매수 이전 (MA 소비분 차감)
@@ -1443,9 +1465,9 @@ export default function StockDetail({
         return d > thisBuyDate && (!nextBuyDate || d < nextBuyDate);
       })
       .map(s => {
-        // MA가 소비한 수량 차감
+        // MA가 소비한 수량 차감 (정수 보장)
         const consumed = maConsumedQty[String(s.id)] || 0;
-        const remainQty = Math.max(0, s.quantity - consumed);
+        const remainQty = Math.max(0, Math.round(s.quantity - consumed));
         return { ...s, quantity: remainQty };
       })
       .filter(s => s.quantity > 0)
