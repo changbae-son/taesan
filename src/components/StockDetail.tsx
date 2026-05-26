@@ -2526,6 +2526,45 @@ export default function StockDetail({
               );
             })()}
           </div>
+          {/* ─── 룰B 상태 패널 ─── */}
+          {local.rule === 'B' && (() => {
+            const sellCount = local.sellsSinceLastBuy || 0;
+            const active = local.ruleBActive === true;
+            const bottom = local.bottomPrice || 0;
+            const trigger = bottom > 0 ? Math.round(bottom * 0.9) : 0;
+            const signaled = local.ruleBSignalSent === true;
+            return (
+              <div style={{
+                margin: '6px 0 8px',
+                padding: '8px 10px',
+                background: active ? '#e8f5e9' : '#fff3e0',
+                border: `1px solid ${active ? '#66bb6a' : '#ffb74d'}`,
+                borderRadius: 6,
+                fontSize: 12,
+                lineHeight: 1.5,
+              }}>
+                <div style={{ fontWeight: 700, color: active ? '#2e7d32' : '#e65100', marginBottom: 4 }}>
+                  {signaled ? '🟢 룰B 매수 신호 발송됨' : active ? '🟡 룰B 활성 — 양봉 대기중' : '⚪ 룰B 대기 (매도 3회 미만)'}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px', color: '#555' }}>
+                  <span>매도 카운트: <strong>{sellCount}/3</strong></span>
+                  <span>저점: <strong>{bottom > 0 ? bottom.toLocaleString() + '원' : '미설정'}</strong></span>
+                  <span>시작점: <strong>{local.referencePeakPrice ? local.referencePeakPrice.toLocaleString() + '원' : '미설정'}</strong></span>
+                  <span>트리거: <strong>{trigger > 0 ? trigger.toLocaleString() + '원' : '-'}</strong></span>
+                  {local.bottomPriceDate && (
+                    <span style={{ gridColumn: '1 / -1', fontSize: 11, color: '#888' }}>
+                      저점일: {local.bottomPriceDate} ({local.bottomPriceSource || 'unknown'})
+                    </span>
+                  )}
+                  {signaled && local.ruleBSignalDate && (
+                    <span style={{ gridColumn: '1 / -1', fontSize: 11, color: '#2e7d32' }}>
+                      신호일: {local.ruleBSignalDate}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
           <table className={styles.planTableCompact}>
             <tbody>
               {(() => {
