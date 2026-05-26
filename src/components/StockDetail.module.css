@@ -2487,6 +2487,13 @@
   font-size: 13px;
   color: #333;
 }
+.reviewMetaPlus {
+  align-self: flex-end;
+  font-size: 14px;
+  font-weight: 700;
+  color: #bbb;
+  padding-bottom: 1px;
+}
 
 /* 현재 라운드로 돌아가기 버튼 */
 .returnToCurrentBtn {

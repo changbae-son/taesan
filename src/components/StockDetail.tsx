@@ -2680,6 +2680,36 @@ export default function StockDetail({
               </button>
             </div>
           )}
+          {/* 현재 라운드 + 2차 이상: 이전 잔량 + 이번 매수 = 기준 컨텍스트 표시 */}
+          {isCurrentRound && selectedBuyLevel >= 2 && roundView.holdingAtStart > 0 && (() => {
+            const curBp = local.buyPlans[selectedBuyLevel - 1];
+            const curBuyQty = curBp ? (curBp.filledQuantity || curBp.quantity || 0) : 0;
+            const prevRemaining = roundView.holdingAtStart - curBuyQty;
+            return (
+              <div className={styles.reviewMeta}>
+                <div className={styles.reviewMetaItem}>
+                  <span className={styles.reviewMetaLabel}>이전 잔량</span>
+                  <span className={styles.reviewMetaValue}>{prevRemaining.toLocaleString()}주</span>
+                </div>
+                <span className={styles.reviewMetaPlus}>＋</span>
+                <div className={styles.reviewMetaItem}>
+                  <span className={styles.reviewMetaLabel}>{selectedBuyLevel}차 매수</span>
+                  <span className={styles.reviewMetaValue}>{curBuyQty.toLocaleString()}주</span>
+                </div>
+                <span className={styles.reviewMetaPlus}>＝</span>
+                <div className={styles.reviewMetaItem}>
+                  <span className={styles.reviewMetaLabel}>기준 보유</span>
+                  <span className={styles.reviewMetaValue}>{roundView.holdingAtStart.toLocaleString()}주</span>
+                </div>
+                <div className={styles.reviewMetaItem}>
+                  <span className={styles.reviewMetaLabel}>기준가</span>
+                  <span className={styles.reviewMetaValue} style={{ color: '#1565c0', fontWeight: 700 }}>
+                    {(local.avgPrice || roundView.roundAvgPrice).toLocaleString()}원
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* 풀 편집 UI — 현재/복기 공통 */}
           <table className={styles.planTableCompact}>
@@ -2689,22 +2719,22 @@ export default function StockDetail({
                 // 복기 모드: 해당 라운드 평단 사용 / 현재 모드: local.avgPrice
                 const displayAvgPrice = !isCurrentRound && roundView.roundAvgPrice > 0
                   ? roundView.roundAvgPrice : local.avgPrice;
-                // 복기 모드: 해당 라운드 날짜 범위의 MA 매도만 표시
-                const displayMaSells = !isCurrentRound
-                  ? local.maSells.filter((m) => {
-                      if (!m.filled || !m.filledDate) return false;
-                      const d = m.filledDate;
-                      return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
-                    })
-                  : local.maSells;
+                // MA 매도 표시: 현재/복기 모두 이 라운드 날짜 범위 안의 항목만 표시
+                // (현재 라운드: 이번 매수일 이후, 복기: 해당 매수일 이후 ~ 다음 매수일 이전)
+                const displayMaSells = local.maSells.filter((m) => {
+                  if (!m.filled || !m.filledDate) return false;
+                  const d = m.filledDate;
+                  return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
+                });
 
                 const totalBought = local.buyPlans.reduce((sum, bp) => {
                   if (!bp.filled) return sum;
                   return sum + (bp.filledQuantity || bp.quantity);
                 }, 0);
-                const maSold = displayMaSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
-                // 복기 모드: 해당 라운드 시작 보유수량부터 차감 시작
-                let remaining = !isCurrentRound ? roundView.holdingAtStart : (totalBought - maSold);
+                // 잔여 계산용: 표시 필터와 별개로 전체 MA 매도 합산 (pre-round MA 포함)
+                const allMaSold = local.maSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
+                // 복기 모드: 해당 라운드 시작 보유수량부터 차감 시작 / 현재: 전체 매수 - 전체 MA 매도
+                let remaining = !isCurrentRound ? roundView.holdingAtStart : (totalBought - allMaSold);
 
                 // MA 행 렌더 헬퍼 (드래그 가능)
                 const renderMARow = (m: typeof local.maSells[0], mi: number) => {
