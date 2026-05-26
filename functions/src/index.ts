@@ -5012,11 +5012,17 @@ async function reconcileStockPlans(stockName: string): Promise<{
       }
     }
 
-    if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && tradesComplete) {
+    // ✅ 합병/감자 보정 이력 있는 종목은 trades 기반 단순 평단 덮어쓰기 SKIP
+    // 키움이 합병 시점에 평단을 재설정하는데 (예: 재영솔루텍 5:1 합병 후 평단 재산정)
+    // 단순 가중평균(매수금액÷매수수량) 으로 덮으면 키움 실제 평단과 차이남
+    const hasCorporateActions = Array.isArray(stock.corporateActions) && stock.corporateActions.length > 0;
+    if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && tradesComplete && !hasCorporateActions) {
       reconcileUpdate.avgPrice = stockAvg;
       console.log(`[reconcile] ${stockName} avgPrice 보정: ${stock.avgPrice} → ${stockAvg} (trades 완전)`);
     } else if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && !tradesComplete) {
       console.log(`[reconcile] ${stockName} avgPrice 보정 SKIP (trades 누락: ${tradesNetQty}주 / 키움 ${stockTotalQty}주, 키움 평단 ${stock.avgPrice} 유지)`);
+    } else if (hasCorporateActions && stockAvg > 0 && stockAvg !== (Number(stock.avgPrice) || 0)) {
+      console.log(`[reconcile] ${stockName} avgPrice 보정 SKIP (합병/감자 이력 있음, 키움 평단 ${stock.avgPrice} 유지)`);
     }
     // ✅ Phase 1a: trades 기반 positions 재계산
     // ✅ Phase 2: 기존 positions의 만기/이자 메타데이터 보존
