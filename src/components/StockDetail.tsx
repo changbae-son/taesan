@@ -980,6 +980,12 @@ export default function StockDetail({
       const mergedDate = (toPlan.filledDate || '') > (fromPlan.filledDate || '')
         ? toPlan.filledDate
         : fromPlan.filledDate;
+      // ✅ consumedTradeIds 병합 — from/to 양쪽의 trade ID를 dedup하여 저장
+      // 합쳐진 슬롯이 양쪽 trade 모두를 점유했음을 명시 → roundView가 정확히 소비 처리
+      const mergedConsumedTradeIds = Array.from(new Set([
+        ...(Array.isArray(toPlan.consumedTradeIds) ? toPlan.consumedTradeIds : []),
+        ...(Array.isArray(fromPlan.consumedTradeIds) ? fromPlan.consumedTradeIds : []),
+      ]));
       plans[toIdx] = {
         ...toPlan,
         filled: true,
@@ -987,9 +993,10 @@ export default function StockDetail({
         filledPrice: mergedPrice,
         filledQuantity: totalQty,
         manualOverride: true,
+        consumedTradeIds: mergedConsumedTradeIds,
       };
     } else {
-      // 단순 이동 모드: 출발 → 도착으로 복사
+      // 단순 이동 모드: 출발 → 도착으로 복사 (consumedTradeIds도 함께 이동)
       plans[toIdx] = {
         ...toPlan,
         filled: true,
@@ -997,10 +1004,11 @@ export default function StockDetail({
         filledPrice: fromPrice,
         filledQuantity: fromQty,
         manualOverride: true,
+        consumedTradeIds: Array.isArray(fromPlan.consumedTradeIds) ? [...fromPlan.consumedTradeIds] : [],
       };
     }
 
-    // 출발 슬롯: 비우기 + 보호
+    // 출발 슬롯: 비우기 + 보호 (consumedTradeIds도 초기화 — 도착 슬롯으로 이전됨)
     plans[fromIdx] = {
       ...fromPlan,
       filled: false,
@@ -1008,6 +1016,7 @@ export default function StockDetail({
       filledPrice: 0,
       filledQuantity: 0,
       manualOverride: true,
+      consumedTradeIds: [],
     };
 
     // 합치기 모드 + fromIdx 이후에 체결된 차수 있으면 → cascade up 제안
@@ -1441,24 +1450,31 @@ export default function StockDetail({
 
     // MA 매도가 소비한 trade 수량 차감 (이중 표시 방지)
     // local.maSells 중 이 라운드 날짜 범위 안에 있고 consumedTradeIds가 있는 항목의 qty를 trade별로 집계
-    // ✅ 백엔드와 동일한 로직: 단일 참조면 MA 전체 qty 흡수, 다중 참조면 각 trade가 전체 흡수(MAX)
-    // ⚠️ sellPlans.consumedTradeIds는 처리하지 않음 — 그 trade들이 바로 roundSells로 표시되어야 할 대상이므로
+    // ✅ 백엔드와 동일한 로직: 단일 참조면 슬롯 전체 qty 흡수, 다중 참조면 각 trade가 전체 흡수(MAX)
+    // ⚠️ sellPlans는 manualOverride=true 슬롯만 처리 (사용자 수동 합치기/이동 결과 보존)
+    //    자동 reconcile된 sp는 처리 X — 그 trade들이 roundSells로 그대로 표시되어야 함
     const maConsumedQty: Record<string, number> = {};
+    const consumeSlot = (qty: number, ids: any[]) => {
+      if (!Array.isArray(ids) || ids.length === 0) return;
+      if (ids.length === 1) {
+        const id = String(ids[0]);
+        maConsumedQty[id] = (maConsumedQty[id] || 0) + (Number(qty) || 0);
+      } else {
+        ids.forEach(id => { maConsumedQty[String(id)] = Number.MAX_SAFE_INTEGER; });
+      }
+    };
     local.maSells.forEach(m => {
       if (!m.filled || !m.filledDate) return;
       const mDate = normDate(m.filledDate);
       if (!(mDate > thisBuyDate && (!nextBuyDate || mDate < nextBuyDate))) return;
-      if (!Array.isArray(m.consumedTradeIds) || m.consumedTradeIds.length === 0) return;
-      if (m.consumedTradeIds.length === 1) {
-        // 단일 참조: MA 전체 qty가 그 trade에서 소비됨
-        const id = String(m.consumedTradeIds[0]);
-        maConsumedQty[id] = (maConsumedQty[id] || 0) + (Number(m.quantity) || 0);
-      } else {
-        // 다중 참조: 각 trade가 전체 흡수 (가중평균 매핑)
-        m.consumedTradeIds.forEach(id => {
-          maConsumedQty[String(id)] = Number.MAX_SAFE_INTEGER;
-        });
-      }
+      consumeSlot(m.quantity, m.consumedTradeIds as any);
+    });
+    local.sellPlans.forEach(sp => {
+      if (sp.manualOverride !== true) return; // 수동 편집 슬롯만
+      if (!sp.filled || !sp.filledDate) return;
+      const spDate = normDate(sp.filledDate);
+      if (!(spDate > thisBuyDate && (!nextBuyDate || spDate < nextBuyDate))) return;
+      consumeSlot(sp.filledQuantity || 0, sp.consumedTradeIds as any);
     });
 
     // 이 라운드의 매도 = 이 매수 이후 ~ 다음 매수 이전 (MA 소비분 차감)
@@ -2933,12 +2949,13 @@ export default function StockDetail({
                   const isSpInThisRound = sp.filled && !!sp.filledDate &&
                     sp.filledDate > roundView.thisBuyDate &&
                     (!roundView.nextBuyDate || sp.filledDate < roundView.nextBuyDate);
-                  const useSpForCurrent = isCurrentRound && isSpInThisRound;
-                  // 복기 모드: 항상 reviewSlots / 현재 모드: 라운드 내 sp 체결이면 undefined(=sp 사용), 아니면 reviewSlots
+                  // ✅ 현재 라운드: 라운드 내 sp 체결이면 sp 우선
+                  // ✅ 복기 라운드: 라운드 내 sp가 manualOverride면 sp 우선 (사용자 합치기/이동 결과 반영)
+                  const useSpForCurrent = isSpInThisRound &&
+                    (isCurrentRound || sp.manualOverride === true);
                   const rvSlot = !useSpForCurrent && i < reviewSlots.length ? reviewSlots[i] : undefined;
 
                   // manualOverride: sp 값 우선 (분리/편집 보호)
-                  // 현재 라운드: 라운드 내 체결만 sp 우선 / 복기 모드: 기존대로 rvSlot 없을 때만
                   const useSpOnly = useSpForCurrent || (!rvSlot && sp.manualOverride === true);
                   const actual = (useSpOnly || !!rvSlot) ? null : sellsByDate[i];
 
