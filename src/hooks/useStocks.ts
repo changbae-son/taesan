@@ -1,4 +1,4 @@
-// v2.3 - filledQuantity>0 매도 계획도 soldQty 반영 (filled 플래그 누락 버그 대응)
+// v2.4 - corporateActions 종목: avgPrice·미체결qty Firestore/firstBuyQty 기준 유지
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   collection,
@@ -53,6 +53,9 @@ export function recalcStock(stock: Stock): Stock {
   const s = { ...stock };
   const { firstBuyPrice, firstBuyQuantity, rule, bottomPrice } = s;
   const isRuleB = rule === 'B' && (bottomPrice || 0) > 0;
+  // 합병/감자 이력이 있는 종목: firstBuyPrice 기반 비중동일 계산이 부정확
+  // → 미체결 수량은 firstBuyQuantity로 통일, avgPrice는 Firestore(키움) 값 유지
+  const hasCorporateActions = Array.isArray(s.corporateActions) && s.corporateActions.length > 0;
 
   // 매수 계획 자동 계산 (태산매매법)
   // 룰A: 2차 이후 매수가 = 이전 차수 실제 매수가 × 0.9 (계단식)
@@ -88,13 +91,15 @@ export function recalcStock(stock: Stock): Stock {
 
       // 비중 동일 원칙: 각 차수 계획 수량 = 1차 매수금액 / 해당 차수 가격
       // 체결된 차수: filledQuantity 우선 (실제 체결 수량), 없으면 저장된 quantity
-      // 미체결 차수: 1차 매수금액(firstBuyPrice × firstBuyQuantity) / 해당 차수 가격으로 비례 계산
+      // 미체결 차수: corporateActions 종목은 firstBuyQuantity 고정, 아니면 비례 계산
       const firstBuyAmt = firstBuyPrice * firstBuyQuantity;
       const planQty = bp.filled
         ? (bp.filledQuantity || bp.quantity || firstBuyQuantity)
-        : (calcPrice > 0 && firstBuyAmt > 0
-          ? Math.round(firstBuyAmt / calcPrice)
-          : firstBuyQuantity);
+        : hasCorporateActions
+          ? firstBuyQuantity
+          : (calcPrice > 0 && firstBuyAmt > 0
+            ? Math.round(firstBuyAmt / calcPrice)
+            : firstBuyQuantity);
 
       updated.push({
         ...bp,
@@ -141,7 +146,11 @@ export function recalcStock(stock: Stock): Stock {
     (sp) => sp.filled || ((sp.filledQuantity || 0) > 0)
   );
   s.totalQuantity = allSellsFilled ? 0 : Math.max(0, totalQty - soldQty);
-  s.avgPrice = totalQty > 0 ? Math.round(totalCost / totalQty) : 0;
+  // corporateActions 종목: 합병/감자 후 단순 buyPlans 가중평균은 부정확
+  // → reconcile이 키움 기반으로 설정한 Firestore avgPrice 유지
+  s.avgPrice = (hasCorporateActions && (stock.avgPrice || 0) > 0)
+    ? stock.avgPrice
+    : (totalQty > 0 ? Math.round(totalCost / totalQty) : 0);
 
   // 매도 계획 자동 계산 (체결된 항목의 실제 데이터는 보존)
   // filledQuantity > 0이면 실제 체결 데이터가 있으므로 price/quantity 보존 (filled 플래그 무관)
