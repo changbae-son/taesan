@@ -9147,8 +9147,12 @@ async function runSScreenerDailyS2(
         window.reduce((s, b) => s + b.close, 0) / 20,
       );
       const lowerBandAtDay = Math.round(ma20AtDay * 0.8);
-      const threshold = lowerBandAtDay * 1.02;
-      if (bars[i].low <= threshold) {
+      // 사이클 종료 판정은 "정확 도달/이탈"만 인정 (저가 ≤ 하단선).
+      // 텔레그램 알림(sScreenerCheck)은 별도로 1pct/2pct 근접도 발송 — 영향 없음.
+      // 케이스: 카카오 2026-03-04 저가 47,050 vs 하단선 46,534 (+1.11% 거리)
+      //  → 종전 ×1.02 룰에서는 사이클 종료 처리되어 후보 탈락.
+      //  → ×1.00 으로 변경: 정확 도달 안 한 경우 후보 유지.
+      if (bars[i].low <= lowerBandAtDay) {
         firstTouchIdx = i;
         firstTouchInfo = {
           date: bars[i].date,
@@ -9158,7 +9162,7 @@ async function runSScreenerDailyS2(
         break;
       }
     }
-    // 양봉 이후 이미 한 번 하단선 접근이 일어났다면 사이클 종료 → 제외
+    // 양봉 이후 이미 한 번 하단선 정확 도달이 일어났다면 사이클 종료 → 제외
     if (firstTouchIdx >= 0) {
       console.log(
         `[S2] ${stk.code} ${stk.name} 사이클 종료 (양봉 ${bars[bigVolIdx].date} → ` +
