@@ -4932,6 +4932,26 @@ async function reconcileStockPlans(stockName: string): Promise<{
     const finalSellPlans = sellPlans.map((newPlan: any, i: number) => {
       const latest = latestSellPlans[i];
       if (latest?.manualOverride) {
+        // ✅ 미체결 manualOverride 재계산: 실제 체결 데이터가 없고 consumedTradeIds도 없는 경우
+        // → avgPrice 변경(추가매수 등) 후 목표가가 stale하게 고정되는 문제 방지
+        // filled sell: 체결 데이터 보존 / unfilled sell: stockAvg 기준 재계산
+        const isActuallyFilled = latest.filled || (Number(latest.filledQuantity) || 0) > 0;
+        const hasConsumedTrades = Array.isArray(latest.consumedTradeIds) && latest.consumedTradeIds.length > 0;
+        if (!isActuallyFilled && !hasConsumedTrades && stockAvg > 0) {
+          const freshPrice = Math.round(stockAvg * (1 + (Number(latest.percent) || 0) / 100));
+          const freshQty = correctSellQty;
+          console.log(
+            `[reconcile] ${stockName} sell+${latest.percent}% manualOverride 미체결 재계산: ` +
+            `price ${latest.price} → ${freshPrice}, qty ${latest.quantity} → ${freshQty} (avgPrice ${stockAvg})`
+          );
+          return {
+            ...newPlan,
+            price: freshPrice,
+            quantity: freshQty,
+            manualOverride: false,
+          };
+        }
+
         console.log(`[reconcile race 보호] ${stockName} sell+${latest.percent}% latest manualOverride 유지`);
         // ✅ filledQuantity > 0 & filledDate 있으면 filled 플래그 동기화 (체결 데이터 있는데 filled=false 버그 수정)
         const hasFillData = (Number(latest.filledQuantity) || 0) > 0 && !!latest.filledDate;
