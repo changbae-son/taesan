@@ -1020,7 +1020,7 @@ function mapTradesToPlans(
   trades: any[],
   stockName: string,
   holdings: any,
-  ruleConfig?: {rule?: string; bottomPrice?: number}
+  ruleConfig?: {rule?: string; bottomPrice?: number; sellsSinceLastBuy?: number}
 ): {buyPlans: any[]; sellPlans: any[]; sellCount: number; firstBuyPrice: number; firstBuyQty: number} {
   // 해당 종목의 체결내역을 날짜+시간 순으로 정렬
   const stockTrades = trades
@@ -1099,7 +1099,11 @@ function mapTradesToPlans(
       //   첫 미체결 = bottomPrice × 0.9, 그 이후는 이전 × 0.9 (계단식)
       // 룰A (기본):
       //   이전 차수 × 0.9
-      const isRuleB = ruleConfig?.rule === "B" && (ruleConfig?.bottomPrice || 0) > 0;
+      // ✅ 룰B 활성화 게이트: 마지막 매수 차수 이후 매도 3회 이상이어야 적용 (이익+MA 합산)
+      // 매도 카운트가 부족하면 룰A 폴백 (이전 차수 × 0.9)
+      const isRuleB = ruleConfig?.rule === "B" &&
+        (ruleConfig?.bottomPrice || 0) > 0 &&
+        (ruleConfig?.sellsSinceLastBuy || 0) >= 3;
       let nextPrice: number;
 
       if (isRuleB) {
@@ -1338,6 +1342,7 @@ async function syncToFirestore(
     const ruleConfig = preExistingData ? {
       rule: preExistingData.rule,
       bottomPrice: preExistingData.bottomPrice,
+      sellsSinceLastBuy: preExistingData.sellsSinceLastBuy,
     } : undefined;
     const mapped = mapTradesToPlans(trades, h.name, h, ruleConfig);
 
@@ -4977,10 +4982,29 @@ async function reconcileStockPlans(stockName: string): Promise<{
       return newPlan;
     });
 
+    // ✅ 룰B 카운터: 마지막 매수 차수 이후 매도(이익+MA) 누적 횟수
+    // recalcStock(frontend)와 동일 로직으로 백엔드에서도 계산하여 Firestore에 보존
+    // → kiwoomSync의 ruleConfig.sellsSinceLastBuy로 mapTradesToPlans에 전달
+    const lastFilledBuyDateBE = (finalBuyPlans as any[])
+      .filter((bp) => bp.filled && bp.filledDate)
+      .reduce((max: string, bp: any) => ((bp.filledDate || "") > max ? (bp.filledDate || "") : max), "");
+    let sellsSinceLastBuyBE = 0;
+    (finalSellPlans as any[]).forEach((sp) => {
+      const f = sp.filled || (Number(sp.filledQuantity) || 0) > 0;
+      if (f && (sp.filledDate || "") > lastFilledBuyDateBE) sellsSinceLastBuyBE++;
+    });
+    (maSellsArr as any[]).forEach((ms) => {
+      if (ms.filled && (ms.filledDate || "") > lastFilledBuyDateBE) sellsSinceLastBuyBE++;
+    });
+    const ruleBActiveBE = (stock as any).rule === "B" &&
+      sellsSinceLastBuyBE >= 3 && (Number((stock as any).bottomPrice) || 0) > 0;
+
     const reconcileUpdate: Record<string, any> = {
       buyPlans: finalBuyPlans,
       sellPlans: finalSellPlans,
       maSells: maSellsArr,
+      sellsSinceLastBuy: sellsSinceLastBuyBE,
+      ruleBActive: ruleBActiveBE,
       mappingAuditDiff,
       mappingBandIssues,
       mappingIntegrityIssues,

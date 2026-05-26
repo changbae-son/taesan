@@ -156,8 +156,17 @@ export interface Stock {
   sellSignalSent?: boolean; // 수동 매도 차수(25%+) 알림 발송 여부
   sellSignalLevel?: number; // 알림 발송한 매도 차수
   sellSignalAt?: number; // 수동 매도 알림 시간
-  // Rule B: 저점 추적 (rule='B'일 때 자동 업데이트)
-  bottomPrice?: number;  // 마지막 매수 이후 최저가 (Rule B 다음 매수가 = bottomPrice × 0.9)
+  // ─── Rule B: 저점 추적 + 양봉 매수 신호 ───
+  // 활성화 조건: 마지막 매수 차수 이후 누적 매도(이익+MA) 3회 이상
+  bottomPrice?: number;              // 시작점~현재까지 일봉 low 중 최저값
+  bottomPriceDate?: string;          // 최저 도달 날짜 (YYYY-MM-DD)
+  bottomPriceSource?: 'daily_low' | 'realtime' | 'manual'; // 데이터 소스
+  referencePeakPrice?: number;       // 시작점 (Watchlist 등록 시 사용자가 입력한 최고점)
+  referencePeakDate?: string;        // 시작점 등록 날짜
+  sellsSinceLastBuy?: number;        // 마지막 매수 차수 이후 누적 매도 카운트 (recalcStock이 갱신)
+  ruleBActive?: boolean;             // 룰B 활성화 여부 (sellsSinceLastBuy >= 3)
+  ruleBSignalSent?: boolean;         // 양봉 매수 신호 발송 여부
+  ruleBSignalDate?: string;          // 양봉 신호 발송 날짜
   // 이동평균선 (15:20~15:30 일 1회 계산)
   ma20?: number;
   ma60?: number;

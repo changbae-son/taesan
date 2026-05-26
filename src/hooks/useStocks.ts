@@ -52,7 +52,30 @@ function createDefaultStock(name: string): Omit<Stock, 'id'> {
 export function recalcStock(stock: Stock): Stock {
   const s = { ...stock };
   const { firstBuyPrice, firstBuyQuantity, rule, bottomPrice } = s;
-  const isRuleB = rule === 'B' && (bottomPrice || 0) > 0;
+
+  // ─── 룰B 활성화 게이트: 마지막 매수 차수 이후 누적 매도(이익+MA) 3회 이상 ───
+  // 1) 마지막으로 체결된 매수 차수의 filledDate 찾기 (없으면 빈 문자열)
+  const lastFilledBuyDate = s.buyPlans
+    .filter((bp) => bp.filled && !!bp.filledDate)
+    .reduce((max, bp) => ((bp.filledDate || '') > max ? (bp.filledDate || '') : max), '');
+  // 2) 그 날짜 이후(같은 날은 제외 — 매수 직후의 매도는 다른 라운드로 분리하기 위함)에 발생한 매도 카운트
+  //    같은 날 매수+매도는 보수적으로 매수 후로 간주하지 않음 (정확한 시각 정보 없음)
+  const countSellsAfter = (cutoffDate: string): number => {
+    let count = 0;
+    s.sellPlans.forEach((sp) => {
+      if ((sp.filled || (sp.filledQuantity || 0) > 0) && (sp.filledDate || '') > cutoffDate) count++;
+    });
+    s.maSells.forEach((ms) => {
+      if (ms.filled && (ms.filledDate || '') > cutoffDate) count++;
+    });
+    return count;
+  };
+  const sellsSinceLastBuy = countSellsAfter(lastFilledBuyDate);
+  s.sellsSinceLastBuy = sellsSinceLastBuy;
+  const ruleBActive = rule === 'B' && sellsSinceLastBuy >= 3 && (bottomPrice || 0) > 0;
+  s.ruleBActive = ruleBActive;
+  // 룰B로 설정됐지만 아직 매도 3회 미만 → 룰A 폴백 (기존 isRuleB 로직 차단)
+  const isRuleB = ruleBActive;
   // 합병/감자 이력이 있는 종목: firstBuyPrice 기반 비중동일 계산이 부정확
   // → 미체결 수량은 firstBuyQuantity로 통일, avgPrice는 Firestore(키움) 값 유지
   const hasCorporateActions = Array.isArray(s.corporateActions) && s.corporateActions.length > 0;
