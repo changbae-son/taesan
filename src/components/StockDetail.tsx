@@ -1399,32 +1399,50 @@ export default function StockDetail({
     const thisBuyDate = normDate(buysByDate[levelIdx]?.date || local.buyPlans[levelIdx]?.filledDate || '');
     const nextBuyDate = normDate(buysByDate[levelIdx + 1]?.date || local.buyPlans[levelIdx + 1]?.filledDate || '');
 
-    // 이 라운드까지의 평단 계산
-    let totalCost = 0, totalBought = 0;
-    for (let i = 0; i <= levelIdx; i++) {
-      const bg = buysByDate[i];
-      if (bg) { totalCost += bg.amt; totalBought += bg.qty; }
-      else {
-        const bp = local.buyPlans[i];
-        if (bp?.filled) {
-          totalCost += (bp.filledPrice || bp.price) * (bp.filledQuantity || bp.quantity);
-          totalBought += (bp.filledQuantity || bp.quantity);
-        }
-      }
-    }
-    const roundAvgPrice = totalBought > 0 ? Math.round(totalCost / totalBought) : 0;
-
     // 이 라운드 시작 전에 이미 매도된 수량
     const soldBeforeRound = actualSells
       .filter(s => normDate(s.date) < thisBuyDate)
       .reduce((sum, s) => sum + s.quantity, 0);
+
+    // ✅ FIFO 기반 평단 계산: 이전 라운드 매도분을 가장 오래된 매수부터 차감
+    // 예: STX 49주 1차 잔량(@4,090) + 120주 2차(@3,500) = 169주, 평단 3,671원
+    // (단순 가중평균 910,800/240=3,795 또는 buyPlans[1]만 보는 3,500은 둘 다 오답)
+    let totalBought = 0;
+    let remainingToAllocate = soldBeforeRound;
+    let netCost = 0;
+    let netQty = 0;
+    for (let i = 0; i <= levelIdx; i++) {
+      let qty = 0;
+      let price = 0;
+      const bg = buysByDate[i];
+      if (bg) {
+        qty = bg.qty;
+        price = bg.qty > 0 ? bg.amt / bg.qty : 0;
+      } else {
+        const bp = local.buyPlans[i];
+        if (bp?.filled) {
+          qty = bp.filledQuantity || bp.quantity;
+          price = bp.filledPrice || bp.price;
+        }
+      }
+      if (qty <= 0 || price <= 0) continue;
+      totalBought += qty;
+      // FIFO: 이 매수에서 sold 차감 후 잔량만 netCost/netQty에 누적
+      const allocated = Math.min(qty, remainingToAllocate);
+      remainingToAllocate -= allocated;
+      const remainFromBuy = qty - allocated;
+      netCost += price * remainFromBuy;
+      netQty += remainFromBuy;
+    }
+    const roundAvgPrice = netQty > 0 ? Math.round(netCost / netQty) : 0;
+
     const holdingAtStart = Math.max(0, totalBought - soldBeforeRound);
     const slotQty = holdingAtStart > 0 ? Math.round(holdingAtStart / 5) : 0;
 
     // MA 매도가 소비한 trade 수량 차감 (이중 표시 방지)
-    // local.maSells/sellPlans 중 이 라운드 날짜 범위 안에 있고 consumedTradeIds가 있는 항목의 qty를 trade별로 집계
-    // ✅ 백엔드와 동일한 로직: 단일 참조면 슬롯 qty 전부 흡수, 다중 참조면 각 trade가 전체 흡수(Infinity)
-    // 균등 배분(qty/N)은 소수 수량 발생 버그 → 제거
+    // local.maSells 중 이 라운드 날짜 범위 안에 있고 consumedTradeIds가 있는 항목의 qty를 trade별로 집계
+    // ✅ 백엔드와 동일한 로직: 단일 참조면 MA 전체 qty 흡수, 다중 참조면 각 trade가 전체 흡수(MAX)
+    // ⚠️ sellPlans.consumedTradeIds는 처리하지 않음 — 그 trade들이 바로 roundSells로 표시되어야 할 대상이므로
     const maConsumedQty: Record<string, number> = {};
     local.maSells.forEach(m => {
       if (!m.filled || !m.filledDate) return;
@@ -1438,21 +1456,6 @@ export default function StockDetail({
       } else {
         // 다중 참조: 각 trade가 전체 흡수 (가중평균 매핑)
         m.consumedTradeIds.forEach(id => {
-          maConsumedQty[String(id)] = Number.MAX_SAFE_INTEGER;
-        });
-      }
-    });
-    // sellPlans 중 이 라운드 범위 + consumedTradeIds 있는 항목도 동일 처리
-    local.sellPlans.forEach(sp => {
-      if (!sp.filled || !sp.filledDate) return;
-      const spDate = normDate(sp.filledDate);
-      if (!(spDate > thisBuyDate && (!nextBuyDate || spDate < nextBuyDate))) return;
-      if (!Array.isArray(sp.consumedTradeIds) || sp.consumedTradeIds.length === 0) return;
-      if (sp.consumedTradeIds.length === 1) {
-        const id = String(sp.consumedTradeIds[0]);
-        maConsumedQty[id] = (maConsumedQty[id] || 0) + (Number(sp.filledQuantity) || 0);
-      } else {
-        sp.consumedTradeIds.forEach(id => {
           maConsumedQty[String(id)] = Number.MAX_SAFE_INTEGER;
         });
       }
@@ -2726,7 +2729,7 @@ export default function StockDetail({
                 <div className={styles.reviewMetaItem}>
                   <span className={styles.reviewMetaLabel}>기준가</span>
                   <span className={styles.reviewMetaValue} style={{ color: '#1565c0', fontWeight: 700 }}>
-                    {(local.avgPrice || roundView.roundAvgPrice).toLocaleString()}원
+                    {(roundView.roundAvgPrice || local.avgPrice).toLocaleString()}원
                   </span>
                 </div>
               </div>
@@ -2739,7 +2742,9 @@ export default function StockDetail({
               {(() => {
                 // 복기/현재 공통 변수
                 // 복기 모드: 해당 라운드 평단 사용 / 현재 모드: local.avgPrice
-                const displayAvgPrice = !isCurrentRound && roundView.roundAvgPrice > 0
+                // ✅ 라운드 평단 우선 사용 (현재/복기 모두) — recalcStock의 local.avgPrice는
+                // buyPlans 미체결 종목에서 부정확할 수 있어 roundView.roundAvgPrice (FIFO 기반) 우선
+                const displayAvgPrice = roundView.roundAvgPrice > 0
                   ? roundView.roundAvgPrice : local.avgPrice;
                 // MA 매도 표시: 현재/복기 모두 이 라운드 날짜 범위 안의 항목만 표시
                 // (현재 라운드: 이번 매수일 이후, 복기: 해당 매수일 이후 ~ 다음 매수일 이전)
