@@ -68,10 +68,19 @@ export default function App() {
   };
 
   const handleAddStock = async (name: string) => {
-    const id = await addStock(name);
+    // ✅ 룰B 기준점 자동 전달: 같은 이름의 Watchlist 항목이 있으면 peakPrice/code 함께 저장
+    const watchMatch = watchItems.find((w) => w.name === name);
+    const options = watchMatch
+      ? { referencePeakPrice: watchMatch.peakPrice, code: watchMatch.code }
+      : undefined;
+    const id = await addStock(name, options);
     setSelectedStockId(id);
     changeTab('detail');
-    showToast('종목이 추가되었습니다');
+    showToast(
+      watchMatch
+        ? `종목이 추가되었습니다 (최고점 ${watchMatch.peakPrice.toLocaleString()}원 자동 적용)`
+        : '종목이 추가되었습니다'
+    );
   };
 
   const handleSaveStock = (stock: typeof stocks[0]) => {

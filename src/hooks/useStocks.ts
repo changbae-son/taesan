@@ -257,9 +257,21 @@ export function useStocks() {
     }, DEBOUNCE_MS);
   }, []);
 
-  const addStock = useCallback(async (name: string) => {
+  // addStock(name): 기본 종목 추가
+  // addStock(name, { referencePeakPrice }): Watchlist에서 promote 시 최고점 함께 저장 (룰B 기준점)
+  const addStock = useCallback(async (
+    name: string,
+    options?: { referencePeakPrice?: number; code?: string }
+  ) => {
     const id = `stock_${Date.now()}`;
-    const data = createDefaultStock(name);
+    const data: any = createDefaultStock(name);
+    if (options?.referencePeakPrice && options.referencePeakPrice > 0) {
+      data.referencePeakPrice = options.referencePeakPrice;
+      data.referencePeakDate = new Date().toISOString().slice(0, 10);
+    }
+    if (options?.code) {
+      data.code = options.code;
+    }
     await setDoc(doc(db, 'stocks', id), data);
     return id;
   }, []);
