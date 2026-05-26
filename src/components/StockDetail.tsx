@@ -2727,14 +2727,13 @@ export default function StockDetail({
                   return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
                 });
 
-                const totalBought = local.buyPlans.reduce((sum, bp) => {
-                  if (!bp.filled) return sum;
-                  return sum + (bp.filledQuantity || bp.quantity);
-                }, 0);
-                // 잔여 계산용: 표시 필터와 별개로 전체 MA 매도 합산 (pre-round MA 포함)
-                const allMaSold = local.maSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
-                // 복기 모드: 해당 라운드 시작 보유수량부터 차감 시작 / 현재: 전체 매수 - 전체 MA 매도
-                let remaining = !isCurrentRound ? roundView.holdingAtStart : (totalBought - allMaSold);
+                // 잔여 계산용: 이 라운드 MA 매도만 차감 (displayMaSells = 이 라운드 필터링됨)
+                const maSold = displayMaSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
+                // ✅ Option A: 라운드 기준 시작 보유에서 이 라운드 MA 매도 차감
+                // 1차 복기는 기존 동작(holdingAtStart) 유지, 현재는 holdingAtStart - 이번라운드 MA
+                let remaining = !isCurrentRound
+                  ? roundView.holdingAtStart
+                  : (roundView.holdingAtStart - maSold);
 
                 // MA 행 렌더 헬퍼 (드래그 가능)
                 const renderMARow = (m: typeof local.maSells[0], mi: number) => {
@@ -2901,11 +2900,19 @@ export default function StockDetail({
                 const reviewSlots = savedRound?.sellSlots || roundView.sellSlots;
 
                 local.sellPlans.forEach((sp, i) => {
-                  // 복기 모드: savedRound 또는 roundView 기반 슬롯 데이터
-                  const rvSlot = !isCurrentRound && i < reviewSlots.length ? reviewSlots[i] : undefined;
+                  // ✅ Option A: 라운드 기준 슬롯 분리
+                  // 현재 라운드에서도 reviewSlots(roundView 기반) 사용 → 1차 체결이 2차 슬롯에 잔존하지 않도록
+                  // 단 sp 체결이 이 라운드 기간 내일 때만 sp 우선 (사용자 수동 편집·라운드 내 체결 보존)
+                  const isSpInThisRound = sp.filled && !!sp.filledDate &&
+                    sp.filledDate > roundView.thisBuyDate &&
+                    (!roundView.nextBuyDate || sp.filledDate < roundView.nextBuyDate);
+                  const useSpForCurrent = isCurrentRound && isSpInThisRound;
+                  // 복기 모드: 항상 reviewSlots / 현재 모드: 라운드 내 sp 체결이면 undefined(=sp 사용), 아니면 reviewSlots
+                  const rvSlot = !useSpForCurrent && i < reviewSlots.length ? reviewSlots[i] : undefined;
 
-                  // manualOverride: sp 값 우선 (분리/편집 보호) — 현재 라운드에서만 적용
-                  const useSpOnly = !rvSlot && sp.manualOverride === true;
+                  // manualOverride: sp 값 우선 (분리/편집 보호)
+                  // 현재 라운드: 라운드 내 체결만 sp 우선 / 복기 모드: 기존대로 rvSlot 없을 때만
+                  const useSpOnly = useSpForCurrent || (!rvSlot && sp.manualOverride === true);
                   const actual = (useSpOnly || !!rvSlot) ? null : sellsByDate[i];
 
                   // 복기 모드: rvSlot 기반 / 현재 모드: sp+actual 기반
