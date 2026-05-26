@@ -27,6 +27,7 @@ export {
   jbScreenerFilters,
   jbScreenerFiltersSet,
   jbScreenerHistory,
+  jbMa20Bulk,
 } from "./jb-bridge";
 
 admin.initializeApp();

@@ -1195,3 +1195,103 @@ export const jbScreenerHistory = functions
       }
     });
   });
+
+// ─── 이동평균선 계산 헬퍼 (ka10081 일봉) ───
+// jbQuote와 동일하게 jb 키움 키 사용
+async function calcMa20ForCode(token: string, code: string): Promise<number | null> {
+  try {
+    const closes: number[] = [];
+    let contYn = "N";
+    let nextKey = "";
+    const MAX_PAGES = 2; // 20봉이면 1~2 페이지면 충분
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const reqHeaders: Record<string, string> = {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": `Bearer ${token}`,
+        "api-id": "ka10081",
+      };
+      if (contYn === "Y" && nextKey) {
+        reqHeaders["cont-yn"] = "Y";
+        reqHeaders["next-key"] = nextKey;
+      }
+
+      const r = await fetch(`${KIWOOM_BASE}/api/dostk/chart`, {
+        method: "POST",
+        headers: reqHeaders,
+        body: JSON.stringify({
+          stk_cd: code,
+          base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+          upd_stkpc_tp: "1",
+          qry_tp: "0",
+        }),
+      });
+      const respContYn = r.headers.get("cont-yn") || r.headers.get("Cont-Yn") || "";
+      const respNextKey = r.headers.get("next-key") || r.headers.get("Next-Key") || "";
+      const data: any = await r.json();
+      const chart: any[] = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
+      for (const c of chart) {
+        const close = parseInt(c.cur_prc || c.cls_prc || c.close || "0");
+        if (close > 0) closes.push(close);
+      }
+      if (closes.length >= 20 || respContYn !== "Y" || !respNextKey) break;
+      contYn = "Y";
+      nextKey = respNextKey;
+      await new Promise((rs) => setTimeout(rs, 200));
+    }
+
+    if (closes.length < 20) return null;
+    const sum = closes.slice(0, 20).reduce((a, b) => a + b, 0);
+    return Math.round(sum / 20);
+  } catch (err) {
+    console.log(`[ma20] ${code} 실패:`, err);
+    return null;
+  }
+}
+
+/**
+ * jb-s-web → 보유 종목들의 20일 이동평균선(ma20) 일괄 계산
+ * POST /jbMa20Bulk
+ * body: { codes: ["005930", "108490", ...] }
+ * Response: { results: [{ code, ma20 }] }
+ *
+ * 키움 일봉 API 추가 호출이 있으니 클라이언트는 하루 1번 + 사용자 트리거 정도로 제한 사용
+ */
+export const jbMa20Bulk = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 120,
+    secrets: ["KIWOOM_JB_APP_KEY", "KIWOOM_JB_APP_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    jbCors(req, res, async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        await verifyJbAuth(req);
+        const codes: string[] = Array.isArray(req.body?.codes) ? req.body.codes : [];
+        const valid = codes.filter((c) => /^\d{6}$/.test(c));
+        if (valid.length === 0) {
+          res.json({results: []});
+          return;
+        }
+        const token = await getJbKiwoomToken();
+        const results: Array<{code: string; ma20: number | null}> = [];
+        for (const code of valid) {
+          const ma20 = await calcMa20ForCode(token, code);
+          results.push({code, ma20});
+          // 키움 한도 보호 — 종목간 200ms 간격
+          await new Promise((rs) => setTimeout(rs, 200));
+        }
+        res.json({results, asOf: Date.now()});
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("authorization") || msg.includes("token") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    });
+  });
