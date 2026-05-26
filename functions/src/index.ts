@@ -2901,13 +2901,16 @@ export const kiwoomAutoSync = functions
           if (h.code && !codeToId[h.code]) {
             updateData.code = h.code;
           }
-          // ─── Rule B 저점 자동 추적 ───
-          // rule='B' 종목: 현재가가 저장된 bottomPrice보다 낮으면 갱신
-          // + buyPlans 미체결 차수도 새 bottomPrice × 0.9 계단식으로 재계산
+          // ─── Rule B 저점 자동 추적 (DEPRECATED — 일봉 기반으로 이전) ───
+          // ⚠️ currentPrice 기반 추적은 룰B 정의(일봉 저가 기준)와 충돌
+          //    이제 ruleBTracker cron(매일 15:35 KST)이 일봉 low 기반으로 갱신
+          //    여기서는 bottomPrice가 한 번도 설정 안 된 경우만 초기값으로 currentPrice 사용
+          //    (cron이 다음 실행에서 정확한 일봉 low로 덮어씀)
           const stockData = stockFullData[docId];
           if (stockData?.rule === "B") {
             const storedBottom = stockData.bottomPrice || 0;
-            if (storedBottom === 0 || h.currentPrice < storedBottom) {
+            // 초기값 시드만: 기존 값 없을 때만 currentPrice 사용
+            if (storedBottom === 0) {
               updateData.bottomPrice = h.currentPrice;
               // buyPlans 미체결 차수 재계산 (manualOverride 보호)
               const existingPlans = Array.isArray(stockData.buyPlans) ? stockData.buyPlans : [];
@@ -3957,6 +3960,154 @@ export const buySignalCheck = functions
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     await runBuySignalCheck();
+  });
+
+/**
+ * ─── 룰B 일봉 추적기 (Phase 3 + 4) ───
+ * 평일 15:35 KST 실행 (장 마감 직후)
+ * 대상: rule='B' 종목 전체
+ * 동작:
+ *   1) referencePeakDate 이후 일봉 fetch
+ *   2) 일봉 low의 최저값 → bottomPrice 갱신 (datapoint 보존)
+ *   3) ruleBActive=true && 오늘 일봉 close < trigger(bottomPrice×0.9) && 양봉(close>open)
+ *      → 매수 신호 발송 + 텔레그램 알림
+ *   4) ruleBSignalSent=true 종목은 중복 발송 차단
+ */
+async function runRuleBTracker(): Promise<{checked: number; bottomUpdated: number; signaled: number; errors: number}> {
+  const result = {checked: 0, bottomUpdated: 0, signaled: 0, errors: 0};
+  const config = await getKiwoomConfig();
+  const token = await getAccessToken(config);
+  if (!token) {
+    console.log("[ruleB] 토큰 획득 실패");
+    return result;
+  }
+
+  const stocksSnap = await db.collection("stocks").where("rule", "==", "B").get();
+  console.log(`[ruleB] 대상 종목 ${stocksSnap.size}개`);
+
+  for (const stockDoc of stocksSnap.docs) {
+    const stockData = stockDoc.data() as any;
+    if (!stockData.code) continue;
+    result.checked++;
+
+    try {
+      // 시작점: referencePeakDate (없으면 createdAt 기준 또는 60일 전)
+      let fromYMD: string;
+      if (stockData.referencePeakDate) {
+        fromYMD = stockData.referencePeakDate.replace(/-/g, "");
+      } else {
+        const ts = Number(stockData.createdAt) || Date.now();
+        const d = new Date(ts);
+        fromYMD = d.toISOString().slice(0, 10).replace(/-/g, "");
+      }
+
+      const candles = await fetchDailyChart(config, token, stockData.code, fromYMD);
+      if (!candles.length) {
+        console.log(`[ruleB] ${stockData.name} 일봉 데이터 없음 (from ${fromYMD})`);
+        continue;
+      }
+
+      // 일봉 low 중 최저값
+      let lowestLow = Infinity;
+      let lowestDate = "";
+      for (const c of candles) {
+        if (c.low > 0 && c.low < lowestLow) {
+          lowestLow = c.low;
+          lowestDate = c.date;
+        }
+      }
+
+      const update: Record<string, any> = {};
+      const currentBottom = Number(stockData.bottomPrice) || 0;
+      // bottomPrice 갱신: 더 낮은 값이거나 처음
+      if (lowestLow !== Infinity && (currentBottom === 0 || lowestLow < currentBottom)) {
+        update.bottomPrice = lowestLow;
+        update.bottomPriceDate = lowestDate;
+        update.bottomPriceSource = "daily_low";
+        result.bottomUpdated++;
+        console.log(
+          `[ruleB] ${stockData.name} bottomPrice 갱신: ${currentBottom} → ${lowestLow} (${lowestDate})`
+        );
+      }
+
+      // 양봉 매수 신호: ruleBActive=true && 오늘 일봉 close < trigger && 양봉 && 미발송
+      const ruleBActive = stockData.ruleBActive === true;
+      const alreadySignaled = stockData.ruleBSignalSent === true;
+      const effectiveBottom = update.bottomPrice || currentBottom;
+      if (ruleBActive && !alreadySignaled && effectiveBottom > 0) {
+        // 가장 최근 봉 (역순 응답 가정, 명시적 정렬)
+        const sorted = [...candles].sort((a, b) => b.date.localeCompare(a.date));
+        const today = sorted[0];
+        const trigger = Math.round(effectiveBottom * 0.9);
+        if (today && today.close > 0 && today.open > 0 &&
+            today.close < trigger && today.close > today.open) {
+          update.ruleBSignalSent = true;
+          update.ruleBSignalDate = today.date;
+          result.signaled++;
+          console.log(
+            `[ruleB] 🟢 ${stockData.name} 매수신호: 종가 ${today.close} < 트리거 ${trigger}, 양봉 (시가 ${today.open})`
+          );
+          try {
+            await sendTelegram(
+              `🟢 룰B 매수신호 — ${stockData.name}\n` +
+              `트리거 ${trigger.toLocaleString()}원 미만 양봉 마감\n` +
+              `종가 ${today.close.toLocaleString()}원 / 시가 ${today.open.toLocaleString()}원\n` +
+              `저점 ${effectiveBottom.toLocaleString()}원 (${update.bottomPriceDate || stockData.bottomPriceDate || "-"})`
+            );
+          } catch (e: any) {
+            console.warn(`[ruleB] 텔레그램 발송 실패: ${e.message}`);
+          }
+        }
+      }
+
+      if (Object.keys(update).length > 0) {
+        update.updatedAt = Date.now();
+        await stockDoc.ref.update(update);
+      }
+
+      // API rate limit 보호
+      await new Promise((r) => setTimeout(r, 300));
+    } catch (err: any) {
+      result.errors++;
+      console.error(`[ruleB] ${stockData.name} 오류: ${err.message}`);
+    }
+  }
+
+  console.log(
+    `[ruleB] 완료: 점검 ${result.checked} / 저점갱신 ${result.bottomUpdated} / ` +
+    `신호 ${result.signaled} / 오류 ${result.errors}`
+  );
+  return result;
+}
+
+/**
+ * 룰B 일봉 추적 cron (평일 15:35 KST)
+ */
+export const ruleBTracker = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 540})
+  .pubsub.schedule("35 15 * * 1-5")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    await runRuleBTracker();
+  });
+
+/**
+ * 룰B 일봉 추적 수동 테스트 (HTTP)
+ * POST /ruleBTrackerNow
+ */
+export const ruleBTrackerNow = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 540})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const result = await runRuleBTracker();
+        res.json({success: true, ...result});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
   });
 
 /**
