@@ -2651,6 +2651,23 @@ export default function StockDetail({
                         <span className={styles.cumulativeQty} style={{ color: bp.filled ? '#1565c0' : '#bbb' }}>
                           {bp.filled ? `누적 ${cumQty.toLocaleString()}주` : `전체 ${cumQty.toLocaleString()}주`}
                         </span>
+                        {/* 현재가 기준 추천 수량 (다음 매수 차수, 현재가가 계획가와 다를 때) */}
+                        {!bp.filled && i === nextBuyIdx && local.currentPrice > 0 && bp.price > 0 && bp.quantity > 0 && (() => {
+                          const planAmt = bp.price * bp.quantity;
+                          const suggestedQty = Math.round(planAmt / local.currentPrice);
+                          // 차이 없거나 미미하면 표시 안 함
+                          if (suggestedQty === bp.quantity || Math.abs(suggestedQty - bp.quantity) <= 1) return null;
+                          const isHigherQty = suggestedQty > bp.quantity;
+                          return (
+                            <span
+                              className={styles.suggestedQty}
+                              style={{ color: isHigherQty ? '#2e7d32' : '#e65100' }}
+                              title={`계획 금액 ${planAmt.toLocaleString()}원을 현재가 ${local.currentPrice.toLocaleString()}원으로 분할매수 시`}
+                            >
+                              현재가 매수 시 {isHigherQty ? '+' : ''}{(suggestedQty - bp.quantity).toLocaleString()}주 (총 {suggestedQty.toLocaleString()}주)
+                            </span>
+                          );
+                        })()}
                       </td>
                       {/* 체결 버튼 + 금액 */}
                       <td className={styles.btnCell}>

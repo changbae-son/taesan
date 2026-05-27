@@ -1149,6 +1149,21 @@
   white-space: nowrap;
 }
 
+/* 현재가 기준 추천 수량 (다음 매수 차수 미체결 시) */
+.suggestedQty {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  margin-top: 3px;
+  padding: 2px 6px;
+  background: #f1f8e9;
+  border: 1px dashed #aed581;
+  border-radius: 4px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+
 /* 실제가 하단 수익률 */
 .profitUnder {
   display: block;
