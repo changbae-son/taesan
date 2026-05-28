@@ -1431,6 +1431,41 @@ export const jbSendTelegramAdmin = functions
     })();
   });
 
+/** 보유 종목 코드 publish (admin) — body: { codes: string[] }
+ *  jb-s-web holdingsCheck가 매 5분 호출하여 보유 종목 코드 리스트를 미러링.
+ *  sScreenerCheck가 이 리스트의 종목은 텔레그램 알림에서 제외 (이미 보유 중인 종목).
+ */
+export const jbHoldingCodesPublishAdmin = functions
+  .region("asia-northeast3")
+  .runWith({
+    timeoutSeconds: 15,
+    secrets: ["ADMIN_INTERNAL_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    void (async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        verifyAdminSecret(req);
+        const codes: string[] = Array.isArray(req.body?.codes) ? req.body.codes : [];
+        const valid = codes.filter((c) => typeof c === "string" && /^\d{6}$/.test(c));
+        await admin.firestore()
+          .collection("settings").doc("jb_holdings_codes").set({
+            codes: valid,
+            count: valid.length,
+            updatedAt: Date.now(),
+          });
+        res.json({ok: true, count: valid.length});
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("admin secret") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    })();
+  });
+
 /** 발주 (admin) — body: { accountNo, stockCode, side, quantity, price, mock? }
  *  jbOrder와 동일 로직이지만 ID token 대신 admin secret 인증.
  *  안전장치는 jb-s-web functions의 holdingsCheck에서 (계좌 가드/한도 등) 처리됨.

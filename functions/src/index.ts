@@ -31,6 +31,7 @@ export {
   jbQuoteAdmin,
   jbSendTelegramAdmin,
   jbOrderAdmin,
+  jbHoldingCodesPublishAdmin,
 } from "./jb-bridge";
 
 admin.initializeApp();
@@ -9923,6 +9924,21 @@ export const sScreenerCheck = functions
       const screenerFilters = await loadScreenerFilters();
       let filteredOutCount = 0;
 
+      // 보유 종목 코드 로드 — jb-s-web holdingsCheck가 5분마다 publish
+      //   이 리스트에 있는 종목은 텔레그램 알림 제외 (이미 보유 중인 종목은 매수 후보 알림 불필요,
+      //   매도 알림은 jb-s-web holdingsCheck가 별도 처리)
+      let heldCodes = new Set<string>();
+      try {
+        const heldDoc = await db.collection("settings").doc("jb_holdings_codes").get();
+        const heldData = heldDoc.data();
+        if (heldData?.codes && Array.isArray(heldData.codes)) {
+          heldCodes = new Set(heldData.codes);
+        }
+      } catch {
+        /* ignore - 보유 종목 정보 없으면 제외 안 함 */
+      }
+      let heldFilteredCount = 0;
+
       for (const stk of eligible) {
         await new Promise((r) => setTimeout(r, 130));
 
@@ -9998,6 +10014,12 @@ export const sScreenerCheck = functions
           continue;
         }
 
+        // 보유 종목 필터 — 이미 보유 중이면 매수 후보 알림 안 보냄 (혼란 방지)
+        if (heldCodes.has(stk.code)) {
+          heldFilteredCount++;
+          continue;
+        }
+
         const emoji = level === "below" ? "🚨" : level === "1pct" ? "⚠️" : "📊";
         const lvText = level === "below" ? "하단선 이탈" : level === "1pct" ? "1% 이내 접근" : "2% 이내 접근";
         const gapText = gap <= 0 ? `${gap.toFixed(1)}%` : `+${gap.toFixed(1)}%`;
@@ -10046,13 +10068,15 @@ export const sScreenerCheck = functions
         alertItemCount: alertItems.length,
         sentCount: alertCount,
         filteredOutCount,
-        filters: screenerFilters, // {enableS, enableS2} 도큐먼트에도 저장 (UI 확인용)
+        heldFilteredCount,
+        heldCount: heldCodes.size,
+        filters: screenerFilters,
       });
 
       console.log(
         `[S체크] 완료. ${alertItems.length}건 알림범위, ${alertCount}건 신규 발송, ` +
-          `${filteredOutCount}건 필터 차단 ` +
-          `(필터: S=${screenerFilters.enableS}, S2=${screenerFilters.enableS2})`,
+          `${filteredOutCount}건 필터 차단, ${heldFilteredCount}건 보유 제외 ` +
+          `(필터: S=${screenerFilters.enableS}, S2=${screenerFilters.enableS2}, 보유=${heldCodes.size})`,
       );
     } catch (e: any) {
       console.error("[S체크] 오류:", e.message);
