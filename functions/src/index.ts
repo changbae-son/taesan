@@ -28,6 +28,9 @@ export {
   jbScreenerFiltersSet,
   jbScreenerHistory,
   jbMa20Bulk,
+  jbQuoteAdmin,
+  jbSendTelegramAdmin,
+  jbOrderAdmin,
 } from "./jb-bridge";
 
 admin.initializeApp();
@@ -5330,6 +5333,103 @@ export const onTradeCreated = functions
  * 진단 엔드포인트: 특정 종목의 trades 날짜별 집계 + buyPlans 현황 비교
  * GET /inspectStockTrades?stockName=XXX
  */
+/**
+ * 진단: buyPlans/sellPlans/maSells 정합성 검사 (전 종목)
+ * GET /diagPlansConsistency
+ *
+ * 검사 항목:
+ *   - 매수 합 (buyPlans filled) vs 매도 합 (sellPlans + maSells filled)
+ *   - 잔여 = 매수 - 매도 vs 키움 totalQuantity
+ *   - 불일치 종목 + 영향 표시
+ */
+export const diagPlansConsistency = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const stocksSnap = await db.collection("stocks").get();
+        const issues: Array<{
+          name: string;
+          totalQuantity: number;
+          avgPrice: number;
+          buySum: number;
+          sellPlanSum: number;
+          maSellSum: number;
+          computedRemain: number;
+          discrepancy: number;
+          mistakenlyCompleted: boolean;
+        }> = [];
+        let okCount = 0;
+
+        stocksSnap.forEach((doc) => {
+          const s = doc.data();
+          const name = s.name;
+          if (!name) return;
+          const tq = Number(s.totalQuantity) || 0;
+          const buyPlans = Array.isArray(s.buyPlans) ? s.buyPlans : [];
+          const sellPlans = Array.isArray(s.sellPlans) ? s.sellPlans : [];
+          const maSells = Array.isArray(s.maSells) ? s.maSells : [];
+
+          let buySum = 0;
+          for (const bp of buyPlans) {
+            if (bp.filled) buySum += Number(bp.filledQuantity) || Number(bp.quantity) || 0;
+          }
+          let sellPlanSum = 0;
+          for (const sp of sellPlans) {
+            if (sp.filled) sellPlanSum += Number(sp.filledQuantity) || Number(sp.quantity) || 0;
+          }
+          let maSellSum = 0;
+          for (const m of maSells) {
+            if (m.filled) maSellSum += Number(m.quantity) || 0;
+          }
+          const computedRemain = buySum - sellPlanSum - maSellSum;
+          const discrepancy = computedRemain - tq;
+
+          // 매수 trade 없는 종목 (보유 0 + buyPlans 모두 미체결) 스킵
+          if (buySum === 0 && tq === 0) return;
+
+          if (Math.abs(discrepancy) > 0) {
+            // 잘못 매매완료로 분류될 위험: computedRemain <= 0 인데 키움 잔고 > 0
+            const mistakenlyCompleted = computedRemain <= 0 && tq > 0;
+            issues.push({
+              name,
+              totalQuantity: tq,
+              avgPrice: Number(s.avgPrice) || 0,
+              buySum,
+              sellPlanSum,
+              maSellSum,
+              computedRemain,
+              discrepancy,
+              mistakenlyCompleted,
+            });
+          } else {
+            okCount++;
+          }
+        });
+
+        // 매매완료 오표시 우선순위로 정렬
+        issues.sort((a, b) => {
+          if (a.mistakenlyCompleted !== b.mistakenlyCompleted) {
+            return a.mistakenlyCompleted ? -1 : 1;
+          }
+          return Math.abs(b.discrepancy) - Math.abs(a.discrepancy);
+        });
+
+        res.json({
+          success: true,
+          totalStocks: stocksSnap.size,
+          okCount,
+          issueCount: issues.length,
+          mistakenlyCompletedCount: issues.filter((x) => x.mistakenlyCompleted).length,
+          issues,
+        });
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 export const inspectStockTrades = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 60})

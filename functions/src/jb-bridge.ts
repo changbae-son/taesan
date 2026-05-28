@@ -46,6 +46,18 @@ async function verifyJbAuth(req: functions.https.Request): Promise<string> {
   return decoded.uid;
 }
 
+/**
+ * 서버 간 호출 인증 — jb-s-web functions(holdingsCheck)가 taesan admin endpoint를 호출할 때 사용.
+ * X-Admin-Secret 헤더 값이 ADMIN_INTERNAL_SECRET secret과 일치하는지 확인.
+ * 일치 안 하면 throw → 401 응답.
+ */
+function verifyAdminSecret(req: functions.https.Request): void {
+  const provided = String(req.headers["x-admin-secret"] || "");
+  const expected = process.env.ADMIN_INTERNAL_SECRET || "";
+  if (!expected) throw new Error("ADMIN_INTERNAL_SECRET secret 미설정 (서버 측)");
+  if (!provided || provided !== expected) throw new Error("invalid admin secret");
+}
+
 /** 키움 토큰 캐시 (인스턴스 메모리, ~23h) */
 let jbTokenCache: { token: string; exp: number } | null = null;
 
@@ -1294,4 +1306,224 @@ export const jbMa20Bulk = functions
         res.status(status).json({error: msg});
       }
     });
+  });
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Admin endpoints — 서버 간 호출용 (X-Admin-Secret 헤더 인증)
+//
+//  jb-s-web functions의 holdingsCheck (평일 5분 Pub/Sub)가 보유 종목 시그널 평가
+//  + 텔레그램 + 자동매매를 수행하기 위해 사용.
+//  사용자 ID token 없이 admin secret으로 인증 (서버 간만 호출).
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** 시세 조회 (admin) — body: { code } */
+export const jbQuoteAdmin = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 30,
+    secrets: ["KIWOOM_JB_APP_KEY", "KIWOOM_JB_APP_SECRET", "ADMIN_INTERNAL_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    void (async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        verifyAdminSecret(req);
+        const code = (req.body?.code || "").toString();
+        if (!/^\d{6}$/.test(code)) {
+          res.status(400).json({error: "code must be 6 digits"});
+          return;
+        }
+        const token = await getJbKiwoomToken();
+        const callKa10001 = async (stkCd: string) => {
+          const r = await fetch(`${KIWOOM_BASE}/api/dostk/stkinfo`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json;charset=UTF-8",
+              "authorization": `Bearer ${token}`,
+              "api-id": "ka10001",
+            },
+            body: JSON.stringify({stk_cd: stkCd}),
+          });
+          const d: any = await r.json();
+          return d && d.cur_prc ? d : null;
+        };
+        let data = await callKa10001(code + "_AL");
+        let source: "KRX+NXT" | "KRX" = "KRX+NXT";
+        if (!data) {
+          data = await callKa10001(code);
+          source = "KRX";
+        }
+        if (!data) {
+          res.status(502).json({error: "kiwoom 응답 없음"});
+          return;
+        }
+        res.json({
+          code,
+          name: typeof data.stk_nm === "string" ? data.stk_nm : undefined,
+          currentPrice: numField(data.cur_prc),
+          changeRate: numField(data.flu_rt),
+          tradingValue: numField(data.trde_prica),
+          marketCap: numField(data.mac),
+          source,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("admin secret") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    })();
+  });
+
+/** 텔레그램 발송 (admin) — body: { text } */
+export const jbSendTelegramAdmin = functions
+  .region("asia-northeast3")
+  .runWith({
+    timeoutSeconds: 15,
+    secrets: ["ADMIN_INTERNAL_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    void (async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        verifyAdminSecret(req);
+        const text = String(req.body?.text || "");
+        if (!text || text.length > 4000) {
+          res.status(400).json({error: "text required (1~4000 chars)"});
+          return;
+        }
+        const doc = await admin.firestore()
+          .collection("settings").doc("telegram_s").get();
+        const cfg = doc.data();
+        if (!cfg?.botToken || !cfg?.chatId) {
+          res.status(500).json({error: "settings/telegram_s 미설정"});
+          return;
+        }
+        const tgRes = await fetch(
+          "https://api.telegram.org/bot" + cfg.botToken + "/sendMessage", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              chat_id: cfg.chatId,
+              text,
+              parse_mode: "HTML",
+              disable_web_page_preview: true,
+            }),
+          });
+        const data: any = await tgRes.json();
+        res.json({
+          ok: data.ok === true,
+          errorCode: data.error_code,
+          description: data.description,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("admin secret") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    })();
+  });
+
+/** 발주 (admin) — body: { accountNo, stockCode, side, quantity, price, mock? }
+ *  jbOrder와 동일 로직이지만 ID token 대신 admin secret 인증.
+ *  안전장치는 jb-s-web functions의 holdingsCheck에서 (계좌 가드/한도 등) 처리됨.
+ *  여기서는 화이트리스트와 키움 호출만 담당.
+ */
+export const jbOrderAdmin = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 30,
+    secrets: ["KIWOOM_JB_APP_KEY", "KIWOOM_JB_APP_SECRET", "ADMIN_INTERNAL_SECRET"],
+  })
+  .https.onRequest((req, res) => {
+    void (async () => {
+      try {
+        if (req.method !== "POST") {
+          res.status(405).json({error: "POST only"});
+          return;
+        }
+        verifyAdminSecret(req);
+        const {accountNo, stockCode, side, quantity, price, mock} = req.body || {};
+        const norm = String(accountNo || "").replace(/[^0-9]/g, "");
+        if (norm !== "64981611") {
+          res.status(403).json({error: `허용되지 않은 계좌: ${accountNo}`});
+          return;
+        }
+        if (!/^\d{6}$/.test(String(stockCode))) {
+          res.status(400).json({error: "stockCode must be 6 digits"});
+          return;
+        }
+        if (side !== "BUY" && side !== "SELL") {
+          res.status(400).json({error: "side must be BUY|SELL"});
+          return;
+        }
+        const qty = Number(quantity);
+        const px = Number(price);
+        if (!Number.isFinite(qty) || qty <= 0) {
+          res.status(400).json({error: "quantity > 0 required"});
+          return;
+        }
+        if (!Number.isFinite(px) || px < 0) {
+          res.status(400).json({error: "price >= 0 required"});
+          return;
+        }
+        if (mock === true) {
+          res.json({
+            mode: "mock", ok: true, orderId: `mock-${Date.now()}`,
+            accountNo: norm, stockCode, side, quantity: qty, price: px,
+            note: "mock 모드 — 키움 호출 없음",
+          });
+          return;
+        }
+        const token = await getJbKiwoomToken();
+        const apiId = side === "BUY" ? "kt10000" : "kt10001";
+        const tradeType = px === 0 ? "03" : "00";
+        const ordPrice = tradeType === "03" ? "" : String(px);
+        const r = await fetch(`${KIWOOM_BASE}/api/dostk/ordr`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json;charset=UTF-8",
+            "authorization": `Bearer ${token}`,
+            "api-id": apiId,
+          },
+          body: JSON.stringify({
+            dmst_stex_tp: "KRX",
+            stk_cd: stockCode,
+            ord_qty: String(qty),
+            ord_uv: ordPrice,
+            trde_tp: tradeType,
+            cond_uv: "",
+          }),
+        });
+        const data: any = await r.json();
+        const returnCode = data.return_code;
+        const returnMsg = data.return_msg || data.ret_msg;
+        const orderId = data.ord_no || data.order_no || null;
+        res.json({
+          mode: "live",
+          ok: returnCode === 0 || returnCode === "0",
+          orderId,
+          accountNo: norm,
+          stockCode,
+          side,
+          quantity: qty,
+          price: px,
+          returnCode,
+          returnMsg,
+        });
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        const status = msg.includes("admin secret") ? 401 : 500;
+        res.status(status).json({error: msg});
+      }
+    })();
   });
