@@ -5350,7 +5350,9 @@ export const diagPlansConsistency = functions
       try {
         const stocksSnap = await db.collection("stocks").get();
         const issues: Array<{
+          docId: string;
           name: string;
+          code: string;
           totalQuantity: number;
           avgPrice: number;
           buySum: number;
@@ -5393,7 +5395,9 @@ export const diagPlansConsistency = functions
             // 잘못 매매완료로 분류될 위험: computedRemain <= 0 인데 키움 잔고 > 0
             const mistakenlyCompleted = computedRemain <= 0 && tq > 0;
             issues.push({
+              docId: doc.id,
               name,
+              code: s.code || "",
               totalQuantity: tq,
               avgPrice: Number(s.avgPrice) || 0,
               buySum,
