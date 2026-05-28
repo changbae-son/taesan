@@ -5434,6 +5434,68 @@ export const diagPlansConsistency = functions
     });
   });
 
+/**
+ * 진단: 종목코드로 trades 조회 (동명이인/잘못된 매핑 추적용)
+ * GET /diagByCode?code=153460
+ */
+export const diagByCode = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const codeRaw = (req.query.code as string) || "";
+        const codeClean = codeRaw.replace(/^A/, "").replace(/^\*+/, "");
+        if (!codeClean) {
+          res.status(400).json({success: false, error: "code 파라미터 필수"});
+          return;
+        }
+
+        // trades에서 code 매칭 (A 접두사 양쪽 처리)
+        const variants = [codeClean, `A${codeClean}`, `*${codeClean}`, `*A${codeClean}`];
+        const tradesByCode: any[] = [];
+        const tradesSnap = await db.collection("trades").get();
+        tradesSnap.forEach((doc) => {
+          const t = doc.data();
+          const tCode = String(t.code || "").replace(/^A/, "").replace(/^\*+/, "");
+          if (tCode === codeClean) {
+            tradesByCode.push({id: doc.id, ...t});
+          }
+        });
+
+        // stocks에서 code 매칭
+        const stocksByCode: any[] = [];
+        const stocksSnap = await db.collection("stocks").get();
+        stocksSnap.forEach((doc) => {
+          const s = doc.data();
+          const sCode = String(s.code || "").replace(/^A/, "").replace(/^\*+/, "");
+          if (sCode === codeClean) {
+            stocksByCode.push({
+              docId: doc.id,
+              name: s.name,
+              code: s.code,
+              totalQuantity: s.totalQuantity,
+              avgPrice: s.avgPrice,
+              firstBuyPrice: s.firstBuyPrice,
+              firstBuyQuantity: s.firstBuyQuantity,
+            });
+          }
+        });
+
+        res.json({
+          success: true,
+          codeQuery: codeClean,
+          variants,
+          stocksByCode,
+          tradesByCode: tradesByCode.slice(0, 20),
+          tradesByCodeCount: tradesByCode.length,
+        });
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 export const inspectStockTrades = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 60})

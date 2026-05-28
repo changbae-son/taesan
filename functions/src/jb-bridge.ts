@@ -52,8 +52,8 @@ async function verifyJbAuth(req: functions.https.Request): Promise<string> {
  * 일치 안 하면 throw → 401 응답.
  */
 function verifyAdminSecret(req: functions.https.Request): void {
-  const provided = String(req.headers["x-admin-secret"] || "");
-  const expected = process.env.ADMIN_INTERNAL_SECRET || "";
+  const provided = String(req.headers["x-admin-secret"] || "").trim();
+  const expected = (process.env.ADMIN_INTERNAL_SECRET || "").trim();
   if (!expected) throw new Error("ADMIN_INTERNAL_SECRET secret 미설정 (서버 측)");
   if (!provided || provided !== expected) throw new Error("invalid admin secret");
 }
