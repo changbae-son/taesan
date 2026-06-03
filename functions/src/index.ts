@@ -1085,16 +1085,15 @@ function mapTradesToPlans(
     } else if (i === 0 && buyDates.length === 0 && holdings) {
       // 매수 내역 없지만 보유 중 → 1차 매수 체결로 설정
       // firstBuyQty = 현재보유 + 매도수량 (원래 매수량)
-      // ✅ filledDate 추정: 현재 KST 날짜 (관심종목→매수 자동 전환은 보통 매수 직후 발화)
-      // 빈 문자열로 두면 "날짜 미상" 표시되어 매매 일자 추적 불가
-      const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
-      const todayKstStr = `${kstNow.getFullYear()}-${String(kstNow.getMonth() + 1).padStart(2, "0")}-${String(kstNow.getDate()).padStart(2, "0")}`;
+      // ⚠️ filledDate는 비워둠("날짜 미상"). 등록 당일을 추정 날짜로 넣으면
+      //    실제 매수일(키움 거래 동기화 전)과 달라 룰B freeze 기준일/매매일지가 틀어짐.
+      //    키움 거래가 trades에 들어오면 다음 동기화에서 실제 매수일로 채워짐.
       buyPlans.push({
         level: 1,
         price: holdings.avgPrice || 0,
         quantity: firstBuyQty,
         filled: true,
-        filledDate: todayKstStr,
+        filledDate: "",
         filledQuantity: firstBuyQty,
         filledPrice: holdings.avgPrice || 0,
         rule: "A", // 1차 진입 매수는 항상 룰A 기준
