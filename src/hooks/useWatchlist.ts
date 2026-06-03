@@ -26,12 +26,13 @@ export function useWatchlist() {
     return unsub;
   }, []);
 
-  const addItem = useCallback(async (name: string, code: string, peakPrice: number) => {
+  const addItem = useCallback(async (name: string, code: string, peakPrice: number, peakPriceDate?: string) => {
     const id = `watch_${Date.now()}`;
     const item: Omit<WatchItem, 'id'> = {
       name,
       code,
       peakPrice,
+      peakPriceDate: peakPriceDate || '',
       targetPercent: -50,
       currentPrice: 0,
       openPrice: 0,

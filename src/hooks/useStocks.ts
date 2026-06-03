@@ -271,13 +271,14 @@ export function useStocks() {
   // addStock(name, { referencePeakPrice }): Watchlist에서 promote 시 최고점 함께 저장 (룰B 기준점)
   const addStock = useCallback(async (
     name: string,
-    options?: { referencePeakPrice?: number; code?: string }
+    options?: { referencePeakPrice?: number; referencePeakDate?: string; code?: string }
   ) => {
     const id = `stock_${Date.now()}`;
     const data: any = createDefaultStock(name);
     if (options?.referencePeakPrice && options.referencePeakPrice > 0) {
       data.referencePeakPrice = options.referencePeakPrice;
-      data.referencePeakDate = new Date().toISOString().slice(0, 10);
+      // 관심종목에 기록된 기준 최고가 날짜 우선, 없으면 오늘 (룰B 저점추적 시작일)
+      data.referencePeakDate = options.referencePeakDate || new Date().toISOString().slice(0, 10);
     }
     if (options?.code) {
       data.code = options.code;

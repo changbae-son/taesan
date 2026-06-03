@@ -10,9 +10,9 @@ interface StockSearchResult {
 
 interface Props {
   items: WatchItem[];
-  onAdd: (name: string, code: string, peakPrice: number) => Promise<string>;
+  onAdd: (name: string, code: string, peakPrice: number, peakPriceDate?: string) => Promise<string>;
   onRemove: (id: string) => void;
-  onUpdatePeakPrice: (id: string, peakPrice: number) => Promise<void>;
+  onUpdatePeakPrice: (id: string, peakPrice: number, peakPriceDate?: string) => Promise<void>;
 }
 
 function getDropPercent(item: WatchItem): number {
@@ -26,6 +26,7 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [peakPrice, setPeakPrice] = useState('');
+  const [peakDate, setPeakDate] = useState('');
   const [searchResults, setSearchResults] = useState<StockSearchResult[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(-1);
@@ -114,10 +115,11 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
       setDupWarning(`이미 등록된 종목입니다.`);
       return;
     }
-    await onAdd(name.trim(), code.trim(), parseInt(peakPrice));
+    await onAdd(name.trim(), code.trim(), parseInt(peakPrice), peakDate || undefined);
     setName('');
     setCode('');
     setPeakPrice('');
+    setPeakDate('');
     setDupWarning('');
     setSearchResults([]);
     setShowAddForm(false);
@@ -125,16 +127,18 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
 
   const [editingPeakId, setEditingPeakId] = useState<string | null>(null);
   const [editingPeakValue, setEditingPeakValue] = useState('');
+  const [editingPeakDate, setEditingPeakDate] = useState('');
 
   const handlePeakClick = (item: WatchItem) => {
     setEditingPeakId(item.id);
     setEditingPeakValue(String(item.peakPrice));
+    setEditingPeakDate(item.peakPriceDate || '');
   };
 
   const handlePeakSave = async (id: string) => {
     const val = parseInt(editingPeakValue);
     if (!isNaN(val) && val > 0) {
-      await onUpdatePeakPrice(id, val);
+      await onUpdatePeakPrice(id, val, editingPeakDate || undefined);
     }
     setEditingPeakId(null);
   };
@@ -307,6 +311,7 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
           </div>
           <input className={styles.codeInput} placeholder="종목코드" value={code} onChange={(e) => setCode(e.target.value)} readOnly={!!code && searchResults.some(r => r.code === code)} />
           <input ref={peakPriceRef} className={styles.priceInput} placeholder="최고점가격" type="number" value={peakPrice} onChange={(e) => setPeakPrice(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdd()} />
+          <input className={styles.priceInput} type="date" title="기준 최고가 날짜 (룰B 저점추적 시작일)" value={peakDate} onChange={(e) => setPeakDate(e.target.value)} />
           <button className={styles.addBtn} onClick={handleAdd} disabled={!!dupWarning}>추가</button>
           {dupWarning && <div className={styles.dupWarning}>{dupWarning}</div>}
         </div>
@@ -446,12 +451,24 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
                                     }}
                                     autoFocus
                                   />
+                                  <input
+                                    className={styles.peakInput}
+                                    type="date"
+                                    title="기준 최고가 날짜"
+                                    value={editingPeakDate}
+                                    onChange={(e) => setEditingPeakDate(e.target.value)}
+                                  />
                                   <button className={styles.saveBtn} onClick={() => handlePeakSave(item.id)}>저장</button>
                                   <button className={styles.cancelBtn} onClick={() => setEditingPeakId(null)}>취소</button>
                                 </div>
                               ) : (
                                 <div className={styles.peakCell}>
-                                  <span>{item.peakPrice.toLocaleString()}</span>
+                                  <span>
+                                    {item.peakPrice.toLocaleString()}
+                                    {item.peakPriceDate && (
+                                      <span style={{ display: 'block', fontSize: 10, color: '#999' }}>{item.peakPriceDate}</span>
+                                    )}
+                                  </span>
                                   <button className={styles.editBtn} onClick={() => handlePeakClick(item)}>수정</button>
                                 </div>
                               )}

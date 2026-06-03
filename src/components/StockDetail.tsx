@@ -625,6 +625,40 @@ export default function StockDetail({
     update({ [field]: value } as Partial<Stock>);
   };
 
+  // ─── 3차 매도 시 반자동 룰B 전환 ───
+  // 조건: 마지막 매수 이후 매도 3회 이상 + 아직 룰B 아님 + 1회 미전환 + 기준 최고가 있음
+  //   기준 최고가 있음 → 자동 전환 (rule='B'). 트래커가 다음 실행 시 저점 계산.
+  //   기준 최고가 없음 → 전환 안 함. 아래 경고 배너로 입력 유도 (안전).
+  useEffect(() => {
+    const sells = local.sellsSinceLastBuy || 0;
+    if (
+      sells >= 3 &&
+      local.rule !== 'B' &&
+      !local.ruleBAutoSwitched &&
+      (local.referencePeakPrice || 0) > 0
+    ) {
+      update({ rule: 'B', ruleBAutoSwitched: true }, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [local.sellsSinceLastBuy, local.rule, local.ruleBAutoSwitched, local.referencePeakPrice]);
+
+  // 룰B 시작점(기준 최고가) 편집 드래프트 — 저장 버튼으로 명시 커밋
+  const [peakDraft, setPeakDraft] = useState<string>('');
+  const [peakDateDraft, setPeakDateDraft] = useState<string>('');
+  useEffect(() => {
+    setPeakDraft(local.referencePeakPrice ? String(local.referencePeakPrice) : '');
+    setPeakDateDraft(local.referencePeakDate || '');
+  }, [local.referencePeakPrice, local.referencePeakDate]);
+  const peakDirty =
+    peakDraft !== (local.referencePeakPrice ? String(local.referencePeakPrice) : '') ||
+    peakDateDraft !== (local.referencePeakDate || '');
+  const savePeak = () => {
+    const v = Math.round(Number(peakDraft) || 0);
+    if (v > 0) {
+      update({ referencePeakPrice: v, referencePeakDate: peakDateDraft || local.referencePeakDate }, true);
+    }
+  };
+
   const toggleBuyFilled = (index: number) => {
     const plans = [...local.buyPlans];
     plans[index] = { ...plans[index], filled: !plans[index].filled };
@@ -1771,9 +1805,13 @@ export default function StockDetail({
           4차 이상 진입! 비중 관리에 주의하세요.
         </div>
       )}
-      {local.sellCount >= 3 && local.rule === 'A' && (
-        <div className={styles.alertOrange}>
-          3회 매도 달성! 룰B(저점 대비 -10%) 전환을 검토하세요.
+      {/* 3차 매도 충족 + 룰B 아님 + 기준최고가 없음 → 반자동 전환 보류, 입력 유도 */}
+      {(local.sellsSinceLastBuy || 0) >= 3 && local.rule !== 'B' && !((local.referencePeakPrice || 0) > 0) && (
+        <div className={styles.alertRed}>
+          ⚠️ <strong>3차 매도 달성 — 룰B 자동전환 대기 중</strong>
+          <br />
+          기준 최고가(1차 매수 전 고점)가 없어 자동 전환을 보류했습니다.
+          아래 <strong>매매 규칙 → 룰B</strong> 클릭 후 <strong>시작점(기준 최고가 + 날짜)</strong>을 입력하면 적용됩니다.
         </div>
       )}
       {local.rule === 'B' && (
@@ -2562,36 +2600,38 @@ export default function StockDetail({
                       type="number"
                       style={{
                         width: 90, padding: '2px 6px', fontSize: 12,
-                        border: `1px solid ${local.referencePeakPrice ? '#bbb' : '#ef9a9a'}`,
+                        border: `1px solid ${peakDraft ? '#bbb' : '#ef9a9a'}`,
                         borderRadius: 4,
                       }}
                       placeholder="최고가"
-                      defaultValue={local.referencePeakPrice || ''}
-                      onBlur={(e) => {
-                        const v = Math.round(Number(e.target.value) || 0);
-                        if (v > 0 && v !== (local.referencePeakPrice || 0)) {
-                          update({ referencePeakPrice: v }, true); // 즉시 저장
-                        }
-                      }}
+                      value={peakDraft}
+                      onChange={(e) => setPeakDraft(e.target.value)}
                     />
                     <input
                       type="date"
                       style={{
                         padding: '2px 6px', fontSize: 12,
-                        border: `1px solid ${local.referencePeakDate ? '#bbb' : '#ef9a9a'}`,
+                        border: `1px solid ${peakDateDraft ? '#bbb' : '#ef9a9a'}`,
                         borderRadius: 4,
                       }}
                       title="기준 최고가 날짜 (1차 매수 전 고점 시점). 저점 추적 시작일."
-                      defaultValue={local.referencePeakDate || ''}
-                      onBlur={(e) => {
-                        const d = e.target.value;
-                        if (d && d !== (local.referencePeakDate || '')) {
-                          update({ referencePeakDate: d }, true); // 즉시 저장
-                        }
-                      }}
+                      value={peakDateDraft}
+                      onChange={(e) => setPeakDateDraft(e.target.value)}
                     />
+                    <button
+                      onClick={savePeak}
+                      disabled={!peakDirty || !(Number(peakDraft) > 0)}
+                      style={{
+                        padding: '3px 12px', fontSize: 12, fontWeight: 700,
+                        borderRadius: 4, border: 'none', cursor: peakDirty ? 'pointer' : 'default',
+                        background: peakDirty && Number(peakDraft) > 0 ? '#1565c0' : '#cfd8dc',
+                        color: '#fff',
+                      }}
+                    >
+                      저장
+                    </button>
                     {(!local.referencePeakPrice || !local.referencePeakDate) && (
-                      <span style={{ fontSize: 10, color: '#c62828' }}>← 가격+날짜 입력 (관심종목 미등록 시)</span>
+                      <span style={{ fontSize: 10, color: '#c62828' }}>← 가격+날짜 입력 후 저장 (관심종목 미등록 시)</span>
                     )}
                   </span>
                   <span>트리거: <strong>{trigger > 0 ? trigger.toLocaleString() + '원' : '-'}</strong></span>

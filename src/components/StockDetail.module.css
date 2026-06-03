@@ -1056,31 +1056,31 @@
   vertical-align: middle;
 }
 
-/* 1열(차수+날짜): 좁게 */
+/* 컬럼 폭: %로 분배해 가로폭을 꽉 채움 (오른쪽 빈 여백 제거)
+   1열(차수+날짜)은 날짜(YYYY-MM-DD)가 들어가도록 넉넉히 */
+/* 1열(차수+날짜) */
 .planTableCompact td:nth-child(1) {
-  width: 40px;
+  width: 23%;
 }
 
-/* 2열(목표가) */
+/* 2열(계획가) */
 .planTableCompact td:nth-child(2) {
-  width: 70px;
+  width: 20%;
 }
 
 /* 3열(실제가) */
 .planTableCompact td:nth-child(3) {
-  width: 70px;
+  width: 17%;
 }
 
 /* 4열(수량) */
 .planTableCompact td:nth-child(4) {
-  width: 54px;
+  width: 22%;
 }
 
-/* 마지막 열(버튼): 가변 — 수량 바로 오른쪽에 붙도록 좌측 정렬
-   체결+MA+이동+연필 모두 들어가도 오른쪽 경계선 안쪽 유지 */
+/* 마지막 열(버튼): 남은 폭, 좌측 정렬 */
 .planTableCompact td:last-child {
-  width: auto;
-  min-width: 48px;
+  width: 18%;
   text-align: left;
   padding: 3px 2px 3px 2px !important;
 }
@@ -1097,8 +1097,9 @@
 
 /* 차수/목표% 셀 */
 .levelCell {
-  vertical-align: middle;
-  padding: 4px 1px !important;
+  vertical-align: top;
+  padding: 4px 2px !important;
+  overflow: hidden;
 }
 
 .levelBadge {
@@ -1107,11 +1108,11 @@
   color: #222;
 }
 
-/* 날짜 (차수 셀 하단) */
+/* 날짜 (차수 셀 하단) — 셀 폭에 맞춰 줄바꿈, 넘침 방지 */
 .dateUnder {
   font-size: 10px;
   color: #888;
-  margin-top: 4px;
+  margin-top: 3px;
   line-height: 1.2;
 }
 
@@ -1121,7 +1122,9 @@
   font-size: 10px;
   color: #888;
   padding: 0;
-  width: 78px;
+  width: 100%;
+  max-width: 92px;
+  box-sizing: border-box;
   cursor: pointer;
 }
 

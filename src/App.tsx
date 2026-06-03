@@ -71,7 +71,11 @@ export default function App() {
     // ✅ 룰B 기준점 자동 전달: 같은 이름의 Watchlist 항목이 있으면 peakPrice/code 함께 저장
     const watchMatch = watchItems.find((w) => w.name === name);
     const options = watchMatch
-      ? { referencePeakPrice: watchMatch.peakPrice, code: watchMatch.code }
+      ? {
+          referencePeakPrice: watchMatch.peakPrice,
+          referencePeakDate: watchMatch.peakPriceDate || undefined,
+          code: watchMatch.code,
+        }
       : undefined;
     const id = await addStock(name, options);
     setSelectedStockId(id);
@@ -272,9 +276,9 @@ export default function App() {
               items={watchItems}
               onAdd={addWatchItem}
               onRemove={removeWatchItem}
-              onUpdatePeakPrice={async (id, peakPrice) => {
+              onUpdatePeakPrice={async (id, peakPrice, peakPriceDate) => {
                 const item = watchItems.find((w) => w.id === id);
-                if (item) await updateWatchItem({ ...item, peakPrice });
+                if (item) await updateWatchItem({ ...item, peakPrice, peakPriceDate: peakPriceDate ?? item.peakPriceDate });
               }}
             />
           )}

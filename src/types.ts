@@ -168,6 +168,7 @@ export interface Stock {
   ruleBActive?: boolean;             // 룰B 활성화 여부 (sellsSinceLastBuy >= 3)
   ruleBSignalSent?: boolean;         // 양봉 매수 신호 발송 여부
   ruleBSignalDate?: string;          // 양봉 신호 발송 날짜
+  ruleBAutoSwitched?: boolean;       // 3차 매도 시 반자동 룰B 전환 1회 실행 플래그 (재전환/되돌림 루프 방지)
   // 이동평균선 (15:20~15:30 일 1회 계산)
   ma20?: number;
   ma60?: number;
@@ -243,6 +244,7 @@ export interface WatchItem {
   name: string;
   code: string;
   peakPrice: number;
+  peakPriceDate?: string; // 기준 최고가 날짜 (YYYY-MM-DD) — 룰B 저점추적 시작일로 사용
   targetPercent: number; // -50 기본
   currentPrice: number;
   openPrice: number;
