@@ -4007,16 +4007,24 @@ async function runRuleBTracker(): Promise<{checked: number; bottomUpdated: numbe
         fromYMD = d.toISOString().slice(0, 10).replace(/-/g, "");
       }
 
-      const candles = await fetchDailyChart(config, token, stockData.code, fromYMD);
+      // 통합(KRX+NXT, _AL) 일봉 사용 — 사용자 통합차트/스크리너와 동일 기준.
+      //   KRX 단독은 NXT의 더 낮은 저가를 놓쳐 저점이 높게 잡힘
+      //   (나이벡 4/6: KRX low 24,600 vs 통합 low 23,300).
+      let candles = await fetchDailyChart(config, token, `${stockData.code}_AL`, fromYMD);
+      if (!candles.length) {
+        // _AL 미지원/빈 응답 시 KRX 단독으로 폴백
+        candles = await fetchDailyChart(config, token, stockData.code, fromYMD);
+      }
       if (!candles.length) {
         console.log(`[ruleB] ${stockData.name} 일봉 데이터 없음 (from ${fromYMD})`);
         continue;
       }
 
-      // ─── 저점 구간 freeze (3차 매도 시점) ───
-      // 룰B 저점 = [기준 최고가(referencePeakDate)] ~ [3차 매도 시점] 구간의 최저가.
-      // 3차 매도가 발생한 종목은 그 매도일 이후 일봉은 저점 계산에서 제외(freeze).
-      // (3차 매도 미달이면 freeze 없이 계속 추적 — 룰B 활성 전이므로 무방)
+      // ─── 저점 구간 freeze (마지막 매도일) ───
+      // 룰B 저점 = [기준 최고가(referencePeakDate)] ~ [마지막 매도일] 구간의 최저가.
+      // 매도 3회(룰B 활성 조건) 이상이면, 구간 끝은 "3차 이후 마지막 매도 차수의 날짜".
+      //   예) 나이벡: 4/15(+5/+10/+15), 4/23(MA20) → freeze = 4/23 (마지막 매도)
+      // 매도 3회 미달이면 freeze 없이 계속 추적 (룰B 활성 전).
       const sellDatesRaw: string[] = [];
       for (const sp of (stockData.sellPlans || [])) {
         if (sp?.filled && sp.filledDate) sellDatesRaw.push(String(sp.filledDate));
@@ -4029,22 +4037,22 @@ async function runRuleBTracker(): Promise<{checked: number; bottomUpdated: numbe
         .map((d) => d.replace(/-/g, ""))
         .filter((d) => d.length === 8)
         .sort();
-      // 3차 매도일 = 정렬된 매도일 중 3번째 (인덱스 2)
-      const freezeYMD = sellYmds.length >= 3 ? sellYmds[2] : null;
+      // freeze 기준일 = 매도 3회 이상일 때 "마지막(가장 늦은) 매도일"
+      const freezeYMD = sellYmds.length >= 3 ? sellYmds[sellYmds.length - 1] : null;
 
       // 일봉 low 중 최저값 (freeze 적용 시 freezeYMD 이하 구간만)
       let lowestLow = Infinity;
       let lowestDate = "";
       for (const c of candles) {
         if (c.low <= 0) continue;
-        if (freezeYMD && c.date.replace(/-/g, "") > freezeYMD) continue; // 3차 매도 이후 제외
+        if (freezeYMD && c.date.replace(/-/g, "") > freezeYMD) continue; // 마지막 매도 이후 제외
         if (c.low < lowestLow) {
           lowestLow = c.low;
           lowestDate = c.date;
         }
       }
       if (freezeYMD) {
-        console.log(`[ruleB] ${stockData.name} 저점구간 freeze: ~${freezeYMD} (3차 매도일)`);
+        console.log(`[ruleB] ${stockData.name} 저점구간 freeze: ~${freezeYMD} (마지막 매도일)`);
       }
 
       const update: Record<string, any> = {};
@@ -5542,6 +5550,65 @@ export const diagByCode = functions
           tradesByCode: tradesByCode.slice(0, 20),
           tradesByCodeCount: tradesByCode.length,
         });
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+// 일봉 정밀 진단: ?code=138610&from=20251215&to=20260423
+//   KRX 단독(code) vs 통합(_AL) 일봉을 from~to 구간으로 비교, 각 최저가 표시
+export const diagDailyChart = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 60,
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const codeRaw = (req.query.code as string || "").replace(/^A/, "").trim();
+        if (!codeRaw) {
+          res.status(400).json({success: false, error: "code 필수"});
+          return;
+        }
+        const from = (req.query.from as string || "").replace(/-/g, "");
+        const to = (req.query.to as string || "").replace(/-/g, "");
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+
+        const summarize = async (stkCd: string) => {
+          const candles = await fetchDailyChart(config, token, stkCd, from || undefined);
+          const inRange = candles.filter((c) => {
+            const d = c.date.replace(/-/g, "");
+            if (from && d < from) return false;
+            if (to && d > to) return false;
+            return true;
+          });
+          let min = Infinity; let minDate = "";
+          for (const c of inRange) {
+            if (c.low > 0 && c.low < min) { min = c.low; minDate = c.date; }
+          }
+          return {
+            stkCd,
+            count: inRange.length,
+            minLow: min === Infinity ? null : min,
+            minLowDate: minDate || null,
+            // from~to 구간 전체 일봉 (date, low) — 날짜순
+            lows: inRange
+              .slice()
+              .sort((a, b) => a.date.localeCompare(b.date))
+              .map((c) => ({date: c.date, low: c.low, open: c.open, high: c.high, close: c.close})),
+          };
+        };
+
+        const [krx, al] = await Promise.all([
+          summarize(codeRaw),
+          summarize(`${codeRaw}_AL`),
+        ]);
+
+        res.json({success: true, code: codeRaw, from, to, krx, al});
       } catch (error: any) {
         res.status(500).json({success: false, error: error.message});
       }
