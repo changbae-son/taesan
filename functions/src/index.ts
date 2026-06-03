@@ -5665,6 +5665,61 @@ export const diagRuleBStatus = functions
     });
   });
 
+// 매도 슬롯 중복(이중 카운트) 전수조사: GET /diagSellMapping
+//   매핑 매도수량(sellPlans filled + maSells filled) vs 실제 매도수량(매수합-보유)
+//   불일치(보통 MA슬롯과 프로필슬롯에 같은 거래가 중복 매핑) 종목을 찾아냄
+export const diagSellMapping = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const snap = await db.collection("stocks").get();
+        const problems: any[] = [];
+        const all: any[] = [];
+        snap.forEach((doc) => {
+          const s = doc.data() as any;
+          const buyPlans = s.buyPlans || [];
+          const sellPlans = s.sellPlans || [];
+          const maSells = s.maSells || [];
+
+          const qFilled = (p: any) =>
+            (p?.filled || (p?.filledQuantity || 0) > 0)
+              ? (p.filledQuantity || p.quantity || 0) : 0;
+
+          const boughtQty = buyPlans.reduce((sum: number, b: any) => sum + qFilled(b), 0);
+          const holdingQty = Number(s.totalQuantity) || 0;
+          const actualSoldQty = Math.max(0, boughtQty - holdingQty);
+
+          const sellPlanSold = sellPlans.reduce((sum: number, p: any) => sum + qFilled(p), 0);
+          const maSold = maSells.reduce((sum: number, m: any) => sum + qFilled(m), 0);
+          const mappedSoldQty = sellPlanSold + maSold;
+
+          const row = {
+            name: s.name, code: s.code,
+            boughtQty, holdingQty, actualSoldQty,
+            mappedSoldQty, sellPlanSold, maSold,
+            diff: mappedSoldQty - actualSoldQty,
+            sellPlansFilledCount: sellPlans.filter((p: any) => qFilled(p) > 0).length,
+            maSellsFilledCount: maSells.filter((m: any) => qFilled(m) > 0).length,
+          };
+          all.push(row);
+          // 매핑 > 실제 = 중복(이중카운트). 매핑 < 실제 = 매핑 누락.
+          if (boughtQty > 0 && row.diff !== 0) problems.push(row);
+        });
+        problems.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+        res.json({
+          success: true,
+          totalHoldings: all.filter((r) => r.holdingQty > 0 || r.actualSoldQty > 0).length,
+          problemCount: problems.length,
+          problems,
+        });
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 export const inspectStockTrades = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 60})
