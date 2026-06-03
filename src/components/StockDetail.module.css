@@ -1207,16 +1207,18 @@
 
 /* 매수 row 금액 표시 (체결 버튼 옆) */
 .buyRowAmt {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 2px 7px;
+  display: block;
+  margin-left: 0;
+  margin-top: 3px;
+  padding: 2px 5px;
   background: #ffebee;
   color: #c62828;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  vertical-align: middle;
+  white-space: nowrap;
+  text-align: center;
 }
 
 /* 기존 테이블 (이동평균선 매도 등에서 여전히 사용) */
