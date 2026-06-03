@@ -1024,7 +1024,8 @@ function mapTradesToPlans(
   trades: any[],
   stockName: string,
   holdings: any,
-  ruleConfig?: {rule?: string; bottomPrice?: number; sellsSinceLastBuy?: number}
+  ruleConfig?: {rule?: string; bottomPrice?: number; sellsSinceLastBuy?: number},
+  existingMaSells?: any[]
 ): {buyPlans: any[]; sellPlans: any[]; sellCount: number; firstBuyPrice: number; firstBuyQty: number} {
   // 해당 종목의 체결내역을 날짜+시간 순으로 정렬
   const stockTrades = trades
@@ -1176,9 +1177,31 @@ function mapTradesToPlans(
 
   // 최근 매수 이후 매도만 현재 라운드 슬롯에 매핑
   // (이전 라운드에서 매도된 내역은 매매일지에만 기록 — 슬롯 초기화)
-  const currentRoundSells = lastBuyDateNorm
+  const currentRoundSellsAll = lastBuyDateNorm
     ? sells.filter((s) => normDate(s.date || "") > lastBuyDateNorm)
     : sells;
+
+  // ── MA 우선: MA 슬롯이 흡수(consumedTradeIds)한 거래는 프로필 슬롯 매핑에서 제외 ──
+  //   동기화가 MA로 분류된 거래를 프로필 슬롯에 다시 채워 이중 카운트되던 버그 방지.
+  const tradeIdOf = (t: any): string => {
+    const orderKey = t.orderNo && String(t.orderNo).trim() !== ""
+      ? String(t.orderNo)
+      : `fb_${t.date || ""}${t.time || ""}_${t.quantity || 0}`;
+    return `trade_kiwoom_${orderKey}_${t.code}`;
+  };
+  const maConsumedIds = new Set<string>();
+  for (const m of (existingMaSells || [])) {
+    if (Array.isArray(m?.consumedTradeIds)) {
+      for (const id of m.consumedTradeIds) maConsumedIds.add(String(id));
+    }
+  }
+  const currentRoundSells = maConsumedIds.size > 0
+    ? currentRoundSellsAll.filter((s) => !maConsumedIds.has(tradeIdOf(s)))
+    : currentRoundSellsAll;
+  const excludedByMa = currentRoundSellsAll.length - currentRoundSells.length;
+  if (excludedByMa > 0) {
+    console.log(`[매핑] ${stockName} MA흡수 ${excludedByMa}건 프로필 슬롯 제외 (MA 우선)`);
+  }
 
   const sellCount = sells.length;
 
@@ -1186,7 +1209,7 @@ function mapTradesToPlans(
   const slotQty = currentHoldingQty > 0 ? Math.round(currentHoldingQty / 5) : 0;
   const percents = [5, 10, 15, 20, 25];
   const sellPlans = percents.map((p, i) => {
-    const sellTrade = currentRoundSells[i]; // 최근 매수 이후 i번째 체결만 매핑
+    const sellTrade = currentRoundSells[i]; // 최근 매수 이후 i번째 체결만 매핑 (MA 흡수분 제외)
     // 목표가는 현재 평단가 × (1+%) 로 유지 (실제 체결가와 분리)
     const targetPrice = avgPrice > 0 ? Math.round(avgPrice * (1 + p / 100)) : 0;
 
@@ -1201,6 +1224,8 @@ function mapTradesToPlans(
         filledDate: formattedDate,
         filledQuantity: sellTrade.quantity,
         filledPrice: sellTrade.price,
+        // 어떤 거래를 흡수했는지 명시 → 이후 reconcile/동기화 중복 방지
+        consumedTradeIds: [tradeIdOf(sellTrade)],
       };
     }
     return {
@@ -1211,6 +1236,19 @@ function mapTradesToPlans(
       filledDate: "",
     };
   });
+
+  // ── 불변식 가드: 매핑된 총 매도수량(프로필+MA) ≤ 실제 매도수량 ──
+  //   초과 시 이중 카운트가 남아있다는 뜻 → 경고 로그 (값 강제 변경은 안 함, 추적용)
+  const mappedProfitQty = sellPlans.reduce(
+    (s, p) => s + (p.filled ? (p.filledQuantity || 0) : 0), 0);
+  const mappedMaQty = (existingMaSells || []).reduce(
+    (s: number, m: any) => s + ((m?.filled || (m?.quantity || 0) > 0) ? (Number(m.quantity) || 0) : 0), 0);
+  const actualSoldQty = sells.reduce((s, t) => s + (Number(t.quantity) || 0), 0);
+  if (mappedProfitQty + mappedMaQty > actualSoldQty) {
+    console.warn(
+      `[불변식위반] ${stockName} 매핑매도 ${mappedProfitQty + mappedMaQty}주 > 실제매도 ${actualSoldQty}주 ` +
+      `(프로필 ${mappedProfitQty} + MA ${mappedMaQty}) — 이중카운트 잔존 의심`);
+  }
 
   return {buyPlans, sellPlans, sellCount, firstBuyPrice, firstBuyQty};
 }
@@ -1350,7 +1388,7 @@ async function syncToFirestore(
       bottomPrice: preExistingData.bottomPrice,
       sellsSinceLastBuy: preExistingData.sellsSinceLastBuy,
     } : undefined;
-    const mapped = mapTradesToPlans(trades, h.name, h, ruleConfig);
+    const mapped = mapTradesToPlans(trades, h.name, h, ruleConfig, preExistingData?.maSells);
 
     if (existingDocId) {
       // 기존 종목 업데이트 (위에서 미리 로드된 데이터 사용)
@@ -5532,10 +5570,10 @@ export const diagByCode = functions
               sellsSinceLastBuy: s.sellsSinceLastBuy ?? null,
               sellPlansFilled: (s.sellPlans || [])
                 .filter((p: any) => p?.filled)
-                .map((p: any) => ({percent: p.percent, date: p.filledDate, price: p.filledPrice})),
+                .map((p: any) => ({percent: p.percent, date: p.filledDate, price: p.filledPrice, qty: p.filledQuantity || p.quantity, consumedTradeIds: p.consumedTradeIds || null, manualOverride: p.manualOverride || false})),
               maSellsFilled: (s.maSells || [])
                 .filter((m: any) => m?.filled)
-                .map((m: any) => ({ma: m.ma, date: m.filledDate})),
+                .map((m: any) => ({ma: m.ma, date: m.filledDate, qty: m.quantity, consumedTradeIds: m.consumedTradeIds || null})),
               buyPlansRule: (s.buyPlans || [])
                 .map((b: any) => ({level: b.level, filled: b.filled, rule: b.rule || null, price: b.price, filledDate: b.filledDate || null, manualOverride: b.manualOverride || false})),
             });
@@ -5714,6 +5752,76 @@ export const diagSellMapping = functions
           problemCount: problems.length,
           problems,
         });
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
+// 매도 슬롯 중복 정리: GET /fixSellMapping?code=000250[&apply=true]
+//   maSells(consumedTradeIds=MA의도) 유지 + 프로필 슬롯을 거래로 클린 재구성
+//   (manualOverride 무시하고 재빌드 → 유령/중복 슬롯 제거). apply 없으면 dry-run.
+export const fixSellMapping = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const codeClean = (req.query.code as string || "").replace(/^A/, "").trim();
+        const apply = String(req.query.apply || "") === "true";
+        if (!codeClean) {
+          res.status(400).json({success: false, error: "code 필수"});
+          return;
+        }
+
+        // stock 문서 찾기 (code 매칭)
+        const stocksSnap = await db.collection("stocks").get();
+        let docId = ""; let stock: any = null;
+        stocksSnap.forEach((doc) => {
+          const s = doc.data();
+          if (String(s.code || "").replace(/^A/, "") === codeClean) { docId = doc.id; stock = s; }
+        });
+        if (!stock) {
+          res.status(404).json({success: false, error: "종목 없음"});
+          return;
+        }
+
+        // trades 로드 (code 매칭) → mapTradesToPlans 입력 형태로 변환
+        const tradesSnap = await db.collection("trades").get();
+        const trades: any[] = [];
+        tradesSnap.forEach((doc) => {
+          const t = doc.data();
+          if (String(t.code || "").replace(/^A/, "") === codeClean) {
+            trades.push({
+              name: stock.name,
+              type: t.type, date: t.date, time: t.time || "",
+              price: t.price, quantity: t.quantity,
+              orderNo: t.orderNo, code: t.code,
+            });
+          }
+        });
+
+        const holdingsLike = {name: stock.name, code: stock.code, avgPrice: stock.avgPrice, quantity: stock.totalQuantity};
+        const ruleConfig = {rule: stock.rule, bottomPrice: stock.bottomPrice, sellsSinceLastBuy: stock.sellsSinceLastBuy};
+        const mapped = mapTradesToPlans(trades, stock.name, holdingsLike, ruleConfig, stock.maSells);
+
+        // 새 sellPlans: manualOverride 제거 (클린 재구성)
+        const newSellPlans = mapped.sellPlans.map((p: any) => ({...p, manualOverride: false}));
+
+        const before = {
+          sellPlans: (stock.sellPlans || []).map((p: any) => ({percent: p.percent, filled: !!p.filled, qty: p.filledQuantity || 0, price: p.filledPrice || 0, manual: !!p.manualOverride, consumed: p.consumedTradeIds || null})),
+          maSells: (stock.maSells || []).filter((m: any) => m.filled).map((m: any) => ({ma: m.ma, qty: m.quantity, consumed: m.consumedTradeIds || null})),
+        };
+        const after = {
+          sellPlans: newSellPlans.map((p: any) => ({percent: p.percent, filled: !!p.filled, qty: p.filledQuantity || 0, price: p.filledPrice || 0, consumed: p.consumedTradeIds || null})),
+          maSells: before.maSells, // maSells 유지
+        };
+
+        if (apply) {
+          await db.collection("stocks").doc(docId).update({sellPlans: newSellPlans, updatedAt: Date.now()});
+        }
+
+        res.json({success: true, code: codeClean, name: stock.name, applied: apply, before, after});
       } catch (error: any) {
         res.status(500).json({success: false, error: error.message});
       }
