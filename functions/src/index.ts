@@ -5615,6 +5615,56 @@ export const diagDailyChart = functions
     });
   });
 
+// 보유종목 룰B 상태 일괄 진단: GET /diagRuleBStatus
+//   각 보유종목의 rule / 매도카운트 / 기준최고가 / 저점 + 룰B 후보(미전환) 플래그
+export const diagRuleBStatus = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const snap = await db.collection("stocks").get();
+        const rows: any[] = [];
+        snap.forEach((doc) => {
+          const s = doc.data() as any;
+          const qty = Number(s.totalQuantity) || 0;
+          if (qty <= 0) return; // 보유종목만
+          const sells = Number(s.sellsSinceLastBuy) || 0;
+          const hasPeak = Number(s.referencePeakPrice) > 0;
+          const isB = s.rule === "B";
+          rows.push({
+            name: s.name,
+            code: s.code,
+            rule: s.rule || "A",
+            sellsSinceLastBuy: sells,
+            referencePeakPrice: s.referencePeakPrice || null,
+            referencePeakDate: s.referencePeakDate || null,
+            bottomPrice: s.bottomPrice || null,
+            bottomPriceDate: s.bottomPriceDate || null,
+            bottomPriceSource: s.bottomPriceSource || null,
+            // 룰B 후보(미전환): 매도 3회+ && 아직 룰B 아님
+            ruleBCandidate: sells >= 3 && !isB,
+            // 그 중 기준최고가 유무 (있으면 자동전환 가능 / 없으면 입력 필요)
+            needsPeakInput: sells >= 3 && !isB && !hasPeak,
+          });
+        });
+        // 정렬: 후보 먼저, 그다음 매도카운트 내림차순
+        rows.sort((a, b) =>
+          (Number(b.ruleBCandidate) - Number(a.ruleBCandidate)) ||
+          (b.sellsSinceLastBuy - a.sellsSinceLastBuy));
+        res.json({
+          success: true,
+          total: rows.length,
+          ruleBActive: rows.filter((r) => r.rule === "B").length,
+          candidates: rows.filter((r) => r.ruleBCandidate).length,
+          rows,
+        });
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 export const inspectStockTrades = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 60})
