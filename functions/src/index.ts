@@ -5530,7 +5530,7 @@ export const diagByCode = functions
                 .filter((m: any) => m?.filled)
                 .map((m: any) => ({ma: m.ma, date: m.filledDate})),
               buyPlansRule: (s.buyPlans || [])
-                .map((b: any) => ({level: b.level, filled: b.filled, rule: b.rule || null, price: b.price})),
+                .map((b: any) => ({level: b.level, filled: b.filled, rule: b.rule || null, price: b.price, filledDate: b.filledDate || null, manualOverride: b.manualOverride || false})),
             });
           }
         });
