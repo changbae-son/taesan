@@ -652,10 +652,25 @@ export default function StockDetail({
   const peakDirty =
     peakDraft !== (local.referencePeakPrice ? String(local.referencePeakPrice) : '') ||
     peakDateDraft !== (local.referencePeakDate || '');
-  const savePeak = () => {
+  const [peakSaving, setPeakSaving] = useState(false);
+  const savePeak = async () => {
     const v = Math.round(Number(peakDraft) || 0);
-    if (v > 0) {
-      update({ referencePeakPrice: v, referencePeakDate: peakDateDraft || local.referencePeakDate }, true);
+    if (v <= 0) return;
+    update({ referencePeakPrice: v, referencePeakDate: peakDateDraft || local.referencePeakDate }, true);
+    // 시작점 저장 직후 트래커 즉시 호출 → 저점/매수가 자동 재계산
+    // (저점은 백엔드 일봉 스캔으로만 계산 가능 → 프론트에서 트리거)
+    if (local.code) {
+      setPeakSaving(true);
+      try {
+        await fetch(
+          `https://asia-northeast3-teasan-f4c17.cloudfunctions.net/ruleBTrackerNow?code=${encodeURIComponent(local.code.replace(/^A/, ''))}`,
+          { method: 'POST', headers: { 'Content-Length': '0' } }
+        );
+        // 트래커가 bottomPrice를 Firestore에 기록 → onSnapshot이 푸시.
+        // grace를 풀어 새 저점이 즉시 local에 반영되도록 함 (매수가 자동 갱신)
+        lastUserActionRef.current = 0;
+      } catch { /* 실패해도 정기 트래커(15:35)가 처리 */ }
+      setPeakSaving(false);
     }
   };
 
@@ -2620,15 +2635,15 @@ export default function StockDetail({
                     />
                     <button
                       onClick={savePeak}
-                      disabled={!peakDirty || !(Number(peakDraft) > 0)}
+                      disabled={peakSaving || !peakDirty || !(Number(peakDraft) > 0)}
                       style={{
                         padding: '3px 12px', fontSize: 12, fontWeight: 700,
-                        borderRadius: 4, border: 'none', cursor: peakDirty ? 'pointer' : 'default',
-                        background: peakDirty && Number(peakDraft) > 0 ? '#1565c0' : '#cfd8dc',
+                        borderRadius: 4, border: 'none', cursor: peakDirty && !peakSaving ? 'pointer' : 'default',
+                        background: peakDirty && Number(peakDraft) > 0 && !peakSaving ? '#1565c0' : '#cfd8dc',
                         color: '#fff',
                       }}
                     >
-                      저장
+                      {peakSaving ? '계산중…' : '저장'}
                     </button>
                     {(!local.referencePeakPrice || !local.referencePeakDate) && (
                       <span style={{ fontSize: 10, color: '#c62828' }}>← 가격+날짜 입력 후 저장 (관심종목 미등록 시)</span>

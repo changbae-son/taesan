@@ -4038,7 +4038,7 @@ export const buySignalCheck = functions
  *      → 매수 신호 발송 + 텔레그램 알림
  *   4) ruleBSignalSent=true 종목은 중복 발송 차단
  */
-async function runRuleBTracker(): Promise<{checked: number; bottomUpdated: number; signaled: number; errors: number}> {
+async function runRuleBTracker(codeFilter?: string): Promise<{checked: number; bottomUpdated: number; signaled: number; errors: number}> {
   const result = {checked: 0, bottomUpdated: 0, signaled: 0, errors: 0};
   const config = await getKiwoomConfig();
   const token = await getAccessToken(config);
@@ -4048,10 +4048,13 @@ async function runRuleBTracker(): Promise<{checked: number; bottomUpdated: numbe
   }
 
   const stocksSnap = await db.collection("stocks").where("rule", "==", "B").get();
-  console.log(`[ruleB] 대상 종목 ${stocksSnap.size}개`);
+  // 단일 종목 즉시 계산용 코드 필터 (시작점 입력 직후 호출)
+  const codeClean = codeFilter ? codeFilter.replace(/^A/, "").trim() : "";
+  console.log(`[ruleB] 대상 종목 ${stocksSnap.size}개${codeClean ? ` (code 필터: ${codeClean})` : ""}`);
 
   for (const stockDoc of stocksSnap.docs) {
     const stockData = stockDoc.data() as any;
+    if (codeClean && String(stockData.code || "").replace(/^A/, "") !== codeClean) continue;
     if (!stockData.code) continue;
     result.checked++;
 
@@ -4199,7 +4202,8 @@ export const ruleBTracker = functions
 
 /**
  * 룰B 일봉 추적 수동 테스트 (HTTP)
- * POST /ruleBTrackerNow
+ * POST/GET /ruleBTrackerNow[?code=000250]
+ *   code 지정 시 해당 종목만 즉시 저점 재계산 (시작점 입력 직후 호출)
  */
 export const ruleBTrackerNow = functions
   .region("asia-northeast3")
@@ -4207,7 +4211,8 @@ export const ruleBTrackerNow = functions
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
-        const result = await runRuleBTracker();
+        const code = (req.query.code as string) || "";
+        const result = await runRuleBTracker(code || undefined);
         res.json({success: true, ...result});
       } catch (e: any) {
         res.status(500).json({success: false, error: e.message});
