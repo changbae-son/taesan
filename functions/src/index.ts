@@ -5514,6 +5514,23 @@ export const diagByCode = functions
               avgPrice: s.avgPrice,
               firstBuyPrice: s.firstBuyPrice,
               firstBuyQuantity: s.firstBuyQuantity,
+              // ── 룰B 진단 필드 ──
+              rule: s.rule || null,
+              ruleBActive: s.ruleBActive || false,
+              bottomPrice: s.bottomPrice || null,
+              bottomPriceDate: s.bottomPriceDate || null,
+              bottomPriceSource: s.bottomPriceSource || null,
+              referencePeakPrice: s.referencePeakPrice || null,
+              referencePeakDate: s.referencePeakDate || null,
+              sellsSinceLastBuy: s.sellsSinceLastBuy ?? null,
+              sellPlansFilled: (s.sellPlans || [])
+                .filter((p: any) => p?.filled)
+                .map((p: any) => ({percent: p.percent, date: p.filledDate, price: p.filledPrice})),
+              maSellsFilled: (s.maSells || [])
+                .filter((m: any) => m?.filled)
+                .map((m: any) => ({ma: m.ma, date: m.filledDate})),
+              buyPlansRule: (s.buyPlans || [])
+                .map((b: any) => ({level: b.level, filled: b.filled, rule: b.rule || null, price: b.price})),
             });
           }
         });

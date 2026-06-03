@@ -2553,31 +2553,45 @@ export default function StockDetail({
                       <span style={{ marginLeft: 4, fontSize: 10, color: '#1565c0' }}>🔒확정</span>
                     )}
                   </span>
-                  {/* 시작점(기준 최고가): 관심종목 미등록 종목은 직접 입력 */}
-                  <span style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {/* 시작점(기준 최고가 + 날짜): 관심종목 미등록 종목은 직접 입력
+                      ⚠️ 저점 추적은 referencePeakDate부터 3차 매도일까지 스캔하므로
+                         날짜는 반드시 1차 매수 전 기준 최고가 시점이어야 함 (예: 3/16) */}
+                  <span style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                     시작점(기준 최고가):
                     <input
                       type="number"
                       style={{
-                        width: 100, padding: '2px 6px', fontSize: 12,
+                        width: 90, padding: '2px 6px', fontSize: 12,
                         border: `1px solid ${local.referencePeakPrice ? '#bbb' : '#ef9a9a'}`,
                         borderRadius: 4,
                       }}
-                      placeholder="최고가 입력"
+                      placeholder="최고가"
                       defaultValue={local.referencePeakPrice || ''}
                       onBlur={(e) => {
                         const v = Math.round(Number(e.target.value) || 0);
                         if (v > 0 && v !== (local.referencePeakPrice || 0)) {
-                          const todayStr = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
-                          update({
-                            referencePeakPrice: v,
-                            referencePeakDate: local.referencePeakDate || todayStr,
-                          });
+                          update({ referencePeakPrice: v }, true); // 즉시 저장
                         }
                       }}
                     />
-                    {!local.referencePeakPrice && (
-                      <span style={{ fontSize: 10, color: '#c62828' }}>← 관심종목 미등록 시 입력</span>
+                    <input
+                      type="date"
+                      style={{
+                        padding: '2px 6px', fontSize: 12,
+                        border: `1px solid ${local.referencePeakDate ? '#bbb' : '#ef9a9a'}`,
+                        borderRadius: 4,
+                      }}
+                      title="기준 최고가 날짜 (1차 매수 전 고점 시점). 저점 추적 시작일."
+                      defaultValue={local.referencePeakDate || ''}
+                      onBlur={(e) => {
+                        const d = e.target.value;
+                        if (d && d !== (local.referencePeakDate || '')) {
+                          update({ referencePeakDate: d }, true); // 즉시 저장
+                        }
+                      }}
+                    />
+                    {(!local.referencePeakPrice || !local.referencePeakDate) && (
+                      <span style={{ fontSize: 10, color: '#c62828' }}>← 가격+날짜 입력 (관심종목 미등록 시)</span>
                     )}
                   </span>
                   <span>트리거: <strong>{trigger > 0 ? trigger.toLocaleString() + '원' : '-'}</strong></span>
