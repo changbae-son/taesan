@@ -1174,11 +1174,32 @@ function mapTradesToPlans(
 
   // 최근 매수 일자 (가장 마지막 체결 매수 날짜)
   const lastBuyDateNorm = buyDates.length > 0 ? normDate(buyDates[buyDates.length - 1]) : "";
+  // 마지막 매수일의 가장 늦은 체결시각 (같은 날 매수+매도 구분용; 없으면 "")
+  let lastBuyTime = "";
+  for (const b of buys) {
+    if (normDate(b.date || "") === lastBuyDateNorm) {
+      const t = String(b.time || "").trim();
+      if (t && t > lastBuyTime) lastBuyTime = t;
+    }
+  }
 
   // 최근 매수 이후 매도만 현재 라운드 슬롯에 매핑
   // (이전 라운드에서 매도된 내역은 매매일지에만 기록 — 슬롯 초기화)
+  // ✅ 같은 날 매수+매도 엣지: 종전 strict(>)는 매수일 당일 매도를 통째 제외해
+  //    휴림로봇처럼 매수 직후 같은 날 매도가 누락됨.
+  //    → 같은 날 매도는 포함하되, 체결시각이 둘 다 있으면 "매수 시각 이후"만 현재 라운드.
+  //      (시각 정보 없으면 보수적으로 포함 = 드롭 방지)
   const currentRoundSellsAll = lastBuyDateNorm
-    ? sells.filter((s) => normDate(s.date || "") > lastBuyDateNorm)
+    ? sells.filter((s) => {
+      const sd = normDate(s.date || "");
+      if (sd > lastBuyDateNorm) return true;
+      if (sd === lastBuyDateNorm) {
+        const st = String(s.time || "").trim();
+        if (st && lastBuyTime) return st >= lastBuyTime; // 시각 있으면 매수 이후만
+        return true; // 시각 없음 → 같은 날 매도 포함
+      }
+      return false;
+    })
     : sells;
 
   // ── MA 우선: MA 슬롯이 흡수(consumedTradeIds)한 거래는 프로필 슬롯 매핑에서 제외 ──
