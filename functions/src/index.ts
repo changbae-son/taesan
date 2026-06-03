@@ -1080,6 +1080,7 @@ function mapTradesToPlans(
         filledDate: formattedDate,
         filledQuantity: buyData.totalQty,
         filledPrice: avg,
+        rule: "A", // 체결된 분할매수는 룰A 기준 (룰B는 3회 매도 후 재진입에만 적용)
       });
     } else if (i === 0 && buyDates.length === 0 && holdings) {
       // 매수 내역 없지만 보유 중 → 1차 매수 체결로 설정
@@ -1096,6 +1097,7 @@ function mapTradesToPlans(
         filledDate: todayKstStr,
         filledQuantity: firstBuyQty,
         filledPrice: holdings.avgPrice || 0,
+        rule: "A", // 1차 진입 매수는 항상 룰A 기준
       });
     } else {
       // 미체결 차수
@@ -1141,6 +1143,7 @@ function mapTradesToPlans(
         quantity: levelQty,
         filled: false,
         filledDate: "",
+        rule: isRuleB ? "B" : "A", // 미체결 차수 산정 룰
       });
     }
   }
@@ -4011,26 +4014,58 @@ async function runRuleBTracker(): Promise<{checked: number; bottomUpdated: numbe
         continue;
       }
 
-      // 일봉 low 중 최저값
+      // ─── 저점 구간 freeze (3차 매도 시점) ───
+      // 룰B 저점 = [기준 최고가(referencePeakDate)] ~ [3차 매도 시점] 구간의 최저가.
+      // 3차 매도가 발생한 종목은 그 매도일 이후 일봉은 저점 계산에서 제외(freeze).
+      // (3차 매도 미달이면 freeze 없이 계속 추적 — 룰B 활성 전이므로 무방)
+      const sellDatesRaw: string[] = [];
+      for (const sp of (stockData.sellPlans || [])) {
+        if (sp?.filled && sp.filledDate) sellDatesRaw.push(String(sp.filledDate));
+      }
+      for (const ms of (stockData.maSells || [])) {
+        if (ms?.filled && ms.filledDate) sellDatesRaw.push(String(ms.filledDate));
+      }
+      // YYYY-MM-DD / YYYYMMDD 모두 YYYYMMDD 로 정규화 후 오름차순
+      const sellYmds = sellDatesRaw
+        .map((d) => d.replace(/-/g, ""))
+        .filter((d) => d.length === 8)
+        .sort();
+      // 3차 매도일 = 정렬된 매도일 중 3번째 (인덱스 2)
+      const freezeYMD = sellYmds.length >= 3 ? sellYmds[2] : null;
+
+      // 일봉 low 중 최저값 (freeze 적용 시 freezeYMD 이하 구간만)
       let lowestLow = Infinity;
       let lowestDate = "";
       for (const c of candles) {
-        if (c.low > 0 && c.low < lowestLow) {
+        if (c.low <= 0) continue;
+        if (freezeYMD && c.date.replace(/-/g, "") > freezeYMD) continue; // 3차 매도 이후 제외
+        if (c.low < lowestLow) {
           lowestLow = c.low;
           lowestDate = c.date;
         }
       }
+      if (freezeYMD) {
+        console.log(`[ruleB] ${stockData.name} 저점구간 freeze: ~${freezeYMD} (3차 매도일)`);
+      }
 
       const update: Record<string, any> = {};
       const currentBottom = Number(stockData.bottomPrice) || 0;
-      // bottomPrice 갱신: 더 낮은 값이거나 처음
-      if (lowestLow !== Infinity && (currentBottom === 0 || lowestLow < currentBottom)) {
+      // bottomPrice 갱신:
+      //   freeze 구간(3차 매도 확정): 구간 내 최저가로 권위있게 SET (값이 달라지면 보정)
+      //     → 과거 freeze 미적용 시절 잘못 내려간 저점도 올바른 값으로 교정됨
+      //   freeze 전(추적중): 더 낮은 값이거나 처음일 때만 갱신
+      const shouldUpdate = lowestLow !== Infinity && (
+        freezeYMD
+          ? lowestLow !== currentBottom
+          : (currentBottom === 0 || lowestLow < currentBottom)
+      );
+      if (shouldUpdate) {
         update.bottomPrice = lowestLow;
         update.bottomPriceDate = lowestDate;
-        update.bottomPriceSource = "daily_low";
+        update.bottomPriceSource = freezeYMD ? "daily_low_frozen" : "daily_low";
         result.bottomUpdated++;
         console.log(
-          `[ruleB] ${stockData.name} bottomPrice 갱신: ${currentBottom} → ${lowestLow} (${lowestDate})`
+          `[ruleB] ${stockData.name} bottomPrice ${freezeYMD ? "확정" : "갱신"}: ${currentBottom} → ${lowestLow} (${lowestDate})`
         );
       }
 

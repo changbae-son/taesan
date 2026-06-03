@@ -124,6 +124,15 @@ export function recalcStock(stock: Stock): Stock {
             ? Math.round(firstBuyAmt / calcPrice)
             : firstBuyQuantity);
 
+      // 차수별 룰 stamping:
+      //   1차(i===0): 진입 매수 → 항상 'A' 기준
+      //   체결 차수: 기존 stamp 보존 (없으면 'A' 폴백 — 레거시 데이터)
+      //   미체결 차수: 현재 룰B 활성 여부로 결정 (체결 시점에 그대로 굳음)
+      const stageRule: 'A' | 'B' =
+        i === 0 ? 'A'
+          : bp.filled ? (bp.rule || 'A')
+            : (isRuleB ? 'B' : 'A');
+
       updated.push({
         ...bp,
         price: bp.filled ? (bp.filledPrice || bp.price) : calcPrice,
@@ -131,6 +140,7 @@ export function recalcStock(stock: Stock): Stock {
         filledDate: bp.filledDate,
         filledQuantity: bp.filledQuantity,
         filledPrice: bp.filledPrice,
+        rule: stageRule,
       });
     }
     s.buyPlans = updated;

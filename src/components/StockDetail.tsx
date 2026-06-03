@@ -2548,8 +2548,38 @@ export default function StockDetail({
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px', color: '#555' }}>
                   <span>매도 카운트: <strong>{sellCount}/3</strong></span>
-                  <span>저점: <strong>{bottom > 0 ? bottom.toLocaleString() + '원' : '미설정'}</strong></span>
-                  <span>시작점: <strong>{local.referencePeakPrice ? local.referencePeakPrice.toLocaleString() + '원' : '미설정'}</strong></span>
+                  <span>저점: <strong>{bottom > 0 ? bottom.toLocaleString() + '원' : '미설정'}</strong>
+                    {local.bottomPriceSource === 'daily_low_frozen' && (
+                      <span style={{ marginLeft: 4, fontSize: 10, color: '#1565c0' }}>🔒확정</span>
+                    )}
+                  </span>
+                  {/* 시작점(기준 최고가): 관심종목 미등록 종목은 직접 입력 */}
+                  <span style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    시작점(기준 최고가):
+                    <input
+                      type="number"
+                      style={{
+                        width: 100, padding: '2px 6px', fontSize: 12,
+                        border: `1px solid ${local.referencePeakPrice ? '#bbb' : '#ef9a9a'}`,
+                        borderRadius: 4,
+                      }}
+                      placeholder="최고가 입력"
+                      defaultValue={local.referencePeakPrice || ''}
+                      onBlur={(e) => {
+                        const v = Math.round(Number(e.target.value) || 0);
+                        if (v > 0 && v !== (local.referencePeakPrice || 0)) {
+                          const todayStr = new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD
+                          update({
+                            referencePeakPrice: v,
+                            referencePeakDate: local.referencePeakDate || todayStr,
+                          });
+                        }
+                      }}
+                    />
+                    {!local.referencePeakPrice && (
+                      <span style={{ fontSize: 10, color: '#c62828' }}>← 관심종목 미등록 시 입력</span>
+                    )}
+                  </span>
                   <span>트리거: <strong>{trigger > 0 ? trigger.toLocaleString() + '원' : '-'}</strong></span>
                   {local.bottomPriceDate && (
                     <span style={{ gridColumn: '1 / -1', fontSize: 11, color: '#888' }}>
@@ -2593,6 +2623,27 @@ export default function StockDetail({
                       {/* 차수 + 날짜 */}
                       <td className={styles.levelCell}>
                         <span className={styles.levelBadge}>{bp.level}차</span>
+                        {/* 차수별 룰 배지 (1차 진입 제외 — 항상 룰A 자명) */}
+                        {bp.level > 1 && (() => {
+                          const r = bp.rule || 'A';
+                          return (
+                            <span
+                              style={{
+                                marginLeft: 4,
+                                fontSize: 10,
+                                fontWeight: 700,
+                                padding: '1px 5px',
+                                borderRadius: 4,
+                                background: r === 'B' ? '#e3f2fd' : '#f1f8e9',
+                                color: r === 'B' ? '#1565c0' : '#558b2f',
+                                border: `1px solid ${r === 'B' ? '#90caf9' : '#c5e1a5'}`,
+                              }}
+                              title={r === 'B' ? '룰B (저점×0.9 기준)' : '룰A (이전차수×0.9 기준)'}
+                            >
+                              룰{r}
+                            </span>
+                          );
+                        })()}
                         {i === nextBuyIdx && !bp.filled && (
                           <span className={styles.nextChip}>다음</span>
                         )}

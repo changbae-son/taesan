@@ -7,6 +7,7 @@ export interface BuyPlan {
   filledQuantity?: number; // 실제 체결 수량
   filledPrice?: number; // 실제 체결 단가
   manualOverride?: boolean; // true면 sync/reconcile 시 덮어쓰지 않음
+  rule?: 'A' | 'B'; // 이 차수 매수가가 산정된 룰 (A: 이전차수×0.9, B: 저점×0.9). 체결되면 그 시점 룰 보존
 }
 
 export interface SellPlan {
@@ -160,7 +161,7 @@ export interface Stock {
   // 활성화 조건: 마지막 매수 차수 이후 누적 매도(이익+MA) 3회 이상
   bottomPrice?: number;              // 시작점~현재까지 일봉 low 중 최저값
   bottomPriceDate?: string;          // 최저 도달 날짜 (YYYY-MM-DD)
-  bottomPriceSource?: 'daily_low' | 'realtime' | 'manual'; // 데이터 소스
+  bottomPriceSource?: 'daily_low' | 'daily_low_frozen' | 'realtime' | 'manual'; // 데이터 소스 (frozen: 3차 매도로 구간 확정)
   referencePeakPrice?: number;       // 시작점 (Watchlist 등록 시 사용자가 입력한 최고점)
   referencePeakDate?: string;        // 시작점 등록 날짜
   sellsSinceLastBuy?: number;        // 마지막 매수 차수 이후 누적 매도 카운트 (recalcStock이 갱신)
