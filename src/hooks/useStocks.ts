@@ -49,9 +49,11 @@ function createDefaultStock(name: string): Omit<Stock, 'id'> {
   };
 }
 
-export function recalcStock(stock: Stock): Stock {
+export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): Stock {
   const s = { ...stock };
   const { firstBuyPrice, firstBuyQuantity, rule, bottomPrice } = s;
+  // 원본 Firestore totalQuantity (reconcile이 trades 기반으로 계산한 정확값)
+  const storedQty = typeof stock.totalQuantity === 'number' ? stock.totalQuantity : null;
 
   // ─── 룰B 활성화 게이트: 마지막 매수 차수 이후 누적 매도(이익+MA) 3회 이상 ───
   // 1) 마지막으로 체결된 매수 차수의 filledDate 찾기 (없으면 빈 문자열)
@@ -178,7 +180,24 @@ export function recalcStock(stock: Stock): Stock {
   const allSellsFilled = s.sellPlans.length > 0 && s.sellPlans.every(
     (sp) => sp.filled || ((sp.filledQuantity || 0) > 0)
   );
-  s.totalQuantity = allSellsFilled ? 0 : Math.max(0, totalQty - soldQty);
+  const mappedRemain = Math.max(0, totalQty - soldQty);
+  // ✅ 미분류 매도 대응: sellPlans/maSells에 매핑 안 된 매도가 있으면 mappedRemain이 과다.
+  //    trustStoredQty=true(로드 시점)면 reconcile이 trades 기반으로 계산한 Firestore
+  //    totalQuantity를 신뢰 (단, 전량매도 감지 시는 0).
+  //    편집 시점(trustStoredQty 미지정)엔 매핑 기반 재계산 — 사용자 토글 즉시 반영.
+  if (allSellsFilled) {
+    s.totalQuantity = 0;
+  } else if (
+    opts?.trustStoredQty &&
+    storedQty !== null &&
+    storedQty >= 0 &&
+    storedQty !== mappedRemain
+  ) {
+    // Firestore(키움/trades 기반)가 매핑 잔고와 다름 = 미분류 매도 존재 → Firestore 신뢰
+    s.totalQuantity = storedQty;
+  } else {
+    s.totalQuantity = mappedRemain;
+  }
   // corporateActions 종목: 합병/감자 후 단순 buyPlans 가중평균은 부정확
   // → reconcile이 키움 기반으로 설정한 Firestore avgPrice 유지
   s.avgPrice = (hasCorporateActions && (stock.avgPrice || 0) > 0)
@@ -226,7 +245,9 @@ export function useStocks() {
         // buyPlans/sellPlans 실제 체결 데이터 기반으로 재계산 (매매완료 종목이 진행중으로 보이는 문제 방지)
         setStocks(list.map((s) => {
           try {
-            return recalcStock(s);
+            // 로드 시점: Firestore totalQuantity(reconcile trades 기반 정확값) 신뢰
+            // → 미분류 매도가 슬롯에 매핑 안 돼도 화면 잔고 정확
+            return recalcStock(s, { trustStoredQty: true });
           } catch (e) {
             console.error(`[recalcStock] ${s?.name} 오류:`, e);
             return s; // 오류 시 원본 데이터 그대로 사용

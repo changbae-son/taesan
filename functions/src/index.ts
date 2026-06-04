@@ -869,10 +869,13 @@ async function fetchTradeHistory(
         const isCredit = ioTp.includes("융자") || ioTp.includes("신용") ||
           crdTp.includes("융자") || crdTp.includes("신용");
 
-        // ✅ kt00015가 이미 위탁 매수+매도를 처리하므로 여기서는 신용만 추가
-        // (중복 방지)
-        if (!isCredit) {
-          // kt00007의 현금 거래는 kt00015와 중복 → 스킵
+        // ✅ kt00007 보강 정책:
+        //   - 신용 매수/매도: 모두 추가 (kt00015는 위탁만 반환, 신용 누락)
+        //   - 현금 매수: 추가 (kt00015가 일부 현금매수도 누락 — 흥구석유 5/27 케이스)
+        //       → dedup이 (code,date,type,price,qty) 기준으로 중복 제거,
+        //         kt00015에 없는 누락분만 살아남음
+        //   - 현금 매도: 스킵 (ka10072가 부분체결까지 정밀 처리 — 충돌 방지)
+        if (!isCredit && type7 !== "buy") {
           continue;
         }
 
@@ -908,8 +911,12 @@ async function fetchTradeHistory(
           _rawNm: rawNm7,
           _rawCd: rawCd7,
         });
-        if (type7 === "buy") creditBuyAdded++;
-        else creditSellAdded++;
+        if (isCredit) {
+          if (type7 === "buy") creditBuyAdded++;
+          else creditSellAdded++;
+        } else {
+          cashAdded++; // 현금 매수 보강분
+        }
       }
       console.log(`[kt00007] ${dt} 완료: 신용 매수 ${creditBuyAdded}건 / 신용 매도 ${creditSellAdded}건 / 현금 ${cashAdded}건 (위탁은 kt00015 담당)`);
       await new Promise((r) => setTimeout(r, 200));
