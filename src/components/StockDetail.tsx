@@ -1980,7 +1980,7 @@ export default function StockDetail({
         >
           룰B (저점 -10%)
         </button>
-        {local.sellCount >= 3 && local.rule === 'A' && (
+        {(local.sellsSinceLastBuy || 0) >= 3 && local.rule === 'A' && (
           <span className={styles.chip}>룰B 전환 가능</span>
         )}
         {local.rule === 'B' && (local.bottomPrice || 0) === 0 && (
@@ -3239,7 +3239,9 @@ export default function StockDetail({
                         <span className={styles.colLabel}>수량</span>
                         {isFilled
                           ? <span className={styles.filledQty}>{(realQty || planQty).toLocaleString()}</span>
-                          : <span className={styles.dashText}>-</span>}
+                          : (planQty > 0
+                            ? <span className={styles.plannedQty}>{planQty.toLocaleString()}</span>
+                            : <span className={styles.dashText}>-</span>)}
                         <span className={styles.cumulativeQty} style={{ color: remainingAfter <= 0 && isFilled ? '#f44336' : '#888' }}>
                           {isFilled
                             ? `잔여 ${remainingAfter.toLocaleString()}`
@@ -3490,8 +3492,8 @@ export default function StockDetail({
             </tbody>
           </table>
           <div className={styles.sellNote}>
-            누적 매도: {sellsIndividual.length}회 ({actualSells.length}건)
-            {sellsIndividual.length >= 3 && <span className={styles.chip}>룰B 전환 가능</span>}
+            누적 매도: {actualSells.length}건 · 마지막 매수 후 {local.sellsSinceLastBuy || 0}회
+            {(local.sellsSinceLastBuy || 0) >= 3 && local.rule !== 'B' && <span className={styles.chip}>룰B 전환 가능</span>}
           </div>
 
           {/* 미분류 매도 영역: 현재 라운드에서만 표시 */}
