@@ -71,3 +71,51 @@
 - 앱클론: bottomPrice=33,600 / bottomPriceDate=2026-05-20 / 다음 매수가=30,240 확인
 - 매수계획표에 차수별 룰 배지 정상 표시
 - 빌드 → deploy → push
+
+---
+
+## ✅ 2026-06-05 추가 완료 — 차수별 룰 자동 판정 (commit 9c8de98)
+
+### 확정 규칙 (사용자)
+```
+N차 rule = (N-1차 매수 직후 ~ N차 매수 직전) 매도 회수 >= 3 ? 'B' : 'A'
+  · 1차 = 항상 'A' (진입)
+  · 같은 날·같은 가격 부분체결 = 1회 (date+price 유니크)
+  · 직전 차수 미체결 → 'A'
+  · 종목 rule 버튼 무관 — 매도 회수(데이터)로 자동 판정
+```
+
+### 수정한 3곳 (동일 stageRuleFor 로직)
+- `functions/src/index.ts` mapTradesToPlans — 헬퍼 + 체결/미체결 rule stamp + 매수가
+- `functions/src/index.ts` reconcileStockPlans — 헬퍼 + 체결 rule stamp + 미체결 보정 차수별
+- `src/hooks/useStocks.ts` recalcStock — 헬퍼 + 차수별 stamp + 매수가
+  (프론트는 sellPlans+maSells filledDate/filledPrice로 매도 회수 카운트)
+
+### 검증 (삼천당제약 A000250)
+- L1=A / L2=B (1차후 4회매도) / L3=A (2차후 0회) / L4=A / L5=A ✓
+- 3차 매수가 278,550 = 309,500×0.9 (룰A 직전매수가)
+
+### 근본 원인 (해결됨)
+- mapTradesToPlans 1091줄: 체결 매수를 무조건 rule="A" → 직전 매도 무시 (FIXED)
+- reconcileStockPlans: 체결 차수 rule stamp 누락 → 옛 'A' 유지 (FIXED)
+- recalcStock: 체결 bp.rule||'A', 미체결 종목 isRuleB 일괄 (FIXED)
+
+---
+
+## 🔲 집에서 이어서 점검할 것 (2026-06-05 기준)
+
+1. **다른 보유종목 차수별 룰 일괄 검증**
+   - diagRuleBStatus 또는 inspectStockTrades로 보유종목 buyPlans rule 확인
+   - 특히 2차 이상 매수 + 매도 다수 종목 (앱클론, 네이블 등)
+   - 키움 데이터받기 1회 → 전 종목 새 로직으로 rule 재stamp
+
+2. **룰B 종목의 bottomPrice/referencePeak 저장 확인**
+   - 삼천당제약: referencePeakPrice=None 상태였음 (화면 입력했으나 미저장 의심)
+   - 룰B 차수의 매수가가 저점×0.9로 나오려면 bottomPrice 필요
+   - 시작점(기준최고가) 저장 → ruleBTrackerNow 호출 → 저점 계산 흐름 점검
+
+3. **흥구석유 avgPrice 키움 대조** (15,346 vs 키움 실제 평단)
+
+4. **현금매수 누락 추가 점검** (kt00015 누락 → kt00007 보강 후)
+   - diagPlansConsistency로 kiwoom>0 불일치 종목 재확인
+   - 대동금속(251)/STX그린로지스(169) 화면 정확화 확인
