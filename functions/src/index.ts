@@ -1061,6 +1061,34 @@ function mapTradesToPlans(
   const firstBuy = buyDates.length > 0 ? buyByDate[buyDates[0]] : null;
   const firstBuyPrice = firstBuy ? Math.round(firstBuy.totalAmt / firstBuy.totalQty) : (holdings?.avgPrice || 0);
 
+  // ─── 차수별 룰 판정 (태산매매법 확정 규칙) ───
+  // N차 rule = (N-1차 매수 직후 ~ N차 매수 직전) 구간 매도 회수 >= 3 ? 'B' : 'A'
+  //   · 1차 = 항상 'A' (진입 매수)
+  //   · 같은 날·같은 가격 부분체결 = 1회 (date+price 유니크 그룹)
+  //   · 직전 차수가 미체결이면 그 구간 매도 불가 → 'A'
+  const normDForRule = (d: string): string => {
+    if (!d) return "";
+    if (d.length === 8 && !d.includes("-")) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    return d;
+  };
+  const countSellRoundsBetween = (startDate: string, endDate: string): number => {
+    const groups = new Set<string>();
+    for (const s of sells) {
+      const sd = normDForRule(s.date || "");
+      if (!sd || sd <= startDate) continue; // 직전 매수일 이후만
+      if (endDate && sd >= endDate) continue; // 당 매수일 전만 (endDate="" = 무한대)
+      groups.add(`${sd}_${s.price}`);
+    }
+    return groups.size;
+  };
+  const stageRuleFor = (level: number, thisBuyDateRaw: string): "A" | "B" => {
+    if (level <= 1) return "A"; // 1차 진입 = 항상 룰A
+    const prevBuyDate = normDForRule(buyDates[level - 2] || ""); // (level-1)차 매수일 (0-based: level-2)
+    if (!prevBuyDate) return "A"; // 직전 차수 미체결 → 매도 구간 없음 → 룰A
+    const thisBuyDate = normDForRule(thisBuyDateRaw || ""); // 미체결이면 "" (지금까지)
+    return countSellRoundsBetween(prevBuyDate, thisBuyDate) >= 3 ? "B" : "A";
+  };
+
   // 원래 매수 수량 계산: 매수 내역이 있으면 사용, 없으면 "현재 보유량 + 매도 수량"으로 역산
   const totalSoldQty = sells.reduce((sum, s) => sum + s.quantity, 0);
   const firstBuyQty = firstBuy
@@ -1088,7 +1116,8 @@ function mapTradesToPlans(
         filledDate: formattedDate,
         filledQuantity: buyData.totalQty,
         filledPrice: avg,
-        rule: "A", // 체결된 분할매수는 룰A 기준 (룰B는 3회 매도 후 재진입에만 적용)
+        // ✅ 차수별 룰: 직전 매수 후 ~ 이 매수 전 매도 3회+ → 'B', 아니면 'A'
+        rule: stageRuleFor(i + 1, formattedDate),
       });
     } else if (i === 0 && buyDates.length === 0 && holdings) {
       // 매수 내역 없지만 보유 중 → 1차 매수 체결로 설정
@@ -1108,15 +1137,12 @@ function mapTradesToPlans(
       });
     } else {
       // 미체결 차수
-      // 룰B (rule==='B' && bottomPrice > 0):
-      //   첫 미체결 = bottomPrice × 0.9, 그 이후는 이전 × 0.9 (계단식)
-      // 룰A (기본):
-      //   이전 차수 × 0.9
-      // ✅ 룰B 활성화 게이트: 마지막 매수 차수 이후 매도 3회 이상이어야 적용 (이익+MA 합산)
-      // 매도 카운트가 부족하면 룰A 폴백 (이전 차수 × 0.9)
-      const isRuleB = ruleConfig?.rule === "B" &&
-        (ruleConfig?.bottomPrice || 0) > 0 &&
-        (ruleConfig?.sellsSinceLastBuy || 0) >= 3;
+      // ✅ 차수별 룰 판정 (직전 매수 후 매도 3회+ → 'B'):
+      //   룰B 차수: 첫 룰B면 bottomPrice × 0.9, 연속이면 이전 × 0.9 (계단식)
+      //   룰A 차수: 이전 차수 × 0.9
+      // bottomPrice 없으면 룰B여도 가격 계산은 룰A 폴백 (이전 × 0.9)
+      const thisStageRule = stageRuleFor(i + 1, "");
+      const isRuleB = thisStageRule === "B" && (ruleConfig?.bottomPrice || 0) > 0;
       let nextPrice: number;
 
       if (isRuleB) {
@@ -1150,7 +1176,8 @@ function mapTradesToPlans(
         quantity: levelQty,
         filled: false,
         filledDate: "",
-        rule: isRuleB ? "B" : "A", // 미체결 차수 산정 룰
+        // ✅ 차수별 룰: 직전 매수 후 ~ 지금 매도 3회+ → 'B', 아니면 'A'
+        rule: stageRuleFor(i + 1, ""),
       });
     }
   }
@@ -4508,6 +4535,31 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   const buyDates = Object.keys(buyByDate).sort();
 
+  // ─── 차수별 룰 판정 (mapTradesToPlans와 동일 규칙) ───
+  // N차 rule = (N-1차 매수 직후 ~ N차 매수 직전) 매도 회수 >= 3 ? 'B' : 'A'
+  const normDForRule = (d: string): string => {
+    if (!d) return "";
+    if (d.length === 8 && !d.includes("-")) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    return d;
+  };
+  const countSellRoundsBetween = (start: string, end: string): number => {
+    const groups = new Set<string>();
+    for (const t of sortedSells) {
+      const sd = normDForRule(t.date || "");
+      if (!sd || sd <= start) continue;
+      if (end && sd >= end) continue;
+      groups.add(`${sd}_${Number(t.price) || 0}`);
+    }
+    return groups.size;
+  };
+  const stageRuleFor = (level: number): "A" | "B" => {
+    if (level <= 1) return "A";
+    const prevBuyDate = normDForRule(buyDates[level - 2] || "");
+    if (!prevBuyDate) return "A";
+    const thisBuyDate = normDForRule(buyDates[level - 1] || ""); // 미체결이면 "" (지금까지)
+    return countSellRoundsBetween(prevBuyDate, thisBuyDate) >= 3 ? "B" : "A";
+  };
+
   let buyFilledCount = 0;
   let sellFilledCount = 0;
   let exceedsBuy = 0;
@@ -4533,6 +4585,8 @@ async function reconcileStockPlans(stockName: string): Promise<{
         filledDate: date,
         filledQuantity: info.qty,
         filledPrice: avgPrice,
+        // ✅ 차수별 룰: 직전 매수 후 매도 3회+ → 'B'
+        rule: stageRuleFor(i + 1),
       };
       buyFilledCount++;
     } else {
@@ -4576,13 +4630,16 @@ async function reconcileStockPlans(stockName: string): Promise<{
   //     · 룰A: 이전 차수 실제가 × 0.9 (계단식)
   //     · 룰B (rule==='B' && bottomPrice > 0): 첫 미체결 = bottomPrice × 0.9, 그 이후 = 이전 × 0.9
   // - manualOverride 슬롯은 손대지 않음
-  const isRuleB = stock.rule === "B" && (Number(stock.bottomPrice) || 0) > 0;
+  const bottomPriceNum = Number(stock.bottomPrice) || 0;
   for (let i = 0; i < buyPlans.length; i++) {
     const bp = buyPlans[i];
     if (bp.manualOverride) continue;
 
     let correctPrice = bp.price;
     let correctQty = bp.quantity;
+    // ✅ 차수별 룰: 직전 매수 후 매도 회수로 자동 판정
+    const thisStageRule = stageRuleFor(i + 1);
+    const thisRuleB = thisStageRule === "B" && bottomPriceNum > 0;
 
     if (bp.filled && (bp.filledPrice || 0) > 0) {
       // 체결된 차수: 실제 체결가가 곧 계획가
@@ -4591,10 +4648,10 @@ async function reconcileStockPlans(stockName: string): Promise<{
     } else if (i > 0) {
       // 미체결 차수
       const prev = buyPlans[i - 1];
-      if (isRuleB) {
+      if (thisRuleB) {
         if (prev.filled) {
-          // 첫 미체결 차수 → bottomPrice × 0.9
-          correctPrice = Math.round((Number(stock.bottomPrice) || 0) * 0.9);
+          // 첫 룰B 차수 → bottomPrice × 0.9
+          correctPrice = Math.round(bottomPriceNum * 0.9);
         } else {
           // 이전도 미체결 → 룰B 계단식 (직전 차수의 보정 후 price 사용)
           const prevPrice = prev.price || 0;
@@ -4616,9 +4673,10 @@ async function reconcileStockPlans(stockName: string): Promise<{
       if (levelQty > 0) correctQty = levelQty;
     }
 
-    if (correctPrice !== bp.price || correctQty !== bp.quantity) {
-      console.log(`[reconcile] ${stockName} buy${i + 1}차 계획값 보정 (rule=${stock.rule || "A"}): price ${bp.price} → ${correctPrice}, qty ${bp.quantity} → ${correctQty}`);
-      buyPlans[i] = {...bp, price: correctPrice, quantity: correctQty};
+    // 계획가/수량 또는 rule 변경 시 갱신
+    if (correctPrice !== bp.price || correctQty !== bp.quantity || bp.rule !== thisStageRule) {
+      console.log(`[reconcile] ${stockName} buy${i + 1}차 보정 (rule ${bp.rule || "?"}→${thisStageRule}): price ${bp.price} → ${correctPrice}, qty ${bp.quantity} → ${correctQty}`);
+      buyPlans[i] = {...bp, price: correctPrice, quantity: correctQty, rule: thisStageRule};
       buyFilledCount++; // 변경 트리거
     }
   }

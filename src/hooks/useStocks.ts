@@ -76,8 +76,39 @@ export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): 
   s.sellsSinceLastBuy = sellsSinceLastBuy;
   const ruleBActive = rule === 'B' && sellsSinceLastBuy >= 3 && (bottomPrice || 0) > 0;
   s.ruleBActive = ruleBActive;
-  // 룰B로 설정됐지만 아직 매도 3회 미만 → 룰A 폴백 (기존 isRuleB 로직 차단)
-  const isRuleB = ruleBActive;
+
+  // ─── 차수별 룰 판정 (백엔드 mapTradesToPlans와 동일 규칙) ───
+  // N차 rule = (N-1차 매수 직후 ~ N차 매수 직전) 매도 회수 >= 3 ? 'B' : 'A'
+  //   · 1차 = 'A'(진입), 같은 날·같은 가격 부분체결 = 1회, 직전 미체결 → 'A'
+  const normDForRule = (d: string): string => {
+    if (!d) return '';
+    if (d.length === 8 && !d.includes('-')) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    return d;
+  };
+  const countSellRoundsBetween = (start: string, end: string): number => {
+    const groups = new Set<string>();
+    const add = (date?: string, price?: number) => {
+      const d = normDForRule(date || '');
+      if (!d || d <= start) return;
+      if (end && d >= end) return;
+      groups.add(`${d}_${price || 0}`);
+    };
+    s.sellPlans.forEach((sp) => {
+      if (sp.filled || (sp.filledQuantity || 0) > 0) add(sp.filledDate, sp.filledPrice);
+    });
+    s.maSells.forEach((m) => {
+      if (m.filled) add(m.filledDate, m.price);
+    });
+    return groups.size;
+  };
+  const buyFilledDates = s.buyPlans.map((bp) => (bp.filled ? normDForRule(bp.filledDate || '') : ''));
+  const stageRuleFor = (idx: number): 'A' | 'B' => {
+    if (idx === 0) return 'A'; // 1차 진입 = 항상 룰A
+    const prevDate = buyFilledDates[idx - 1];
+    if (!prevDate) return 'A'; // 직전 차수 미체결 → 매도 구간 없음 → 룰A
+    const thisDate = buyFilledDates[idx] || ''; // 미체결이면 '' (지금까지)
+    return countSellRoundsBetween(prevDate, thisDate) >= 3 ? 'B' : 'A';
+  };
   // 합병/감자 이력이 있는 종목: firstBuyPrice 기반 비중동일 계산이 부정확
   // → 미체결 수량은 firstBuyQuantity로 통일, avgPrice는 Firestore(키움) 값 유지
   const hasCorporateActions = Array.isArray(s.corporateActions) && s.corporateActions.length > 0;
@@ -92,23 +123,25 @@ export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): 
       const bp = s.buyPlans[i];
       let calcPrice: number;
 
+      // ✅ 차수별 룰: 직전 매수 후 매도 회수로 자동 판정 (종목 rule 버튼 무관)
+      const stageRule: 'A' | 'B' = stageRuleFor(i);
+      const thisStageRuleB = stageRule === 'B' && (bottomPrice || 0) > 0;
+
       if (i === 0) {
         calcPrice = firstBuyPrice;
       } else if (bp.filled) {
         // 체결된 차수는 그대로 보존 (filledPrice 우선)
         calcPrice = bp.filledPrice || bp.price;
-      } else if (isRuleB) {
-        // 룰B: 첫 미체결이면 bottomPrice × 0.9, 그 이후는 이전 차수 × 0.9
+      } else if (thisStageRuleB) {
+        // 룰B 차수: 첫 룰B면 bottomPrice × 0.9, 연속이면 이전 차수 × 0.9
         const prev = updated[i - 1];
         if (prev.filled) {
-          // 첫 미체결 차수
           calcPrice = Math.round((bottomPrice as number) * 0.9);
         } else {
-          // 이전도 미체결 → 룰B 계단식
           calcPrice = Math.round((prev.price || 0) * 0.9);
         }
       } else {
-        // 룰A: 이전 차수 (체결가 우선) × 0.9
+        // 룰A 차수: 이전 차수 (체결가 우선) × 0.9
         const prev = updated[i - 1];
         const prevActualPrice = prev.filledPrice || prev.price || firstBuyPrice * Math.pow(0.9, i - 1);
         calcPrice = Math.round(prevActualPrice * 0.9);
@@ -125,15 +158,6 @@ export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): 
           : (calcPrice > 0 && firstBuyAmt > 0
             ? Math.round(firstBuyAmt / calcPrice)
             : firstBuyQuantity);
-
-      // 차수별 룰 stamping:
-      //   1차(i===0): 진입 매수 → 항상 'A' 기준
-      //   체결 차수: 기존 stamp 보존 (없으면 'A' 폴백 — 레거시 데이터)
-      //   미체결 차수: 현재 룰B 활성 여부로 결정 (체결 시점에 그대로 굳음)
-      const stageRule: 'A' | 'B' =
-        i === 0 ? 'A'
-          : bp.filled ? (bp.rule || 'A')
-            : (isRuleB ? 'B' : 'A');
 
       updated.push({
         ...bp,
