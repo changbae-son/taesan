@@ -1439,7 +1439,6 @@ export default function StockDetail({
       unmappedTrades.push({ id: t.id, date: t.date, price: t.price, quantity: t.quantity });
     }
   }
-  const unmappedSellQty = unmappedTrades.reduce((s, t) => s + t.quantity, 0);
 
   // 다음 매도 차수 인덱스 (manualOverride 종목은 sellPlans만 보고 판단)
   const nextSellIdx = local.sellPlans.findIndex((s, i) => !s.filled && !sellsByDate[i]);
@@ -3497,43 +3496,58 @@ export default function StockDetail({
             {(local.sellsSinceLastBuy || 0) >= 3 && local.rule !== 'B' && (local.totalQuantity || 0) > 0 && <span className={styles.chip}>룰B 전환 가능</span>}
           </div>
 
-          {/* 미분류 매도 영역: 현재 라운드에서만 표시 */}
-          {isCurrentRound && unmappedTrades.length > 0 && (
-            <div className={styles.unmappedSection}>
-              <div className={styles.unmappedHeader}>
-                🔄 미분류 매도 — <strong>{unmappedSellQty.toLocaleString()}주</strong> ({unmappedTrades.length}건)
+          {/* 미분류 매도 영역: 현재 보고 있는 라운드 기간 내 미분류만 표시 */}
+          {(() => {
+            // ✅ 라운드 필터: 미분류 매도를 현재 보는 라운드(thisBuyDate~nextBuyDate) 기간 내 것만
+            //    (3차 라운드인데 2차 라운드 매도가 미분류로 뜨던 문제 해결 — 흥구석유 5/12 케이스)
+            const normD = (d: string) => {
+              if (!d) return '';
+              if (d.length === 8 && !d.includes('-')) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+              return d;
+            };
+            const roundUnmapped = unmappedTrades.filter((t) => {
+              const d = normD(t.date);
+              return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
+            });
+            if (roundUnmapped.length === 0) return null;
+            const roundUnmappedQty = roundUnmapped.reduce((s, t) => s + t.quantity, 0);
+            return (
+              <div className={styles.unmappedSection}>
+                <div className={styles.unmappedHeader}>
+                  🔄 미분류 매도 ({selectedBuyLevel}차 라운드) — <strong>{roundUnmappedQty.toLocaleString()}주</strong> ({roundUnmapped.length}건)
+                </div>
+                <div className={styles.unmappedHint}>
+                  이 라운드에서 실제 매도되었지만 수익매도/MA매도 어디에도 배정 안 된 매도건입니다.
+                  <br />
+                  태산매매법 5단계 초과 매도 또는 자동 매핑 누락 가능. 수동으로 분류해주세요.
+                </div>
+                {roundUnmapped.map((t, idx) => {
+                  const profitPct = local.avgPrice > 0
+                    ? ((t.price - local.avgPrice) / local.avgPrice) * 100
+                    : 0;
+                  return (
+                    <div key={idx} className={styles.unmappedRow}>
+                      <span className={styles.unmappedDate}>{t.date.slice(5)}</span>
+                      <span className={styles.unmappedPrice}>
+                        {t.price.toLocaleString()}원 × {t.quantity}주
+                        {local.avgPrice > 0 && (
+                          <span className={styles.unmappedProfit} style={{ color: profitPct >= 0 ? '#2e7d32' : '#c62828' }}>
+                            {' '}{profitPct >= 0 ? '+' : ''}{profitPct.toFixed(1)}%
+                          </span>
+                        )}
+                      </span>
+                      <button className={styles.unmappedBtnSell} onClick={() => moveUnmappedToSell(t)}>
+                        ↗ 수익매도로
+                      </button>
+                      <button className={styles.unmappedBtnMa} onClick={() => moveUnmappedToMa(t)}>
+                        📉 MA매도로
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
-              <div className={styles.unmappedHint}>
-                실제 매도되었지만 수익매도/MA매도 어디에도 배정 안 된 매도건입니다.
-                <br />
-                태산매매법 5단계 초과 매도 또는 자동 매핑 누락 가능. 수동으로 분류해주세요.
-              </div>
-              {unmappedTrades.map((t, idx) => {
-                const profitPct = local.avgPrice > 0
-                  ? ((t.price - local.avgPrice) / local.avgPrice) * 100
-                  : 0;
-                return (
-                  <div key={idx} className={styles.unmappedRow}>
-                    <span className={styles.unmappedDate}>{t.date.slice(5)}</span>
-                    <span className={styles.unmappedPrice}>
-                      {t.price.toLocaleString()}원 × {t.quantity}주
-                      {local.avgPrice > 0 && (
-                        <span className={styles.unmappedProfit} style={{ color: profitPct >= 0 ? '#2e7d32' : '#c62828' }}>
-                          {' '}{profitPct >= 0 ? '+' : ''}{profitPct.toFixed(1)}%
-                        </span>
-                      )}
-                    </span>
-                    <button className={styles.unmappedBtnSell} onClick={() => moveUnmappedToSell(t)}>
-                      ↗ 수익매도로
-                    </button>
-                    <button className={styles.unmappedBtnMa} onClick={() => moveUnmappedToMa(t)}>
-                      📉 MA매도로
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+            );
+          })()}
         </div>
 
       </div>{/* /plansRow */}
