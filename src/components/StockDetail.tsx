@@ -633,6 +633,7 @@ export default function StockDetail({
     const sells = local.sellsSinceLastBuy || 0;
     if (
       sells >= 3 &&
+      (local.totalQuantity || 0) > 0 && // ✅ 매매완료(보유 0) 종목은 룰B 전환 제외
       local.rule !== 'B' &&
       !local.ruleBAutoSwitched &&
       (local.referencePeakPrice || 0) > 0
@@ -640,7 +641,7 @@ export default function StockDetail({
       update({ rule: 'B', ruleBAutoSwitched: true }, true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [local.sellsSinceLastBuy, local.rule, local.ruleBAutoSwitched, local.referencePeakPrice]);
+  }, [local.sellsSinceLastBuy, local.totalQuantity, local.rule, local.ruleBAutoSwitched, local.referencePeakPrice]);
 
   // 룰B 시작점(기준 최고가) 편집 드래프트 — 저장 버튼으로 명시 커밋
   const [peakDraft, setPeakDraft] = useState<string>('');
@@ -1980,7 +1981,7 @@ export default function StockDetail({
         >
           룰B (저점 -10%)
         </button>
-        {(local.sellsSinceLastBuy || 0) >= 3 && local.rule === 'A' && (
+        {(local.sellsSinceLastBuy || 0) >= 3 && local.rule === 'A' && (local.totalQuantity || 0) > 0 && (
           <span className={styles.chip}>룰B 전환 가능</span>
         )}
         {local.rule === 'B' && (local.bottomPrice || 0) === 0 && (
@@ -3493,7 +3494,7 @@ export default function StockDetail({
           </table>
           <div className={styles.sellNote}>
             누적 매도: {actualSells.length}건 · 마지막 매수 후 {local.sellsSinceLastBuy || 0}회
-            {(local.sellsSinceLastBuy || 0) >= 3 && local.rule !== 'B' && <span className={styles.chip}>룰B 전환 가능</span>}
+            {(local.sellsSinceLastBuy || 0) >= 3 && local.rule !== 'B' && (local.totalQuantity || 0) > 0 && <span className={styles.chip}>룰B 전환 가능</span>}
           </div>
 
           {/* 미분류 매도 영역: 현재 라운드에서만 표시 */}
