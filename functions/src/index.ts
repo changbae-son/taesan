@@ -4744,39 +4744,30 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   // 1단계: 명시적 trade.id 흡수 (qty 추적 — 부분 분할 지원)
   // 한 trade를 여러 슬롯이 공유 가능: 광전자 5/7 160주 → +5% 80주 + ma20 80주
-  // 슬롯의 filledQuantity가 그 trade에서 차지한 점유분
+  //
+  // ✅ 근본 수정 (중복흡수 차단):
+  //   - manualOverride 슬롯 OR 다중참조(가중평균) 슬롯의 trade는 hardConsumedIds로 완전 제외
+  //     → 자동매핑/다른 슬롯이 절대 재사용 못 함 (흥구석유: +5% 단일 수정 후 reconcile이
+  //       매도를 +5%에 중복 흡수해 205주로 부풀던 버그 차단)
+  //   - 단일참조 + 비수동 슬롯만 부분분할 점유량(consumedQtyByTrade) 추적
+  const hardConsumedIds = new Set<string>();
   const consumedQtyByTrade: Record<string, number> = {};
-  for (const sp of sellPlans) {
-    if (Array.isArray(sp.consumedTradeIds) && sp.consumedTradeIds.length > 0) {
-      const perTradeQty = (Number(sp.filledQuantity) || 0) / sp.consumedTradeIds.length;
-      // 단일 trade 참조면 그 슬롯의 filledQuantity 전부 점유
-      // 여러 trade 참조면 (가중평균 케이스) → 각 trade의 전체 qty가 흡수됨
-      if (sp.consumedTradeIds.length === 1) {
-        // 단일 참조 (부분 분할 가능)
-        const id = String(sp.consumedTradeIds[0]);
-        consumedQtyByTrade[id] = (consumedQtyByTrade[id] || 0) + (Number(sp.filledQuantity) || 0);
-      } else {
-        // 다중 참조 (가중평균 합산) → 각 trade의 전체 qty가 이미 흡수된 것으로 간주
-        // (이전 reconcile에서 그렇게 매핑됐기 때문)
-        for (const id of sp.consumedTradeIds) {
-          consumedQtyByTrade[String(id)] = (consumedQtyByTrade[String(id)] || 0) + Infinity;
-        }
-        // perTradeQty 미사용 방지
-        void perTradeQty;
-      }
+  const registerSlot = (ids: any, qty: number, isManual: boolean) => {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    if (isManual || ids.length > 1) {
+      // 수동 편집 또는 다중참조(가중평균) → trade 전체를 hard 점유 (재사용 차단)
+      for (const id of ids) if (id) hardConsumedIds.add(String(id));
+    } else {
+      // 단일참조 + 비수동 → 부분분할 점유량 추적
+      const id = String(ids[0]);
+      consumedQtyByTrade[id] = (consumedQtyByTrade[id] || 0) + qty;
     }
+  };
+  for (const sp of sellPlans) {
+    registerSlot(sp.consumedTradeIds, Number(sp.filledQuantity) || 0, sp.manualOverride === true);
   }
   for (const m of maSellsArr) {
-    if (Array.isArray(m.consumedTradeIds) && m.consumedTradeIds.length > 0) {
-      if (m.consumedTradeIds.length === 1) {
-        const id = String(m.consumedTradeIds[0]);
-        consumedQtyByTrade[id] = (consumedQtyByTrade[id] || 0) + (Number(m.quantity) || 0);
-      } else {
-        for (const id of m.consumedTradeIds) {
-          consumedQtyByTrade[String(id)] = (consumedQtyByTrade[String(id)] || 0) + Infinity;
-        }
-      }
-    }
+    registerSlot(m.consumedTradeIds, Number(m.quantity) || 0, m.manualOverride === true);
   }
 
   // 2단계: 명시적 매칭 안 된 manualOverride/maSells의 fallback 수량 계산
@@ -4794,10 +4785,10 @@ async function reconcileStockPlans(stockName: string): Promise<{
   }, 0);
   const consumedByManualQty = consumedByManualSell + consumedByMaSell;
 
-  // 3단계: tradesToMap 구성 — trade별 remaining qty 계산 후 fallback skip
-  // remaining = trade.quantity - consumedQtyByTrade[id]
+  // 3단계: tradesToMap 구성 — hardConsumedIds 완전 제외 + 단일참조 부분분할 remain
   const remainingTrades: any[] = [];
   for (const t of sortedSells) {
+    if (hardConsumedIds.has(String(t.id))) continue; // ✅ 수동/다중참조 trade 완전 제외
     const tQty = Number(t.quantity) || 0;
     const consumed = consumedQtyByTrade[String(t.id)] || 0;
     const remain = tQty - consumed;
