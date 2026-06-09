@@ -155,3 +155,37 @@ N차 rule = (N-1차 매수 직후 ~ N차 매수 직전) 매도 회수 >= 3 ? 'B'
    - L3=A라 매수가엔 영향 없으나 향후 룰B 차수 진입 시 점검
 3. **STX그린로지스 매수 19주 과다** (kiwoom 343 vs 매핑 324)
 4. **흥구석유 avgPrice 15,346 키움 대조**
+
+---
+
+## ✅ 2026-06-09 — 방안 B: 매도 trade 라운드+슬롯 태깅 (근본 해결 완료)
+
+### 문제 (흥구석유/기산텔레콤)
+통합 sellPlans 5슬롯이 다회 라운드 매도를 못 담아, roundView(표시)와
+consumedTradeIds(미분류 감지)가 불일치 → 같은 매도가 +5%/미분류 양쪽 중복.
+
+### 해결: 1 매도 trade = 1 라운드 + 1 슬롯
+- Trade에 sellRound(라운드) + sellSlot('+5%'|...|'MA20'|'unmapped')
+- 매도일 직전 매수차수=라운드, 라운드평단 대비 수익률 band=슬롯
+
+### commit
+- Phase 1 (de65072): 태깅 인프라 computeSellTags + migrateSellTags
+- Phase 2 (c7af2a7): 미분류 감지 태그 기반 + manualSellEdit sellSlot 동기화
+- Phase 3 (e07ff19): roundView 슬롯 태그 기반 (가격구간 추측 제거)
+- Phase 3.5 (08041d4): reconcile 신규 매도 자동 태깅
+
+### featureFlag: tradeTagBasedMapping = true (활성)
+- 롤백: false → 기존 consumedTradeIds 로직
+- 백업: stocks_backup_pre-trade-tagging_2026-06-09T02-26-05
+
+### 검증
+- 기산텔레콤: 5/22→1차/+5%, 1차 미분류 0 (중복 해결)
+- 흥구석유: 라운드별 정확 분리 (1차/2차/3차)
+- 전종목 237 매도 태깅, reconcile 후 100% 유지
+
+### 🔲 Phase 4 (선택, 미진행 — 리스크 있음)
+레거시 consumedTradeIds 기반 로직 제거:
+- reconcileStockPlans 매도 매핑(hardConsumedIds 등) 단순화
+- sellPlans/maSells를 "태그된 trade 집계" 파생값으로
+- ⚠️ featureFlag OFF 호환 깨짐 → 충분한 안정화 후 진행 권장
+- 현재는 태그(신) + consumedTradeIds(구) 병행 유지 (안전)
