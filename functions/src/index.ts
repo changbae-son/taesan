@@ -5597,6 +5597,176 @@ export const diagPlansConsistency = functions
     });
   });
 
+// ═══════════════════════════════════════════════════════════════
+// 방안 B: 매도 trade 라운드+슬롯 태깅 (근본적 중복 차단)
+// ═══════════════════════════════════════════════════════════════
+//
+// 각 매도 trade에 sellRound(라운드) + sellSlot(차수)를 직접 기록.
+// 1 매도 trade = 1 라운드 + 1 슬롯 → 같은 매도가 두 곳에 뜨는 중복 물리적 불가.
+//
+// 태깅 규칙:
+//   sellRound = 매도일 직전 마지막 매수 차수 (1차 라운드, 2차 라운드 ...)
+//   sellSlot  = 라운드 평단 대비 수익률 band
+//     · profit < 2.5%  → 'unmapped' (손실/MA 매도 후보 — 사용자가 MA로 분류)
+//     · 2.5~7.5%       → '+5%'
+//     · 7.5~12.5%      → '+10%'
+//     · 12.5~17.5%     → '+15%'
+//     · 17.5~22.5%     → '+20%'
+//     · 22.5%+         → '+25%'
+//
+// 같은 (round, slot)에 여러 trade(부분체결)는 정상 — UI에서 합산 표시.
+
+interface SellTagResult {
+  tradeId: string;
+  date: string;
+  price: number;
+  quantity: number;
+  sellRound: number;
+  sellSlot: string;
+}
+
+function computeSellTags(
+  buyTrades: Array<{date: string; price: number; quantity: number}>,
+  sellTrades: Array<{id: string; date: string; price: number; quantity: number}>
+): SellTagResult[] {
+  const normD = (d: string): string => {
+    if (!d) return "";
+    if (d.length === 8 && !d.includes("-")) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    return d;
+  };
+  // 매수 이벤트 (날짜별 그룹 → 라운드)
+  const buyByDate: Record<string, {qty: number; amt: number}> = {};
+  for (const b of buyTrades) {
+    const d = normD(b.date);
+    if (!d) continue;
+    const q = Number(b.quantity) || 0;
+    const p = Number(b.price) || 0;
+    if (q <= 0) continue;
+    if (!buyByDate[d]) buyByDate[d] = {qty: 0, amt: 0};
+    buyByDate[d].qty += q;
+    buyByDate[d].amt += p * q;
+  }
+  const buyDates = Object.keys(buyByDate).sort();
+
+  // 매도일 시점의 라운드 번호 + 누적 평단
+  const roundAndAvgAt = (sellDate: string): {round: number; avg: number} => {
+    let round = 0;
+    let cumAmt = 0;
+    let cumQty = 0;
+    for (let i = 0; i < buyDates.length; i++) {
+      if (buyDates[i] <= sellDate) {
+        round = i + 1; // i번째 매수일 = (i+1)차 라운드
+        cumAmt += buyByDate[buyDates[i]].amt;
+        cumQty += buyByDate[buyDates[i]].qty;
+      }
+    }
+    const avg = cumQty > 0 ? cumAmt / cumQty : 0;
+    return {round: Math.max(1, round), avg};
+  };
+
+  const bandSlot = (profitPct: number): string => {
+    if (profitPct < 2.5) return "unmapped"; // 손실/MA 후보
+    if (profitPct < 7.5) return "+5%";
+    if (profitPct < 12.5) return "+10%";
+    if (profitPct < 17.5) return "+15%";
+    if (profitPct < 22.5) return "+20%";
+    return "+25%";
+  };
+
+  const results: SellTagResult[] = [];
+  for (const t of sellTrades) {
+    const sd = normD(t.date);
+    const {round, avg} = roundAndAvgAt(sd);
+    const price = Number(t.price) || 0;
+    const profitPct = avg > 0 ? (price / avg - 1) * 100 : 0;
+    const slot = bandSlot(profitPct);
+    results.push({
+      tradeId: t.id,
+      date: sd,
+      price,
+      quantity: Number(t.quantity) || 0,
+      sellRound: round,
+      sellSlot: slot,
+    });
+  }
+  return results;
+}
+
+/**
+ * 매도 trade 태깅 마이그레이션 (전 종목 또는 단일 종목)
+ * POST /migrateSellTags  body: { stockName?: string }
+ *
+ * 각 매도 trade에 sellRound + sellSlot 기록.
+ * MA 매도는 기존 maSells consumedTradeIds 기반으로 'MA20'/'MA60'/'MA120' 보존.
+ */
+export const migrateSellTags = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 540, memory: "512MB"})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const onlyStock = (req.body && req.body.stockName) || null;
+
+        // 종목별 처리
+        const stocksSnap = await db.collection("stocks").get();
+        let processedStocks = 0;
+        let taggedTrades = 0;
+        const sample: any[] = [];
+
+        for (const doc of stocksSnap.docs) {
+          const stock = doc.data();
+          const name = stock.name;
+          if (!name) continue;
+          if (onlyStock && name !== onlyStock) continue;
+
+          const tradesSnap = await db.collection("trades").where("stockName", "==", name).get();
+          if (tradesSnap.empty) continue;
+
+          const buyTrades: any[] = [];
+          const sellTrades: any[] = [];
+          tradesSnap.forEach((d) => {
+            const t = d.data();
+            if (t.type === "buy") buyTrades.push({date: t.date, price: t.price, quantity: t.quantity});
+            else if (t.type === "sell") sellTrades.push({id: d.id, date: t.date, price: t.price, quantity: t.quantity});
+          });
+          if (sellTrades.length === 0) continue;
+
+          // MA 매도 trade id → MA 슬롯 매핑 (기존 maSells consumedTradeIds 기반)
+          const maSlotByTradeId: Record<string, string> = {};
+          for (const m of (Array.isArray(stock.maSells) ? stock.maSells : [])) {
+            if (m.filled && Array.isArray(m.consumedTradeIds)) {
+              for (const id of m.consumedTradeIds) {
+                maSlotByTradeId[String(id)] = `MA${m.ma}`;
+              }
+            }
+          }
+
+          const tags = computeSellTags(buyTrades, sellTrades);
+          const batch = db.batch();
+          for (const tag of tags) {
+            // MA 매도면 MA 슬롯 우선 (band 분류보다)
+            const finalSlot = maSlotByTradeId[tag.tradeId] || tag.sellSlot;
+            batch.update(db.collection("trades").doc(tag.tradeId), {
+              sellRound: tag.sellRound,
+              sellSlot: finalSlot,
+            });
+            taggedTrades++;
+            if (sample.length < 15) {
+              sample.push({stock: name, date: tag.date, price: tag.price, qty: tag.quantity, round: tag.sellRound, slot: finalSlot});
+            }
+          }
+          await batch.commit();
+          processedStocks++;
+        }
+
+        res.json({success: true, processedStocks, taggedTrades, sample});
+      } catch (error: any) {
+        console.error("[migrateSellTags] 오류:", error.message);
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 /**
  * 진단: 종목코드로 trades 조회 (동명이인/잘못된 매핑 추적용)
  * GET /diagByCode?code=153460

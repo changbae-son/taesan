@@ -227,6 +227,12 @@ export interface Trade {
   tags: string[];
   // ✅ Phase 1a: 신용/융자거래 여부 (키움 응답의 별표 prefix로 감지)
   isCreditTrade?: boolean;
+  // ✅ 방안 B (매도 trade 태깅): 각 매도가 속한 라운드 + 차수 슬롯
+  //   sellRound: 매도일 직전 마지막 매수 차수 (1=1차 라운드, 2=2차 라운드 ...)
+  //   sellSlot: '+5%'|'+10%'|'+15%'|'+20%'|'+25%'|'MA20'|'MA60'|'MA120'|'unmapped'
+  //   1 매도 trade = 1 라운드 + 1 슬롯 → 중복 물리적 불가, 미분류=태그 없거나 'unmapped'
+  sellRound?: number;
+  sellSlot?: string;
   createdAt: number;
 }
 
