@@ -1581,15 +1581,38 @@ export default function StockDetail({
       }
     }
 
-    const sellSlots = percents.map((p, i) => {
-      const trade = slotSells[i];
-      const targetPrice = targetPrices[i];
-      if (trade) {
-        return { percent: p, price: targetPrice, quantity: trade.quantity, filled: true,
-          filledDate: normDate(trade.date), filledPrice: trade.price };
-      }
-      return { percent: p, price: targetPrice, quantity: slotQty, filled: false, filledDate: '' };
-    });
+    // ✅ 방안 B Phase 3: tradeTagBasedMapping ON이면 trade.sellRound/sellSlot 기반 슬롯 집계
+    //   각 +p% 슬롯 = sellRound===현재라운드 && sellSlot===`+p%`인 매도 trade 합산
+    //   → 가격 구간 추측 없이 정확 (흥구석유 6/08이 +5%에 잘못 가던 문제 근본 해결)
+    const sellSlots = featureFlags.tradeTagBasedMapping
+      ? percents.map((p, i) => {
+          const targetPrice = targetPrices[i];
+          const slotTrades = actualSells.filter(
+            (t: any) => (t.sellRound || 0) === selectedBuyLevel && t.sellSlot === `+${p}%`
+          );
+          if (slotTrades.length === 0) {
+            return { percent: p, price: targetPrice, quantity: slotQty, filled: false, filledDate: '' };
+          }
+          const qty = slotTrades.reduce((s: number, t: any) => s + (Number(t.quantity) || 0), 0);
+          const amt = slotTrades.reduce((s: number, t: any) => s + (Number(t.price) || 0) * (Number(t.quantity) || 0), 0);
+          const lastDate = slotTrades.reduce((m: string, t: any) => {
+            const d = normDate(t.date);
+            return d > m ? d : m;
+          }, '');
+          return {
+            percent: p, price: targetPrice, quantity: qty, filled: true,
+            filledDate: lastDate, filledPrice: qty > 0 ? Math.round(amt / qty) : 0,
+          };
+        })
+      : percents.map((p, i) => {
+          const trade = slotSells[i];
+          const targetPrice = targetPrices[i];
+          if (trade) {
+            return { percent: p, price: targetPrice, quantity: trade.quantity, filled: true,
+              filledDate: normDate(trade.date), filledPrice: trade.price };
+          }
+          return { percent: p, price: targetPrice, quantity: slotQty, filled: false, filledDate: '' };
+        });
 
     return { roundAvgPrice, holdingAtStart, slotQty, sellSlots, roundSells, thisBuyDate, nextBuyDate };
   })();
