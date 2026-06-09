@@ -6120,6 +6120,9 @@ export const inspectStockTrades = functions
             price: data.price,
             quantity: data.quantity,
             memo: data.memo,
+            isCreditTrade: data.isCreditTrade,
+            sellRound: data.sellRound,
+            sellSlot: data.sellSlot,
             createdAt: data.createdAt,
           };
         });
@@ -8582,6 +8585,37 @@ export const manualSellEdit = functions
           sellCount,
           updatedAt: Date.now(),
         });
+
+        // ✅ 방안 B: 편집된 슬롯의 consumedTradeIds trade에 sellSlot 태그 동기화
+        //   사용자가 미분류 매도를 +N%/MA로 분류하면, 그 trade의 sellSlot도 함께 갱신
+        //   → 태그 기반 미분류 감지(tradeTagBasedMapping)와 일관 유지
+        try {
+          const tagBatch = db.batch();
+          let tagCount = 0;
+          for (const e of sellPlanEdits) {
+            const ids = e.set?.consumedTradeIds;
+            if (Array.isArray(ids)) {
+              for (const id of ids) {
+                if (!id) continue;
+                tagBatch.update(db.collection("trades").doc(String(id)), {sellSlot: `+${e.percent}%`});
+                tagCount++;
+              }
+            }
+          }
+          for (const e of maSellEdits) {
+            const ids = e.set?.consumedTradeIds;
+            if (Array.isArray(ids)) {
+              for (const id of ids) {
+                if (!id) continue;
+                tagBatch.update(db.collection("trades").doc(String(id)), {sellSlot: `MA${e.ma}`});
+                tagCount++;
+              }
+            }
+          }
+          if (tagCount > 0) await tagBatch.commit();
+        } catch (e: any) {
+          console.warn(`[manualSellEdit] sellSlot 태그 동기화 실패: ${e.message}`);
+        }
 
         // ✅ 사용자 편집 직후 reconcile 자동 실행 (옵션 A: 원천 해결):
         // - manualOverride=true 슬롯이 trade를 흡수한 후 옛 자동매핑이 stale로 남는 케이스 자동 청소

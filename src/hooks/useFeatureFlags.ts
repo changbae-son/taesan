@@ -14,6 +14,8 @@ export interface FeatureFlags {
   creditPositionsEnabled?: boolean;
   creditTabEnabled?: boolean;
   creditMaturityAlertEnabled?: boolean;
+  // 방안 B: 매도 trade 라운드+슬롯 태그 기반 매핑 (미분류 감지/슬롯 표시)
+  tradeTagBasedMapping?: boolean;
 }
 
 export function useFeatureFlags(): FeatureFlags {
@@ -27,6 +29,7 @@ export function useFeatureFlags(): FeatureFlags {
           creditPositionsEnabled: data.creditPositionsEnabled === true,
           creditTabEnabled: data.creditTabEnabled === true,
           creditMaturityAlertEnabled: data.creditMaturityAlertEnabled === true,
+          tradeTagBasedMapping: data.tradeTagBasedMapping === true,
         });
       } else {
         setFlags({});

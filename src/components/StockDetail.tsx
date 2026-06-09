@@ -3498,17 +3498,31 @@ export default function StockDetail({
 
           {/* 미분류 매도 영역: 현재 보고 있는 라운드 기간 내 미분류만 표시 */}
           {(() => {
-            // ✅ 라운드 필터: 미분류 매도를 현재 보는 라운드(thisBuyDate~nextBuyDate) 기간 내 것만
-            //    (3차 라운드인데 2차 라운드 매도가 미분류로 뜨던 문제 해결 — 흥구석유 5/12 케이스)
             const normD = (d: string) => {
               if (!d) return '';
               if (d.length === 8 && !d.includes('-')) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
               return d;
             };
-            const roundUnmapped = unmappedTrades.filter((t) => {
-              const d = normD(t.date);
-              return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
-            });
+            // ✅ 방안 B: tradeTagBasedMapping ON이면 trade.sellRound/sellSlot 기반 미분류
+            //    (sellRound === 현재 라운드 && sellSlot === 'unmapped'|미설정)
+            //    → 1 매도 = 1 분류라 roundView 슬롯과 미분류 중복 불가 (근본 해결)
+            // OFF면 기존 consumedTradeIds 기반 + 라운드 기간 필터 (흥구석유 5/12 케이스)
+            let roundUnmapped: Array<{ id: string; date: string; price: number; quantity: number }>;
+            if (featureFlags.tradeTagBasedMapping) {
+              roundUnmapped = trades
+                .filter((t) =>
+                  t.stockName === local.name &&
+                  t.type === 'sell' &&
+                  (t.sellRound || 0) === selectedBuyLevel &&
+                  (!t.sellSlot || t.sellSlot === 'unmapped')
+                )
+                .map((t) => ({ id: t.id, date: t.date, price: t.price, quantity: t.quantity }));
+            } else {
+              roundUnmapped = unmappedTrades.filter((t) => {
+                const d = normD(t.date);
+                return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
+              });
+            }
             if (roundUnmapped.length === 0) return null;
             const roundUnmappedQty = roundUnmapped.reduce((s, t) => s + t.quantity, 0);
             return (
