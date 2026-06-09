@@ -4508,6 +4508,32 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   const trades = tradesSnap.docs.map((d) => ({id: d.id, ...(d.data() as any)}));
 
+  // ✅ 방안 B: 매도 trade 자동 태깅 (sellSlot 없는 신규 매도만)
+  //   키움 동기화로 들어온 새 매도가 라운드+슬롯 태그 없이 미분류로 뜨는 것 방지.
+  //   사용자 수동 분류한 trade(sellSlot 있음)는 보존.
+  try {
+    const buyTradesForTag = trades
+      .filter((t: any) => t.type === "buy")
+      .map((t: any) => ({date: t.date, price: t.price, quantity: t.quantity}));
+    const untaggedSells = trades
+      .filter((t: any) => t.type === "sell" && !t.sellSlot)
+      .map((t: any) => ({id: t.id, date: t.date, price: t.price, quantity: t.quantity}));
+    if (untaggedSells.length > 0 && buyTradesForTag.length > 0) {
+      const tags = computeSellTags(buyTradesForTag, untaggedSells);
+      const tagBatch = db.batch();
+      for (const tag of tags) {
+        tagBatch.update(db.collection("trades").doc(tag.tradeId), {
+          sellRound: tag.sellRound,
+          sellSlot: tag.sellSlot,
+        });
+      }
+      await tagBatch.commit();
+      console.log(`[reconcile/태깅] ${stockName} 신규 매도 ${tags.length}건 자동 태깅`);
+    }
+  } catch (e: any) {
+    console.warn(`[reconcile/태깅] ${stockName} 자동 태깅 실패: ${e.message}`);
+  }
+
   // 매수: 날짜 그룹핑 (같은 날 매수 = 같은 차수)
   const buyByDate: Record<string, {qty: number; amt: number}> = {};
 
