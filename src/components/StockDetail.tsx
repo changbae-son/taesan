@@ -2851,6 +2851,27 @@ export default function StockDetail({
               )}
             </div>
             {(() => {
+              // ✅ 방안 B: tradeTagBasedMapping ON이면 매도 trade 태그로 통계
+              //   현재 보는 라운드(selectedBuyLevel)의 분류된 매도 trade를 집계
+              //   → sellsByDate 순차배정으로 MA매도가 +N% 슬롯에도 중복 카운트되던 버그 차단
+              //   (앱클론 4회 20주 → 3회 15주, 잔여 5 → 10 정정)
+              if (featureFlags.tradeTagBasedMapping) {
+                const roundSells = actualSells.filter(
+                  (t: any) => (t.sellRound || 0) === selectedBuyLevel && t.sellSlot && t.sellSlot !== 'unmapped'
+                );
+                const cnt = roundSells.length;
+                const qty = roundSells.reduce((s: number, t: any) => s + (Number(t.quantity) || 0), 0);
+                const amt = roundSells.reduce((s: number, t: any) => s + (Number(t.price) || 0) * (Number(t.quantity) || 0), 0);
+                const remQty = local.totalQuantity || 0; // 종목 전체 잔여 (백엔드 정확값)
+                return (
+                  <span className={styles.planStatsSell}>
+                    {cnt > 0
+                      ? `${cnt}회 · ${qty.toLocaleString()}주 · ${Math.round(amt / 10000).toLocaleString()}만원 회수`
+                      : (isCurrentRound ? '매도 없음' : '해당 라운드 매도 없음')}
+                    {isCurrentRound && ` · 잔여 ${remQty.toLocaleString()}주`}
+                  </span>
+                );
+              }
               if (!isCurrentRound) {
                 // 복기 모드: 해당 라운드 수익매도 + MA매도 통계
                 let cnt = 0, qty = 0, amt = 0;
