@@ -3347,27 +3347,6 @@ export default function StockDetail({
                             ? `잔여 ${remainingAfter.toLocaleString()}`
                             : (remaining > 0 ? `잔여 ${remaining.toLocaleString()}` : '-')}
                         </span>
-                        {/* 차수별 매도 분배 (신용/현금 분리 매도용) — 미체결·현재라운드·다차수일 때 */}
-                        {!isFilled && isCurrentRound && planQty > 0 && (() => {
-                          const dist = distributeSell(planQty);
-                          if (!dist) return null;
-                          return (
-                            <span style={{ display: 'block', marginTop: 3, fontSize: 10, lineHeight: 1.5 }}>
-                              {dist.map((l, di) => (
-                                <span key={di} style={{ display: 'inline-block', marginRight: 6, whiteSpace: 'nowrap' }}>
-                                  <b style={{ color: '#1565c0' }}>{l.level}차 {l.sellQty.toLocaleString()}주</b>
-                                  {l.credit && (
-                                    <span style={{
-                                      marginLeft: 2, padding: '0 3px', borderRadius: 3, fontSize: 9, fontWeight: 700,
-                                      background: l.credit === 'credit' ? '#fff3e0' : '#e8f5e9',
-                                      color: l.credit === 'credit' ? '#e65100' : '#2e7d32',
-                                    }}>{l.credit === 'credit' ? '신용' : '현금'}</span>
-                                  )}
-                                </span>
-                              ))}
-                            </span>
-                          );
-                        })()}
                       </td>
                       {/* 체결 + MA버튼 + 수동편집 */}
                       <td className={styles.btnCell}>
@@ -3600,6 +3579,33 @@ export default function StockDetail({
                       </td>
                     </tr>
                   );
+
+                  // 차수별 매도 분배 (신용/현금 분리 매도용) — 전체폭 1줄 서브행
+                  //   미체결·현재라운드·다차수일 때만. 비례 분배 수량 + 신용/현금 배지.
+                  if (!isFilled && isCurrentRound && planQty > 0) {
+                    const dist = distributeSell(planQty);
+                    if (dist) {
+                      rows.push(
+                        <tr key={`${i}-dist`}>
+                          <td colSpan={5} style={{ padding: '1px 4px 5px 10px', borderBottom: '1px solid #f0f0f0' }}>
+                            <span style={{ fontSize: 10, color: '#999', marginRight: 8 }}>↳ 차수별 매도</span>
+                            {dist.map((l, di) => (
+                              <span key={di} style={{ display: 'inline-block', marginRight: 12, whiteSpace: 'nowrap', fontSize: 11 }}>
+                                <b style={{ color: '#1565c0' }}>{l.level}차 {l.sellQty.toLocaleString()}주</b>
+                                {l.credit && (
+                                  <span style={{
+                                    marginLeft: 3, padding: '0 4px', borderRadius: 3, fontSize: 9, fontWeight: 700,
+                                    background: l.credit === 'credit' ? '#fff3e0' : '#e8f5e9',
+                                    color: l.credit === 'credit' ? '#e65100' : '#2e7d32',
+                                  }}>{l.credit === 'credit' ? '신용' : '현금'}</span>
+                                )}
+                              </span>
+                            ))}
+                          </td>
+                        </tr>
+                      );
+                    }
+                  }
 
                   // 이 sellPlan 다음에 끼어드는 MA 매도들
                   displayMaSells.forEach((m, mi) => {
