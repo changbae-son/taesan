@@ -5939,6 +5939,66 @@ export const diagDailyChart = functions
     });
   });
 
+// Phase 2b 대상 전수조사: GET /diagRuleBStages
+//   단일 bottomPrice로는 부정확한 종목 = 룰B 차수가 2+ OR 룰B 차수 이후 매도 존재
+//   (룰B 차수별로 윈도우[refPeak~그 차수 직전 매도]가 달라 차수별 저점 필요)
+export const diagRuleBStages = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const snap = await db.collection("stocks").get();
+        const norm = (d: string) => (d && d.length === 8 && !d.includes("-")) ?
+          `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : (d || "");
+        const flagged: any[] = [];
+        const allRuleB: any[] = [];
+        snap.forEach((doc) => {
+          const s = doc.data() as any;
+          const buyPlans = s.buyPlans || [];
+          const ruleBBuys = buyPlans.filter((b: any) => b?.rule === "B" && b?.filled && b?.filledDate)
+            .map((b: any) => ({level: b.level, date: norm(String(b.filledDate))}));
+          if (ruleBBuys.length === 0) return;
+
+          // 매도일 모음
+          const sellDates: string[] = [];
+          for (const p of (s.sellPlans || [])) {
+            if ((p?.filled || (p?.filledQuantity || 0) > 0) && p.filledDate) sellDates.push(norm(String(p.filledDate)));
+          }
+          for (const m of (s.maSells || [])) {
+            if (m?.filled && m.filledDate) sellDates.push(norm(String(m.filledDate)));
+          }
+
+          // 각 룰B 차수 이후 매도 존재 여부
+          const stagesWithLaterSells = ruleBBuys.filter((rb: any) =>
+            sellDates.some((sd) => sd > rb.date));
+          const risk = ruleBBuys.length >= 2 || stagesWithLaterSells.length > 0;
+
+          const row = {
+            name: s.name, code: s.code,
+            ruleBStageCount: ruleBBuys.length,
+            ruleBStages: ruleBBuys,
+            sellDates: sellDates.sort(),
+            stagesWithLaterSells: stagesWithLaterSells.map((r: any) => r.level),
+            bottomPrice: s.bottomPrice || null,
+            risk,
+          };
+          allRuleB.push(row);
+          if (risk) flagged.push(row);
+        });
+        res.json({
+          success: true,
+          totalRuleBStocks: allRuleB.length,
+          phase2bNeeded: flagged.length,
+          flagged,
+          allRuleB,
+        });
+      } catch (error: any) {
+        res.status(500).json({success: false, error: error.message});
+      }
+    });
+  });
+
 // 보유종목 룰B 상태 일괄 진단: GET /diagRuleBStatus
 //   각 보유종목의 rule / 매도카운트 / 기준최고가 / 저점 + 룰B 후보(미전환) 플래그
 export const diagRuleBStatus = functions
