@@ -1356,6 +1356,39 @@ export default function StockDetail({
     buysByDate.push({ date: d, ...buyDateMap[d] });
   });
 
+  // ─── 매도 차수별 분배 (신용/현금 포지션 분리 매도용) ───
+  // 각 매수 차수(체결)의 수량 + 신용/현금(trades.isCreditTrade)을 판별,
+  // 매도 수량을 보유 비중대로 비례 분배 → 키움 HTS에서 차수별로 정확히 매도.
+  const normDateLot = (d: string) => {
+    if (!d) return '';
+    if (d.length === 8 && !d.includes('-')) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    return d;
+  };
+  const buyLots = local.buyPlans
+    .filter((b) => b.filled && ((b.filledQuantity || b.quantity || 0) > 0))
+    .map((b) => {
+      const dd = normDateLot(b.filledDate || '');
+      const dayBuys = trades.filter((t) => t.type === 'buy'
+        && normDateLot(t.date || '') === dd
+        && t.stockName === local.name);
+      const credit: 'credit' | 'cash' | null = dayBuys.length === 0
+        ? null : (dayBuys.some((t) => t.isCreditTrade) ? 'credit' : 'cash');
+      return { level: b.level, qty: (b.filledQuantity || b.quantity || 0), credit };
+    });
+  const totalLotQty = buyLots.reduce((s, l) => s + l.qty, 0);
+  const creditByLevel: Record<number, 'credit' | 'cash' | null> = {};
+  buyLots.forEach((l) => { creditByLevel[l.level] = l.credit; });
+  // 비례 분배 (largest-remainder로 합계 보존)
+  const distributeSell = (sellQty: number) => {
+    if (buyLots.length <= 1 || totalLotQty <= 0 || sellQty <= 0) return null;
+    const exact = buyLots.map((l) => sellQty * l.qty / totalLotQty);
+    const floors = exact.map((e) => Math.floor(e));
+    const rem = sellQty - floors.reduce((s, n) => s + n, 0);
+    const order = exact.map((e, i) => ({ i, frac: e - Math.floor(e) })).sort((a, b) => b.frac - a.frac);
+    for (let k = 0; k < rem && k < order.length; k++) floors[order[k].i]++;
+    return buyLots.map((l, idx) => ({ ...l, sellQty: floors[idx] })).filter((l) => l.sellQty > 0);
+  };
+
   // 실제 평균단가 (체결 기반) - 계획가 기반(local.avgPrice)과 비교용
   const actualTotalQty = buysByDate.reduce((sum, b) => sum + b.qty, 0);
   const actualTotalAmt = buysByDate.reduce((sum, b) => sum + b.amt, 0);
@@ -2736,6 +2769,20 @@ export default function StockDetail({
                             </span>
                           );
                         })()}
+                        {/* 신용/현금 배지 (체결 차수, trades.isCreditTrade 기반) */}
+                        {bp.filled && creditByLevel[bp.level] && (
+                          <span
+                            style={{
+                              marginLeft: 4, fontSize: 10, fontWeight: 700, padding: '1px 5px', borderRadius: 4,
+                              background: creditByLevel[bp.level] === 'credit' ? '#fff3e0' : '#e8f5e9',
+                              color: creditByLevel[bp.level] === 'credit' ? '#e65100' : '#2e7d32',
+                              border: `1px solid ${creditByLevel[bp.level] === 'credit' ? '#ffb74d' : '#a5d6a7'}`,
+                            }}
+                            title={creditByLevel[bp.level] === 'credit' ? '신용 매수' : '현금 매수'}
+                          >
+                            {creditByLevel[bp.level] === 'credit' ? '신용' : '현금'}
+                          </span>
+                        )}
                         {i === nextBuyIdx && !bp.filled && (
                           <span className={styles.nextChip}>다음</span>
                         )}
@@ -3300,6 +3347,27 @@ export default function StockDetail({
                             ? `잔여 ${remainingAfter.toLocaleString()}`
                             : (remaining > 0 ? `잔여 ${remaining.toLocaleString()}` : '-')}
                         </span>
+                        {/* 차수별 매도 분배 (신용/현금 분리 매도용) — 미체결·현재라운드·다차수일 때 */}
+                        {!isFilled && isCurrentRound && planQty > 0 && (() => {
+                          const dist = distributeSell(planQty);
+                          if (!dist) return null;
+                          return (
+                            <span style={{ display: 'block', marginTop: 3, fontSize: 10, lineHeight: 1.5 }}>
+                              {dist.map((l, di) => (
+                                <span key={di} style={{ display: 'inline-block', marginRight: 6, whiteSpace: 'nowrap' }}>
+                                  <b style={{ color: '#1565c0' }}>{l.level}차 {l.sellQty.toLocaleString()}주</b>
+                                  {l.credit && (
+                                    <span style={{
+                                      marginLeft: 2, padding: '0 3px', borderRadius: 3, fontSize: 9, fontWeight: 700,
+                                      background: l.credit === 'credit' ? '#fff3e0' : '#e8f5e9',
+                                      color: l.credit === 'credit' ? '#e65100' : '#2e7d32',
+                                    }}>{l.credit === 'credit' ? '신용' : '현금'}</span>
+                                  )}
+                                </span>
+                              ))}
+                            </span>
+                          );
+                        })()}
                       </td>
                       {/* 체결 + MA버튼 + 수동편집 */}
                       <td className={styles.btnCell}>
