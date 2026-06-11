@@ -4081,12 +4081,20 @@ async function runRuleBTracker(codeFilter?: string): Promise<{checked: number; b
     return result;
   }
 
-  const stocksSnap = await db.collection("stocks").where("rule", "==", "B").get();
+  // 저점 계산 대상: 종목룰='B' OR 차수에 룰B 존재 OR 기준최고가 입력됨.
+  //   (STX처럼 종목룰='A'이지만 특정 차수만 룰B인 경우도 저점 필요)
+  const allStocksSnap = await db.collection("stocks").get();
+  const targetDocs = allStocksSnap.docs.filter((d) => {
+    const s = d.data() as any;
+    if (!s.code) return false;
+    const hasRuleBStage = Array.isArray(s.buyPlans) && s.buyPlans.some((b: any) => b?.rule === "B");
+    return s.rule === "B" || hasRuleBStage || (Number(s.referencePeakPrice) || 0) > 0;
+  });
   // 단일 종목 즉시 계산용 코드 필터 (시작점 입력 직후 호출)
   const codeClean = codeFilter ? codeFilter.replace(/^A/, "").trim() : "";
-  console.log(`[ruleB] 대상 종목 ${stocksSnap.size}개${codeClean ? ` (code 필터: ${codeClean})` : ""}`);
+  console.log(`[ruleB] 대상 종목 ${targetDocs.length}개${codeClean ? ` (code 필터: ${codeClean})` : ""}`);
 
-  for (const stockDoc of stocksSnap.docs) {
+  for (const stockDoc of targetDocs) {
     const stockData = stockDoc.data() as any;
     if (codeClean && String(stockData.code || "").replace(/^A/, "") !== codeClean) continue;
     if (!stockData.code) continue;
