@@ -153,11 +153,12 @@ export interface Stock {
   sellPlans: SellPlan[];
   maSells: MASell[];
   sellCount: number; // 누적 매도 횟수
-  buySignal?: 'signal' | 'waiting' | null; // 매수신호 상태
+  buySignal?: 'signal' | 'passed' | 'waiting' | null; // 매수신호 상태 (passed=신호지난)
   buySignalAt?: number; // 매수신호 체크 시간
   buySignalOpen?: number; // 당일 시가
-  buySignalSent?: boolean; // 해당 차수 첫 양봉 알림 발송 여부
+  buySignalSent?: boolean; // 해당 차수 첫 양봉 알림(텔레그램) 발송 여부 (지원 visit 단위)
   buySignalLevel?: number; // 알림 발송한 매수 차수
+  buySignalFiredLevel?: number | null; // 신호 발동 차수 (체결/+10% 이탈 전까지 유지 → '신호지난' 판정)
   sellSignalSent?: boolean; // 수동 매도 차수(25%+) 알림 발송 여부
   sellSignalLevel?: number; // 알림 발송한 매도 차수
   sellSignalAt?: number; // 수동 매도 알림 시간

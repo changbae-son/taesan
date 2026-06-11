@@ -71,10 +71,11 @@ function fmtAmt(n: number): string {
   return n.toLocaleString();
 }
 
-type GroupKey = 'signal' | 'waiting' | 'holding';
+type GroupKey = 'signal' | 'passed' | 'waiting' | 'holding';
 
 function getGroup(stock: Stock): GroupKey {
   if (stock.buySignal === 'signal') return 'signal';
+  if (stock.buySignal === 'passed') return 'passed';
   if (stock.buySignal === 'waiting') return 'waiting';
   return 'holding';
 }
@@ -102,7 +103,7 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
   });
 
   // 그룹별 분류
-  const grouped: Record<GroupKey, Stock[]> = { signal: [], waiting: [], holding: [] };
+  const grouped: Record<GroupKey, Stock[]> = { signal: [], passed: [], waiting: [], holding: [] };
   for (const stock of filtered) {
     grouped[getGroup(stock)].push(stock);
   }
@@ -151,6 +152,9 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
     return (getNextBuyGap(a) ?? 999) - (getNextBuyGap(b) ?? 999);
   });
 
+  // 신호지난: 기준가 근접한(눌림 가능성 큰) 순 — 다음매수가 gap 오름차순
+  grouped.passed.sort((a, b) => (getNextBuyGap(a) ?? 999) - (getNextBuyGap(b) ?? 999));
+
   // 보유중: 3단계 액션 중심 정렬
   // [Tier 0] 매도 임박 → sellGap 오름차순 (목표가에 가장 가까운 것 먼저)
   // [Tier 1] 수익권 보유 → 수익률 내림차순 (높은 수익 먼저, 25% 수동매도 준비)
@@ -179,6 +183,7 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
 
   const groupConfig: { key: GroupKey; label: string; icon: string; color: string }[] = [
     { key: 'signal', label: '매수신호', icon: '🔴', color: '#c62828' },
+    { key: 'passed', label: '매수신호 지난', icon: '🟡', color: '#f9a825' },
     { key: 'waiting', label: '매수대기', icon: '⏳', color: '#e65100' },
     { key: 'holding', label: '보유중', icon: '📊', color: '#1976d2' },
   ];
@@ -208,6 +213,10 @@ export default function StockList({ stocks, trades, onSelect }: Props) {
         <div className={`${styles.dashItem} ${styles.dashSignal}`}>
           <span className={styles.dashNum}>{grouped.signal.length}</span>
           <span className={styles.dashLabel}>매수신호</span>
+        </div>
+        <div className={styles.dashItem}>
+          <span className={styles.dashNum} style={{ color: '#f9a825' }}>{grouped.passed.length}</span>
+          <span className={styles.dashLabel}>신호지난</span>
         </div>
         <div className={`${styles.dashItem} ${styles.dashWaiting}`}>
           <span className={styles.dashNum}>{grouped.waiting.length}</span>

@@ -3617,155 +3617,157 @@ async function runBuySignalCheck(): Promise<string> {
         }
       }
 
-      // 3. 다음 매수가 계산 (실제 체결가 기준 - 태산매매법)
-      // Rule A: 이전 매수가 대비 -10% / Rule B(매도3회+): 저점 대비 -10%
-      const candidates: {name: string; code: string; nextBuyPrice: number; nextBuyLevel: number; currentPrice: number; quantity: number; docId: string; alreadySent: boolean}[] = [];
+      // 3. 4버킷 상태기계 (실제매매 관점)
+      //   기준가 = 다음 미체결 차수의 룰 기준가 (룰B 저점×0.9 / 룰A 직전실제×0.9)
+      //   🔴 매수신호  : 현재가 ≤ 기준가 AND 양봉(현재가>시가)  → 당일 매수
+      //   🟡 신호지난  : 신호이력(미체결) AND 기준가 < 현재가 ≤ 기준가×1.10  → 눌림/재진입 감시
+      //   ⏳ 매수대기  : 현재가 ≤ 기준가 AND 음봉             → 첫 양봉 대기
+      //   📊 보유중    : 현재가 > 기준가×1.10 (이력 리셋)
+      const PASSED_BAND = 1.10;
+      const evalList: any[] = [];     // 일반 보유 종목 상태평가 대상
+      const reentryList: any[] = [];  // 재진입 1차 후보
       for (const [name, stock] of Object.entries(stocks)) {
-        // 매매완료(totalQuantity=0) 종목은 일반 매수신호 대상 제외
-        // 단, 재진입 추적 ready 상태이면 별도 후보로 추가
+        // 매매완료(totalQuantity=0): 재진입 ready만 후보
         if (!stock.buyPlans || (stock.totalQuantity || 0) <= 0) {
-          // 재진입 ready 상태 → 1차 매수 양봉 감지 대상
           if (
             stock.reentry?.enabled &&
             stock.reentry?.status === "ready" &&
             stock.code &&
             stock.currentPrice > 0
           ) {
-            const alreadySent = stock.reentry?.signalSent === true;
-            candidates.push({
+            reentryList.push({
               name,
               code: stock.code,
               nextBuyPrice: stock.reentry.targetPrice,
-              nextBuyLevel: 1, // 재진입은 항상 1차
+              nextBuyLevel: 1,
               currentPrice: stock.currentPrice,
               quantity: stock.firstBuyQuantity || 0,
               docId: stock.docId,
-              alreadySent,
-              isReentry: true, // 재진입 마크
-            } as any);
+              alreadySent: stock.reentry?.signalSent === true,
+              isReentry: true,
+            });
           }
           continue;
         }
         const nextBuy = (stock.buyPlans || []).find((b: any) => !b.filled);
         if (!nextBuy || !stock.currentPrice || stock.currentPrice <= 0) continue;
 
-        // 다음 매수가 계산 — Rule A / Rule B 분기
+        // 기준가: 다음 차수의 룰(차수별 stamp)로 계산
         const filledPlans = (stock.buyPlans || []).filter((b: any) => b.filled);
         const lastFilledPrice = filledPlans.length > 0
           ? (filledPlans[filledPlans.length - 1].filledPrice || filledPlans[filledPlans.length - 1].price || 0)
           : 0;
-
-        let actualNextBuyPrice: number;
-        if (stock.rule === "B" && (stock.bottomPrice || 0) > 0) {
-          // Rule B: 저점 대비 -10%
-          actualNextBuyPrice = Math.round(stock.bottomPrice * 0.9);
+        const stageRule = nextBuy.rule === "B" ? "B" : "A";
+        let base: number;
+        if (stageRule === "B") {
+          base = (stock.bottomPrice || 0) > 0 ? Math.round(stock.bottomPrice * 0.9) : 0; // 0=저점필요
         } else {
-          // Rule A: 이전 실제 매수가 대비 -10%
-          actualNextBuyPrice = lastFilledPrice > 0
-            ? Math.round(lastFilledPrice * 0.9)
-            : nextBuy.price;
+          base = lastFilledPrice > 0 ? Math.round(lastFilledPrice * 0.9) : (nextBuy.price || 0);
         }
-
-        if (stock.currentPrice <= actualNextBuyPrice) {
-          // 이미 해당 차수에 대해 첫 양봉 알림 발송했는지 확인
-          const alreadySent = stock.buySignalSent === true && stock.buySignalLevel === nextBuy.level;
-          candidates.push({
-            name,
-            code: stock.code || (holdings.find((h) => h.name === name) || {code: ""}).code || "",
-            nextBuyPrice: actualNextBuyPrice,
-            nextBuyLevel: nextBuy.level,
-            currentPrice: stock.currentPrice,
-            quantity: nextBuy.quantity || stock.firstBuyQuantity || 0,
-            docId: stock.docId,
-            alreadySent,
-          });
-        } else {
-          // 현재가가 매수가 위로 올라오면 signalSent 리셋 (다음에 다시 떨어지면 새로 추적)
-          if (stock.buySignalSent && stock.buySignalLevel === nextBuy.level && stock.docId) {
-            await db.collection("stocks").doc(stock.docId).update({
-              buySignalSent: false,
-              buySignal: null,
-            });
-          }
-        }
-      }
-
-      if (candidates.length === 0) {
-        console.log("[매수신호] 매수 대기 종목 없음");
-        // 매수 대기 아닌 종목들의 buySignal 상태 정리
-        for (const [, stock] of Object.entries(stocks)) {
+        if (base <= 0) {
+          // 룰B 저점 미설정 등 기준가 불명 → 신호 비움 (시작점 입력 유도)
           if (stock.buySignal && stock.docId) {
-            const nextBuy = (stock.buyPlans || []).find((b: any) => !b.filled);
-            if (!nextBuy || stock.currentPrice > (nextBuy.price || 0)) {
-              await db.collection("stocks").doc(stock.docId).update({buySignal: null});
-            }
+            await db.collection("stocks").doc(stock.docId).update({buySignal: null});
           }
+          continue;
         }
-        return "매수 대기 종목 없음";
+        evalList.push({
+          name,
+          code: stock.code || (holdings.find((h) => h.name === name) || {code: ""}).code || "",
+          base,
+          level: nextBuy.level,
+          currentPrice: stock.currentPrice,
+          quantity: nextBuy.quantity || stock.firstBuyQuantity || 0,
+          docId: stock.docId,
+          firedLevel: typeof stock.buySignalFiredLevel === "number" ? stock.buySignalFiredLevel : null,
+          sent: stock.buySignalSent === true,
+          sentLevel: stock.buySignalLevel,
+        });
       }
 
-      console.log(`[매수신호] 매수 대기 ${candidates.length}종목: ${candidates.map((c) => `${c.name}(${c.nextBuyLevel}차,sent=${c.alreadySent})`).join(", ")}`);
-
-      // 4. 시가 조회 (양봉 판단용)
-      const codes = candidates.map((c) => c.code).filter(Boolean);
+      // 4. 시가 조회 (현재가 ≤ 기준가 종목 + 재진입 후보만 양봉 판정 필요)
+      const codes = [
+        ...evalList.filter((e) => e.currentPrice <= e.base).map((e) => e.code),
+        ...reentryList.map((e) => e.code),
+      ].filter(Boolean);
       const openPrices = await fetchOpenPrices(config, token, codes);
 
-      // 5. 양봉 확인 + 첫 양봉 판별
-      const signals: (typeof candidates[0] & {openPrice: number})[] = [];
-      const waitings: (typeof candidates[0] & {openPrice: number})[] = [];
+      // 5. 상태 판정
+      const signals: any[] = [];
+      const waitings: any[] = [];
       const now = Date.now();
 
-      for (const c of candidates) {
+      for (const e of evalList) {
+        const cur = e.currentPrice;
+        const base = e.base;
+        const passedCeil = Math.round(base * PASSED_BAND);
+        const firedThisLevel = e.firedLevel === e.level;
+
+        if (cur <= base) {
+          const openPrice = openPrices[e.code] || 0;
+          const isYangbong = openPrice > 0 && cur > openPrice;
+          if (isYangbong) {
+            const firstAlert = !(e.sent && e.sentLevel === e.level);
+            await db.collection("stocks").doc(e.docId).update({
+              buySignal: "signal",
+              buySignalAt: now,
+              buySignalOpen: openPrice,
+              buySignalFiredLevel: e.level, // 신호이력 (체결/이탈 전까지 유지)
+              buySignalSent: true,
+              buySignalLevel: e.level,
+            });
+            if (firstAlert) {
+              signals.push({...e, nextBuyPrice: base, nextBuyLevel: e.level, openPrice});
+            }
+            console.log(`[매수신호] ${e.name}: 🔴 ${e.level}차 기준 ${base} ≥ 현재 ${cur}, 양봉(시가 ${openPrice})${firstAlert ? " 첫알림" : ""}`);
+          } else {
+            await db.collection("stocks").doc(e.docId).update({
+              buySignal: "waiting",
+              buySignalAt: now,
+              buySignalOpen: openPrice,
+            });
+            waitings.push({...e, nextBuyPrice: base, nextBuyLevel: e.level, openPrice});
+            console.log(`[매수신호] ${e.name}: ⏳ ${e.level}차 기준 ${base} ≥ 현재 ${cur}, 음봉(시가 ${openPrice}) 대기`);
+          }
+        } else if (firedThisLevel && cur <= passedCeil) {
+          // 신호 떴는데 안 사고 기준가 위 (+10% 이내) → 신호지난 (감시)
+          await db.collection("stocks").doc(e.docId).update({buySignal: "passed", buySignalAt: now});
+          console.log(`[매수신호] ${e.name}: 🟡 신호지난 ${e.level}차 (기준 ${base}, 현재 ${cur} ≤ +10%)`);
+        } else {
+          // 보유중: 현재가 > 기준가×1.10 이면 이력 완전 리셋
+          const upd: any = {buySignal: null};
+          if (cur > passedCeil) {
+            upd.buySignalFiredLevel = null;
+            upd.buySignalSent = false;
+          }
+          await db.collection("stocks").doc(e.docId).update(upd);
+        }
+      }
+
+      // 6. 재진입 1차 (별도)
+      for (const c of reentryList) {
         const openPrice = openPrices[c.code] || 0;
         const isYangbong = openPrice > 0 && c.currentPrice > openPrice;
-        const isReentry = (c as any).isReentry === true;
-
+        if (c.currentPrice > c.nextBuyPrice) {
+          if (c.docId) await db.collection("stocks").doc(c.docId).update({buySignal: null});
+          continue;
+        }
         if (isYangbong && !c.alreadySent) {
-          // 첫 양봉! 매수신호 발송
-          signals.push({...c, openPrice});
-          if (isReentry) {
-            // 재진입 신호: reentry.signalSent 마크
-            await db.collection("stocks").doc(c.docId).update({
-              "reentry.signalSent": true,
-              "reentry.signalDate": new Date().toISOString().slice(0, 10),
-              buySignal: "signal",
-              buySignalAt: now,
-              buySignalOpen: openPrice,
-            });
-            console.log(`[재진입 매수신호] ${c.name}: 첫 양봉! 시가=${openPrice} → 현재가=${c.currentPrice} (목표 ${c.nextBuyPrice})`);
-          } else {
-            await db.collection("stocks").doc(c.docId).update({
-              buySignal: "signal",
-              buySignalAt: now,
-              buySignalOpen: openPrice,
-              buySignalSent: true,
-              buySignalLevel: c.nextBuyLevel,
-            });
-            console.log(`[매수신호] ${c.name}: 첫 양봉 매수신호! 시가=${openPrice} → 현재가=${c.currentPrice} (${c.nextBuyLevel}차 매수가=${c.nextBuyPrice})`);
-          }
-        } else if (isYangbong && c.alreadySent) {
-          // 이미 첫 양봉 알림 발송됨 - 상태만 유지
           await db.collection("stocks").doc(c.docId).update({
+            "reentry.signalSent": true,
+            "reentry.signalDate": new Date().toISOString().slice(0, 10),
             buySignal: "signal",
             buySignalAt: now,
             buySignalOpen: openPrice,
           });
-          console.log(`[매수신호] ${c.name}: 양봉이나 이미 알림 발송됨 - 스킵`);
+          signals.push({...c, openPrice});
+        } else if (isYangbong && c.alreadySent) {
+          await db.collection("stocks").doc(c.docId).update({buySignal: "signal", buySignalAt: now, buySignalOpen: openPrice});
         } else {
-          // 음봉 - 대기 상태
+          await db.collection("stocks").doc(c.docId).update({
+            buySignal: "waiting", buySignalAt: now, buySignalOpen: openPrice, "reentry.signalSent": false,
+          });
           waitings.push({...c, openPrice});
-          const updateData: any = {
-            buySignal: "waiting",
-            buySignalAt: now,
-            buySignalOpen: openPrice,
-          };
-          if (isReentry) {
-            updateData["reentry.signalSent"] = false;
-          } else {
-            updateData.buySignalSent = false; // 음봉이면 signalSent 리셋
-          }
-          await db.collection("stocks").doc(c.docId).update(updateData);
-          console.log(`[매수신호] ${c.name}: 음봉 (시가=${openPrice}, 현재가=${c.currentPrice}) - signalSent 리셋`);
         }
       }
 
