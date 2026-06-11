@@ -1378,26 +1378,24 @@ export default function StockDetail({
   const creditByLevel: Record<number, 'credit' | 'cash' | null> = {};
   buyLots.forEach((l) => { creditByLevel[l.level] = l.credit; });
 
-  // 매도 분배 그룹 = 키움 잔고 positions 기준 (HTS 탭과 일치)
-  //   현금: 여러 차수라도 1개 탭으로 합산  /  신용: 매수일별 lot 각각
-  //   positions 없으면(미동기화) 차수별 그룹으로 폴백.
+  // 매도 분배 그룹 = HTS 매도 탭과 일치하도록 차수(buyLots) 기준 그룹핑
+  //   현금: 여러 차수라도 1개 탭으로 합산 (그래피: 1차+3차 = 현금 103)
+  //   신용: 매수일(차수) lot 각각 분리 (시지메드텍: 신용 1차 800 / 신용 2차 990)
+  //   신용/현금 미상(거래기록 없음): 차수 라벨로 폴백
   const sellGroups: { label: string; credit: boolean; qty: number }[] = (() => {
-    const pos = (local.positions || []).filter((p) => (p.quantity || 0) > 0);
-    const totalPos = pos.reduce((s, p) => s + (p.quantity || 0), 0);
-    if (pos.length > 0 && totalPos > 0) {
-      const g: { label: string; credit: boolean; qty: number }[] = [];
-      const cashQty = pos.filter((p) => p.type === 'cash').reduce((s, p) => s + p.quantity, 0);
-      if (cashQty > 0) g.push({ label: '현금', credit: false, qty: cashQty });
-      const credits = pos.filter((p) => p.type === 'credit');
-      credits.forEach((c, idx) => g.push({
-        label: credits.length > 1 ? `신용${idx + 1}` : '신용', credit: true, qty: c.quantity,
-      }));
-      return g;
-    }
-    // 폴백: 차수별(현금/신용 미상은 차수 라벨)
-    return buyLots.map((l) => ({
-      label: `${l.level}차`, credit: l.credit === 'credit', qty: l.qty,
+    const lots = buyLots.filter((l) => l.qty > 0);
+    if (lots.length === 0) return [];
+    const g: { label: string; credit: boolean; qty: number }[] = [];
+    const cashQty = lots.filter((l) => l.credit === 'cash').reduce((s, l) => s + l.qty, 0);
+    if (cashQty > 0) g.push({ label: '현금', credit: false, qty: cashQty });
+    const creditLots = lots.filter((l) => l.credit === 'credit');
+    creditLots.forEach((l) => g.push({
+      label: creditLots.length > 1 ? `신용 ${l.level}차` : '신용', credit: true, qty: l.qty,
     }));
+    lots.filter((l) => l.credit === null).forEach((l) => g.push({
+      label: `${l.level}차`, credit: false, qty: l.qty,
+    }));
+    return g;
   })();
   const totalGroupQty = sellGroups.reduce((s, g) => s + g.qty, 0);
   // 비례 분배 (largest-remainder로 합계 보존)
