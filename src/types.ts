@@ -8,6 +8,10 @@ export interface BuyPlan {
   filledPrice?: number; // 실제 체결 단가
   manualOverride?: boolean; // true면 sync/reconcile 시 덮어쓰지 않음
   rule?: 'A' | 'B'; // 이 차수 매수가가 산정된 룰 (A: 이전차수×0.9, B: 저점×0.9). 체결되면 그 시점 룰 보존
+  // 기준가: 룰이 정한 매수 기준 가격 (체결 여부 무관, 항상 룰로 계산)
+  //   룰A N차 = (N-1차 실제가) × 0.9 / 룰B N차 = 저점 × 0.9
+  //   0 = 룰B인데 저점 미설정(계산 불가). filledPrice(실제가)와 분리 표시.
+  basisPrice?: number;
 }
 
 export interface SellPlan {

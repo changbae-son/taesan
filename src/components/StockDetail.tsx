@@ -2271,7 +2271,7 @@ export default function StockDetail({
               <thead>
                 <tr>
                   <th>차수</th>
-                  <th>계획가</th>
+                  <th>기준가</th>
                   <th>계획수량</th>
                   <th></th>
                 </tr>
@@ -2765,12 +2765,21 @@ export default function StockDetail({
                         )}
                         {!bp.filled && !realDate && <div className={styles.dateUnder} style={{ color: '#ccc' }}>-</div>}
                       </td>
-                      {/* 계획가 */}
+                      {/* 기준가 (룰 계산값) */}
                       <td className={styles.numCell}>
-                        <span className={styles.colLabel}>계획가</span>
-                        <span className={i === nextBuyIdx && !bp.filled ? styles.nextBuyPrice : styles.planPrice}>
-                          {bp.price.toLocaleString()}
-                        </span>
+                        <span className={styles.colLabel}>기준가</span>
+                        {(() => {
+                          // basisPrice 우선 표시. 룰B 저점 미설정(0)이면 '저점필요'
+                          const basis = typeof bp.basisPrice === 'number' ? bp.basisPrice : bp.price;
+                          if (bp.rule === 'B' && (!basis || basis <= 0)) {
+                            return <span className={styles.dashText} title="룰B 저점(기준최고가) 미설정 — 시작점 입력 필요">저점필요</span>;
+                          }
+                          return (
+                            <span className={i === nextBuyIdx && !bp.filled ? styles.nextBuyPrice : styles.planPrice}>
+                              {basis.toLocaleString()}
+                            </span>
+                          );
+                        })()}
                         {i === nextBuyIdx && !bp.filled && local.currentPrice > 0 && (
                           <span className={`${styles.currentPriceTag} ${nearInfo?.urgency === 3 ? styles.priceTagUrgentBuy : ''}`}>
                             현재 {local.currentPrice.toLocaleString()}

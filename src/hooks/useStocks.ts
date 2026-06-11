@@ -147,6 +147,28 @@ export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): 
         calcPrice = Math.round(prevActualPrice * 0.9);
       }
 
+      // ─── 기준가(basisPrice): 룰이 정한 매수 기준가 (체결돼도 실제가로 안 덮음) ───
+      //   룰A N차 = (N-1차 실제가 우선) × 0.9 / 룰B N차 = 저점 × 0.9
+      //   룰B인데 저점(bottomPrice) 없으면 0 (계산 불가 → UI '저점필요')
+      let basisPrice: number;
+      if (i === 0) {
+        basisPrice = firstBuyPrice; // 1차 기준 = 진입 실제가
+      } else if (stageRule === 'B') {
+        if ((bottomPrice || 0) > 0) {
+          const prev = updated[i - 1];
+          basisPrice = prev.filled
+            ? Math.round((bottomPrice as number) * 0.9)
+            : Math.round((prev.basisPrice || prev.price || 0) * 0.9);
+        } else {
+          basisPrice = 0; // 룰B 저점 미설정
+        }
+      } else {
+        // 룰A: 이전 차수 실제가(체결) 우선 × 0.9, 없으면 이전 기준가 × 0.9
+        const prev = updated[i - 1];
+        const prevActual = prev.filledPrice || prev.basisPrice || prev.price || firstBuyPrice * Math.pow(0.9, i - 1);
+        basisPrice = Math.round(prevActual * 0.9);
+      }
+
       // 비중 동일 원칙: 각 차수 계획 수량 = 1차 매수금액 / 해당 차수 가격
       // 체결된 차수: filledQuantity 우선 (실제 체결 수량), 없으면 저장된 quantity
       // 미체결 차수: corporateActions 종목은 firstBuyQuantity 고정, 아니면 비례 계산
@@ -162,6 +184,7 @@ export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): 
       updated.push({
         ...bp,
         price: bp.filled ? (bp.filledPrice || bp.price) : calcPrice,
+        basisPrice,
         quantity: planQty,
         filledDate: bp.filledDate,
         filledQuantity: bp.filledQuantity,
