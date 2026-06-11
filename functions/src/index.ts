@@ -4051,13 +4051,56 @@ async function runBuySignalCheck(): Promise<string> {
 }
 
 /**
- * 매수신호 체크 + 텔레그램 알림
- * 평일 15:10 KST에 Cloud Scheduler가 호출
+ * 매수신호 체크 + 텔레그램 알림 — 옵션 A 다중 스케줄 (NXT 08:00 ~ 20:00)
+ *   버킷(매수신호/신호지난/매수대기/보유중)을 주기적으로 갱신.
+ *   텔레그램은 첫 양봉 1회만(dedup) → 자주 돌려도 스팸 없음.
+ *
+ *   프리마켓 08:00~08:30  : 30분 (근접 감시)        — buySignalCheckPre
+ *   정규장   09:00~14:50  : 10분 (양봉 변동 핵심)   — buySignalCheck
+ *   마감임박 15:00~15:40  : 5분  (매수 결정 구간)   — buySignalCheckClose
+ *   애프터   16:00~20:00  : 30분 (근접/이탈 감시)   — buySignalCheckAfter
  */
+const BUY_SIGNAL_RUNWITH = {
+  vpcConnector: "kiwoom-connector",
+  vpcConnectorEgressSettings: "ALL_TRAFFIC" as const,
+  timeoutSeconds: 120,
+};
+
+// 정규장 09:00~14:50 (10분)
 export const buySignalCheck = functions
   .region("asia-northeast3")
-  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
-  .pubsub.schedule("10 15 * * 1-5")
+  .runWith(BUY_SIGNAL_RUNWITH)
+  .pubsub.schedule("*/10 9-14 * * 1-5")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    await runBuySignalCheck();
+  });
+
+// 프리마켓 08:00, 08:30 (30분)
+export const buySignalCheckPre = functions
+  .region("asia-northeast3")
+  .runWith(BUY_SIGNAL_RUNWITH)
+  .pubsub.schedule("0,30 8 * * 1-5")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    await runBuySignalCheck();
+  });
+
+// 마감 임박 15:00~15:40 (5분) — 매수 결정 구간
+export const buySignalCheckClose = functions
+  .region("asia-northeast3")
+  .runWith(BUY_SIGNAL_RUNWITH)
+  .pubsub.schedule("0,5,10,15,20,25,30,35,40 15 * * 1-5")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    await runBuySignalCheck();
+  });
+
+// 애프터마켓 16:00~20:00 (30분) — NXT 애프터 가격 변동 근접/이탈 감시
+export const buySignalCheckAfter = functions
+  .region("asia-northeast3")
+  .runWith(BUY_SIGNAL_RUNWITH)
+  .pubsub.schedule("0,30 16-20 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     await runBuySignalCheck();
