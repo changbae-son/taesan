@@ -5907,6 +5907,8 @@ export const diagByCode = functions
                 .map((m: any) => ({ma: m.ma, date: m.filledDate, qty: m.quantity, consumedTradeIds: m.consumedTradeIds || null})),
               buyPlansRule: (s.buyPlans || [])
                 .map((b: any) => ({level: b.level, filled: b.filled, rule: b.rule || null, price: b.price, filledDate: b.filledDate || null, manualOverride: b.manualOverride || false})),
+              isCreditTrade: s.isCreditTrade || false,
+              positions: (s.positions || []).map((p: any) => ({type: p.type, quantity: p.quantity, avgPrice: p.avgPrice, since: p.since || null, dueDate: p.dueDate || null})),
             });
           }
         });

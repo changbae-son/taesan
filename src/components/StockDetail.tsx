@@ -1375,18 +1375,40 @@ export default function StockDetail({
         ? null : (dayBuys.some((t) => t.isCreditTrade) ? 'credit' : 'cash');
       return { level: b.level, qty: (b.filledQuantity || b.quantity || 0), credit };
     });
-  const totalLotQty = buyLots.reduce((s, l) => s + l.qty, 0);
   const creditByLevel: Record<number, 'credit' | 'cash' | null> = {};
   buyLots.forEach((l) => { creditByLevel[l.level] = l.credit; });
+
+  // 매도 분배 그룹 = 키움 잔고 positions 기준 (HTS 탭과 일치)
+  //   현금: 여러 차수라도 1개 탭으로 합산  /  신용: 매수일별 lot 각각
+  //   positions 없으면(미동기화) 차수별 그룹으로 폴백.
+  const sellGroups: { label: string; credit: boolean; qty: number }[] = (() => {
+    const pos = (local.positions || []).filter((p) => (p.quantity || 0) > 0);
+    const totalPos = pos.reduce((s, p) => s + (p.quantity || 0), 0);
+    if (pos.length > 0 && totalPos > 0) {
+      const g: { label: string; credit: boolean; qty: number }[] = [];
+      const cashQty = pos.filter((p) => p.type === 'cash').reduce((s, p) => s + p.quantity, 0);
+      if (cashQty > 0) g.push({ label: '현금', credit: false, qty: cashQty });
+      const credits = pos.filter((p) => p.type === 'credit');
+      credits.forEach((c, idx) => g.push({
+        label: credits.length > 1 ? `신용${idx + 1}` : '신용', credit: true, qty: c.quantity,
+      }));
+      return g;
+    }
+    // 폴백: 차수별(현금/신용 미상은 차수 라벨)
+    return buyLots.map((l) => ({
+      label: `${l.level}차`, credit: l.credit === 'credit', qty: l.qty,
+    }));
+  })();
+  const totalGroupQty = sellGroups.reduce((s, g) => s + g.qty, 0);
   // 비례 분배 (largest-remainder로 합계 보존)
   const distributeSell = (sellQty: number) => {
-    if (buyLots.length <= 1 || totalLotQty <= 0 || sellQty <= 0) return null;
-    const exact = buyLots.map((l) => sellQty * l.qty / totalLotQty);
+    if (sellGroups.length <= 1 || totalGroupQty <= 0 || sellQty <= 0) return null;
+    const exact = sellGroups.map((g) => sellQty * g.qty / totalGroupQty);
     const floors = exact.map((e) => Math.floor(e));
     const rem = sellQty - floors.reduce((s, n) => s + n, 0);
     const order = exact.map((e, i) => ({ i, frac: e - Math.floor(e) })).sort((a, b) => b.frac - a.frac);
     for (let k = 0; k < rem && k < order.length; k++) floors[order[k].i]++;
-    return buyLots.map((l, idx) => ({ ...l, sellQty: floors[idx] })).filter((l) => l.sellQty > 0);
+    return sellGroups.map((g, idx) => ({ ...g, sellQty: floors[idx] })).filter((g) => g.sellQty > 0);
   };
 
   // 실제 평균단가 (체결 기반) - 계획가 기반(local.avgPrice)과 비교용
@@ -3588,17 +3610,16 @@ export default function StockDetail({
                       rows.push(
                         <tr key={`${i}-dist`}>
                           <td colSpan={5} style={{ padding: '1px 4px 5px 10px', borderBottom: '1px solid #f0f0f0' }}>
-                            <span style={{ fontSize: 10, color: '#999', marginRight: 8 }}>↳ 차수별 매도</span>
-                            {dist.map((l, di) => (
-                              <span key={di} style={{ display: 'inline-block', marginRight: 12, whiteSpace: 'nowrap', fontSize: 11 }}>
-                                <b style={{ color: '#1565c0' }}>{l.level}차 {l.sellQty.toLocaleString()}주</b>
-                                {l.credit && (
-                                  <span style={{
-                                    marginLeft: 3, padding: '0 4px', borderRadius: 3, fontSize: 9, fontWeight: 700,
-                                    background: l.credit === 'credit' ? '#fff3e0' : '#e8f5e9',
-                                    color: l.credit === 'credit' ? '#e65100' : '#2e7d32',
-                                  }}>{l.credit === 'credit' ? '신용' : '현금'}</span>
-                                )}
+                            <span style={{ fontSize: 10, color: '#999', marginRight: 8 }}>↳ 포지션별 매도</span>
+                            {dist.map((g, di) => (
+                              <span key={di} style={{
+                                display: 'inline-block', marginRight: 8, whiteSpace: 'nowrap', fontSize: 11,
+                                padding: '1px 6px', borderRadius: 4,
+                                background: g.credit ? '#fff3e0' : '#e8f5e9',
+                                border: `1px solid ${g.credit ? '#ffb74d' : '#a5d6a7'}`,
+                              }}>
+                                <span style={{ fontWeight: 700, color: g.credit ? '#e65100' : '#2e7d32' }}>{g.label}</span>
+                                <b style={{ marginLeft: 4, color: '#1565c0' }}>{g.sellQty.toLocaleString()}주</b>
                               </span>
                             ))}
                           </td>
