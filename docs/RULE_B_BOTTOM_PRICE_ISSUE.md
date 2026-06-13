@@ -189,3 +189,43 @@ consumedTradeIds(미분류 감지)가 불일치 → 같은 매도가 +5%/미분�
 - sellPlans/maSells를 "태그된 trade 집계" 파생값으로
 - ⚠️ featureFlag OFF 호환 깨짐 → 충분한 안정화 후 진행 권장
 - 현재는 태그(신) + consumedTradeIds(구) 병행 유지 (안전)
+
+---
+
+## ✅ 2026-06-13 — 단일 진실(Single Truth) 근본 재설계 완료
+
+### 배경 (사용자 보고)
+CS 매매완료인데 보유중 표시 / 신용·현금 분배 미표시 / 잔고 불일치.
+"고치면 다른 게 원점으로" = **같은 파생 데이터를 4명이 서로 다른 규칙으로 덮어씀**.
+
+### 근본 원인 = 작성자 다중성 + 진실 3중
+- 잔고/평단: 키움 sync + 프론트 recalcStock 양쪽이 저장 (프론트가 키움 진실 덮어씀)
+- 매도 매핑: 슬롯 자체 / 태그 / consumedTradeIds 3중 진실 → 서로 되돌림
+
+### 해결 (0~검증 전과정, backup label `pre-single-truth`)
+1. **[1단계] 프론트 저장 보호** (`useStocks.ts`): 키움 관리 종목(code 有)의
+   totalQuantity/avgPrice를 원본 Firestore 값으로 강제 — recalc 재계산값이
+   진실 덮어쓰는 경로 차단. **잔고/평단 진실 = 키움 sync/reconcile 단독.**
+2. **[2-3단계] 매도 슬롯 단일 작성자** (`index.ts`):
+   - `deriveSellSlotsFromTags`: 슬롯 = trade 태그 집계 파생 (수익=현재라운드,
+     MA=라운드무관 누적). reconcile만 이걸로 슬롯 생성.
+   - sync는 tagMode에서 매도 슬롯 미기록. 레거시 옵션D/E(hardConsumedIds)
+     결과 폐기. **매도 매핑 진실 = trade 태그 단독, 작성자 = reconcile 1명.**
+   - featureFlag `tradeTagBasedMapping=false`면 전부 레거시 (롤백 가능).
+3. **[4단계] 잔고 진실 복구** (`reconcileHoldingsTruth?apply=true`):
+   키움 잔고에 없는데 보유>0(오염) 정정. **CS 60→0 매매완료 정상화.**
+
+### 신규 운영/진단 엔드포인트
+- `reconcileHoldingsTruth[?apply=true]` — 키움잔고↔stocks 대조/정정
+- `reconcileNow?stockName=|all=true` — 단일/전체 reconcile 수동 트리거
+
+### 검증 게이트 (전부 PASS)
+- 키움잔고=화면잔고 불일치 **0건** (49종목 점검, CS만 정정)
+- 매도 이중카운트(diff>0) **0건** (1 trade=1 슬롯 → 물리적 불가)
+- 프론트 tsc PASS / 전 종목(49) reconcile 0 오류
+- 화면 표시는 프론트 roundView(trades+태그)가 주소스라 영향 없음
+  (과거 라운드 수익매도는 복기 뷰에 정상 표시 — diff<0은 정보성)
+
+### 핵심 원칙 (앞으로 회귀 방지)
+> 잔고·평단 = 키움만 / 매도매핑 = 태그만 / 슬롯·잔고표시·분배 = 파생(저장 안 함).
+> 새 기능 추가 시 "이미 있는 파생을 또 만들지 말 것 — 진실 1개, 작성자 1명."
