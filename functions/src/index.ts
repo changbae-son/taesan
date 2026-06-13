@@ -1399,6 +1399,9 @@ async function syncToFirestore(
   let syncedStocks = 0;
   let syncedTrades = 0;
 
+  // 단일 진실 모드: sync는 매도 슬롯 미기록 (reconcile이 태그 파생으로 단독 관리)
+  const syncTagMode = await getTagModeEnabled();
+
   // 관심종목 → 실제매수 자동 전환 (동기화 시작 전)
   const transferred = await checkWatchlistBought(holdings);
   if (transferred > 0) {
@@ -1519,17 +1522,23 @@ async function syncToFirestore(
           return newPlan;
         });
         updateData.buyPlans = mergedBuyPlans;
-        // sellPlans manualOverride 보호 (수동 편집 / MA 분리 보호)
-        const existingSellPlans: any[] = existingData?.sellPlans || [];
-        const mergedSellPlans = mapped.sellPlans.map((newPlan: any, i: number) => {
-          const existingPlan = existingSellPlans[i];
-          if (existingPlan?.manualOverride) {
-            console.log(`[sync 보호] ${h.name} sell${i + 1}차 manualOverride 유지`);
-            return existingPlan; // 수동 편집된 슬롯 유지
-          }
-          return newPlan;
-        });
-        updateData.sellPlans = mergedSellPlans;
+        // ─── 단일 진실 모드: sync는 매도 슬롯을 기록하지 않음 ───
+        //   매도 슬롯의 유일한 작성자 = reconcile(deriveSellSlotsFromTags).
+        //   새 매도 trade 저장 시 onTradeCreated 트리거가 reconcile을 호출해 갱신.
+        //   (레거시 모드에서만 종전 mapTradesToPlans 결과를 기록)
+        if (!syncTagMode) {
+          // sellPlans manualOverride 보호 (수동 편집 / MA 분리 보호)
+          const existingSellPlans: any[] = existingData?.sellPlans || [];
+          const mergedSellPlans = mapped.sellPlans.map((newPlan: any, i: number) => {
+            const existingPlan = existingSellPlans[i];
+            if (existingPlan?.manualOverride) {
+              console.log(`[sync 보호] ${h.name} sell${i + 1}차 manualOverride 유지`);
+              return existingPlan; // 수동 편집된 슬롯 유지
+            }
+            return newPlan;
+          });
+          updateData.sellPlans = mergedSellPlans;
+        }
         updateData.sellCount = mapped.sellCount;
         updateData.firstBuyPrice = mapped.firstBuyPrice;
         updateData.firstBuyQuantity = mapped.firstBuyQty;
@@ -4525,6 +4534,91 @@ export const stockSearch = functions
  * - 사용자가 수동 토글한 플래그도 병합 (trades가 있으면 filled=true로 덮어씀,
  *   trades가 없는 차수는 기존 상태 보존)
  */
+// ─── 단일 진실 (방안B Phase 4): 태그 기반 매도 슬롯 파생 ───
+// 매도 매핑의 유일한 진실 = trade 태그(sellRound/sellSlot).
+// sellPlans/maSells는 "태그된 trades의 집계 뷰"로만 생성 — 직접 수정 금지.
+// 작성자 단일화: 이 함수만 슬롯을 만들고, reconcile만 이 함수를 호출.
+// (sync는 TAG_MODE에서 sellPlans를 쓰지 않음 — onTradeCreated → reconcile이 갱신)
+
+async function getTagModeEnabled(): Promise<boolean> {
+  try {
+    const doc = await db.collection("settings").doc("featureFlags").get();
+    const v = (doc.data() as any || {}).tradeTagBasedMapping;
+    return v !== false; // 기본 ON (명시적으로 false일 때만 레거시)
+  } catch {
+    return true;
+  }
+}
+
+function deriveSellSlotsFromTags(
+  stock: any,
+  trades: any[]
+): {sellPlans: any[]; maSells: any[]} {
+  const normD = (d: string): string => {
+    if (!d) return "";
+    if (d.length === 8 && !d.includes("-")) return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    return d;
+  };
+  const buys = trades.filter((t: any) => t.type === "buy" && (Number(t.quantity) || 0) > 0);
+  const buyDates = Array.from(new Set(buys.map((b: any) => normD(b.date)))).filter(Boolean).sort();
+  const currentRound = Math.max(1, buyDates.length); // 마지막 매수 차수 = 현재 라운드
+  const sells = trades.filter((t: any) => t.type === "sell");
+
+  const avg = Number(stock.avgPrice) || 0;
+  const holding = Number(stock.totalQuantity) || 0;
+  const slotQty = holding > 0 ? Math.round(holding / 5) : 0;
+
+  const existingSell: any[] = Array.isArray(stock.sellPlans) ? stock.sellPlans : [];
+  const aggr = (tagged: any[]) => {
+    const qty = tagged.reduce((s: number, t: any) => s + (Number(t.quantity) || 0), 0);
+    const amt = tagged.reduce((s: number, t: any) => s + (Number(t.price) || 0) * (Number(t.quantity) || 0), 0);
+    const date = tagged.map((t: any) => normD(t.date)).sort().pop() || "";
+    return {qty, avgPrice: qty > 0 ? Math.round(amt / qty) : 0, date, ids: tagged.map((t: any) => String(t.id))};
+  };
+
+  // 수익 슬롯(+5~+25%): 현재 라운드 태그만 (추가매수 시 라운드 리셋 — 태산 규칙)
+  const sellPlans = [5, 10, 15, 20, 25].map((p, i) => {
+    const tagged = sells.filter((t: any) =>
+      (Number(t.sellRound) || 0) === currentRound && t.sellSlot === `+${p}%`);
+    const ex = existingSell[i];
+    const target = avg > 0 ? Math.round(avg * (1 + p / 100)) : (Number(ex?.price) || 0);
+    if (tagged.length > 0) {
+      const a = aggr(tagged);
+      return {
+        percent: p, price: target, quantity: a.qty, filled: true,
+        filledDate: a.date, filledQuantity: a.qty, filledPrice: a.avgPrice,
+        consumedTradeIds: a.ids,
+      };
+    }
+    // 태그 없음: trade 없는 수동 체결(수동 종목 등)은 보존, 아니면 미체결
+    const exManualFill = ex && (ex.filled || (Number(ex.filledQuantity) || 0) > 0) &&
+      !(Array.isArray(ex.consumedTradeIds) && ex.consumedTradeIds.length > 0);
+    if (exManualFill) return ex;
+    return {percent: p, price: target, quantity: slotQty, filled: false, filledDate: ""};
+  });
+
+  // MA 슬롯: 라운드 무관 누적 (태산 규칙: MA 매도는 사이클당 1회 종결, 라운드 리셋 없음)
+  const existingMa: any[] = Array.isArray(stock.maSells) ? stock.maSells : [];
+  const maSells = [20, 60, 120].map((ma) => {
+    const ex = existingMa.find((m: any) => m.ma === ma) ||
+      {ma, price: 0, quantity: 0, filled: false};
+    const tagged = sells.filter((t: any) => t.sellSlot === `MA${ma}`);
+    if (tagged.length > 0) {
+      const a = aggr(tagged);
+      return {
+        ...ex, filled: true, quantity: a.qty, price: a.avgPrice,
+        filledDate: a.date, consumedTradeIds: a.ids,
+      };
+    }
+    const exManualFill = ex.filled &&
+      !(Array.isArray(ex.consumedTradeIds) && ex.consumedTradeIds.length > 0);
+    if (exManualFill) return ex;
+    return {...ex, filled: false, quantity: 0, filledDate: "", consumedTradeIds: []};
+  });
+
+  return {sellPlans, maSells};
+}
+
 async function reconcileStockPlans(stockName: string): Promise<{
   updated: boolean;
   buyFilled: number;
@@ -4561,6 +4655,9 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   const trades = tradesSnap.docs.map((d) => ({id: d.id, ...(d.data() as any)}));
 
+  // 단일 진실 모드 (방안B Phase 4): 매도 슬롯 = 태그 집계 파생만
+  const tagMode = await getTagModeEnabled();
+
   // ✅ 방안 B: 매도 trade 자동 태깅 (sellSlot 없는 신규 매도만)
   //   키움 동기화로 들어온 새 매도가 라운드+슬롯 태그 없이 미분류로 뜨는 것 방지.
   //   사용자 수동 분류한 trade(sellSlot 있음)는 보존.
@@ -4581,6 +4678,15 @@ async function reconcileStockPlans(stockName: string): Promise<{
         });
       }
       await tagBatch.commit();
+      // 인메모리 trades에도 즉시 반영 (아래 derive가 fresh 태그를 보도록)
+      const tagById = new Map(tags.map((t) => [t.tradeId, t]));
+      for (const t of trades) {
+        const g = tagById.get(t.id);
+        if (g) {
+          (t as any).sellRound = g.sellRound;
+          (t as any).sellSlot = g.sellSlot;
+        }
+      }
       console.log(`[reconcile/태깅] ${stockName} 신규 매도 ${tags.length}건 자동 태깅`);
     }
   } catch (e: any) {
@@ -5322,6 +5428,28 @@ async function reconcileStockPlans(stockName: string): Promise<{
     );
   }
 
+  // ─── 단일 진실 모드: 레거시(옵션 D/E) 매핑 결과를 버리고 태그 집계로 교체 ───
+  //   매도 슬롯의 유일한 작성자 = deriveSellSlotsFromTags.
+  //   수동 분류는 manualSellEdit이 태그를 갱신하므로 여기 자연 반영됨.
+  let tagAuditDiff: number | null = null;
+  if (tagMode) {
+    const derived = deriveSellSlotsFromTags(
+      {...stock, sellPlans: stock.sellPlans, maSells: stock.maSells},
+      trades
+    );
+    const beforeJson = JSON.stringify({s: stock.sellPlans || [], m: stock.maSells || []});
+    const afterJson = JSON.stringify({s: derived.sellPlans, m: derived.maSells});
+    sellPlans.splice(0, sellPlans.length, ...derived.sellPlans);
+    maSellsArr.splice(0, maSellsArr.length, ...derived.maSells);
+    if (beforeJson !== afterJson) sellFilledCount++;
+    const mappedTagQty = [...derived.sellPlans, ...derived.maSells].reduce(
+      (s: number, p: any) =>
+        s + ((p.filled || (Number(p.filledQuantity) || 0) > 0)
+          ? (Number(p.filledQuantity) || Number(p.quantity) || 0) : 0), 0);
+    tagAuditDiff = tradeSellQtyTotal - mappedTagQty; // 잔여 = unmapped 태그 수량
+    console.log(`[reconcile/단일진실] ${stockName} 태그 파생 슬롯 적용 (unmapped ${tagAuditDiff}주)`);
+  }
+
   // 변경사항이 있을 때만 업데이트
   if (buyFilledCount > 0 || sellFilledCount > 0) {
     // ✅ Race condition 방지: update 직전 latest doc 재조회 후 manualOverride 최종 보호
@@ -5332,6 +5460,8 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
     const finalSellPlans = sellPlans.map((newPlan: any, i: number) => {
       const latest = latestSellPlans[i];
+      // 단일 진실 모드: 태그가 의도를 담으므로 슬롯 manualOverride 머지 생략
+      if (tagMode) return newPlan;
       if (latest?.manualOverride) {
         // ✅ 미체결 manualOverride 재계산: 실제 체결 데이터가 없고 consumedTradeIds도 없는 경우
         // → avgPrice 변경(추가매수 등) 후 목표가가 stale하게 고정되는 문제 방지
@@ -5401,10 +5531,11 @@ async function reconcileStockPlans(stockName: string): Promise<{
       maSells: maSellsArr,
       sellsSinceLastBuy: sellsSinceLastBuyBE,
       ruleBActive: ruleBActiveBE,
-      mappingAuditDiff,
-      mappingBandIssues,
-      mappingIntegrityIssues,
-      mappingConsumedMismatch: Math.max(0, mappingConsumedMismatch - autoCorrected),
+      // 단일 진실 모드: audit = 태그 기준 (diff = unmapped 수량, 슬롯 정합성 이슈는 구조상 0)
+      mappingAuditDiff: tagMode && tagAuditDiff !== null ? tagAuditDiff : mappingAuditDiff,
+      mappingBandIssues: tagMode ? 0 : mappingBandIssues,
+      mappingIntegrityIssues: tagMode ? 0 : mappingIntegrityIssues,
+      mappingConsumedMismatch: tagMode ? 0 : Math.max(0, mappingConsumedMismatch - autoCorrected),
       mappingAuditAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -5540,6 +5671,45 @@ async function reconcileStockPlans(stockName: string): Promise<{
  * - trade_kiwoom_* 만 처리 (사용자 수동 작성분은 매매일지만 남고 plan에 영향 없음)
  * - 해당 종목의 buyPlans / sellPlans filled 플래그 자동 갱신
  */
+// 단일 종목/전체 reconcile 수동 트리거 (단일 진실 검증·운영용)
+// GET /reconcileNow?stockName=흥구석유  또는  ?all=true
+export const reconcileNow = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 540, memory: "512MB"})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const stockName = (req.query.stockName as string) || "";
+        const all = String(req.query.all || "") === "true";
+        if (!stockName && !all) {
+          res.status(400).json({success: false, error: "stockName 또는 all=true 필수"});
+          return;
+        }
+        if (stockName) {
+          const r = await reconcileStockPlans(stockName);
+          res.json({success: true, stockName, ...r});
+          return;
+        }
+        // all: stocks 컬렉션 전 종목
+        const snap = await db.collection("stocks").get();
+        const results: any[] = [];
+        for (const d of snap.docs) {
+          const name = (d.data() as any).name;
+          if (!name) continue;
+          try {
+            const r = await reconcileStockPlans(name);
+            results.push({name, updated: r.updated, sellFilled: r.sellFilled});
+          } catch (e: any) {
+            results.push({name, error: e.message});
+          }
+        }
+        res.json({success: true, total: results.length, updated: results.filter((r) => r.updated).length, results});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
 export const onTradeCreated = functions
   .region("asia-northeast3")
   .firestore.document("trades/{tradeId}")
