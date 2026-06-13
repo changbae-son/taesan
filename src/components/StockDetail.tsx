@@ -1304,16 +1304,20 @@ export default function StockDetail({
     }
   };
 
-  // ── MA 행 드래그 이동 (insertAfterPercent 변경) ──
+  // ── MA 행 드래그 이동 → 단일 진실: 드롭한 차수로 슬롯 재지정(retag) ──
+  //   (옛 insertAfterPercent 시각이동은 reconcile이 태그로 재파생하며 되돌려져 폐기)
   const [draggingMaIdx, setDraggingMaIdx] = useState<number | null>(null);
 
   const moveMaToInsertAfter = async (maIdx: number, newInsertAfter: number) => {
     const m = local.maSells[maIdx];
     if (!m) return;
-    if (m.insertAfterPercent === newInsertAfter) return; // 변화 없음
-    const maList = [...local.maSells];
-    maList[maIdx] = { ...m, insertAfterPercent: newInsertAfter };
-    await persistSellEdit(local.sellPlans, maList);
+    if (!(newInsertAfter > 0)) {
+      // '1차 이전' 등 슬롯이 아닌 위치로는 이동 불가 (수익차수 또는 MA로만)
+      alert('MA 매도는 수익 차수(+5~+25%) 행 위에 드롭해서 이동하세요.');
+      setDraggingMaIdx(null);
+      return;
+    }
+    await retagSlot(`MA${m.ma}`, `+${newInsertAfter}%`);
   };
 
   // ── MA 행 → sellPlan 복원 ──
