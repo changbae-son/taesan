@@ -5786,7 +5786,11 @@ export const setSellSplit = functions
         const stockName = trade.stockName;
 
         if (clear) {
-          await tref.update({sellSlotSplit: admin.firestore.FieldValue.delete()});
+          // 분배 + 슬롯 마커 모두 제거 → reconcile 자동태깅이 band로 재분류
+          await tref.update({
+            sellSlotSplit: admin.firestore.FieldValue.delete(),
+            sellSlot: admin.firestore.FieldValue.delete(),
+          });
         } else {
           if (!Array.isArray(splits) || splits.length === 0) {
             res.status(400).json({success: false, error: "splits 필요"});
