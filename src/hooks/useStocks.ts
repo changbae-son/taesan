@@ -276,6 +276,8 @@ export function useStocks() {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [loading, setLoading] = useState(true);
   const debounceTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // 원본 Firestore 문서 캐시 (recalc 적용 전) — 저장 시 진실 필드 보호용
+  const rawDocsRef = useRef<Record<string, any>>({});
 
   useEffect(() => {
     // 3초 후에도 응답 없으면 로딩 해제
@@ -284,6 +286,9 @@ export function useStocks() {
     const unsub = onSnapshot(q, (snap) => {
       clearTimeout(timeout);
       try {
+        const raw: Record<string, any> = {};
+        snap.docs.forEach((d) => { raw[d.id] = d.data(); });
+        rawDocsRef.current = raw;
         const list: Stock[] = snap.docs.map((d) => ({
           id: d.id,
           ...d.data(),
@@ -316,6 +321,23 @@ export function useStocks() {
     };
   }, []);
 
+  // ─── 진실 필드 보호 (단일 진실 원칙) ───
+  // totalQuantity/avgPrice의 진실 = 키움 잔고(sync/reconcile이 기록).
+  // 프론트 recalcStock 재계산값이 이를 덮어쓰면, 미분류 매도가 있는 종목의
+  // 잔고가 오염됨 (예: CS 매매완료 0 → 60으로 되살아나던 버그).
+  // → 키움 관리 종목(code 있음)은 저장 시 원본 Firestore 값으로 강제.
+  //    (수동 종목·신규 종목은 원본 없으므로 계산값 그대로 저장)
+  const protectTruthFields = useCallback((id: string, data: any): any => {
+    const raw = rawDocsRef.current[id];
+    if (!raw) return data; // 신규 종목 — 보호 대상 아님
+    const isKiwoomManaged = !!(data.code || raw.code);
+    if (!isKiwoomManaged) return data;
+    const out = { ...data };
+    if (typeof raw.totalQuantity === 'number') out.totalQuantity = raw.totalQuantity;
+    if (typeof raw.avgPrice === 'number' && raw.avgPrice > 0) out.avgPrice = raw.avgPrice;
+    return out;
+  }, []);
+
   // saveStock(stock, true) = 즉시 저장 (디바운스 skip) - critical 작업용
   // saveStock(stock) = 디바운스 저장 (입력 중 자동저장용)
   const saveStock = useCallback(async (stock: Stock, immediate = false) => {
@@ -326,14 +348,14 @@ export function useStocks() {
     }
     if (immediate) {
       const { id, ...data } = stock;
-      await setDoc(doc(db, 'stocks', id), { ...data, updatedAt: Date.now() });
+      await setDoc(doc(db, 'stocks', id), protectTruthFields(id, { ...data, updatedAt: Date.now() }));
       return;
     }
     debounceTimers.current[stock.id] = setTimeout(async () => {
       const { id, ...data } = stock;
-      await setDoc(doc(db, 'stocks', id), { ...data, updatedAt: Date.now() });
+      await setDoc(doc(db, 'stocks', id), protectTruthFields(id, { ...data, updatedAt: Date.now() }));
     }, DEBOUNCE_MS);
-  }, []);
+  }, [protectTruthFields]);
 
   // addStock(name): 기본 종목 추가
   // addStock(name, { referencePeakPrice }): Watchlist에서 promote 시 최고점 함께 저장 (룰B 기준점)
