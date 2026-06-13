@@ -982,6 +982,43 @@ export default function StockDetail({
     setSplitIdx(null);
   };
 
+  // ── 매도 슬롯 재지정(이동): MA↔수익차수 등 태그 변경 (단일 진실) ──
+  const RETAG_SELLS_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/retagSells';
+  const [maMoveIdx, setMaMoveIdx] = useState<number | null>(null); // 이동 팝업 연 MA선(20/60/120)
+  const [retagBusy, setRetagBusy] = useState(false);
+
+  // 현재 라운드에서 특정 슬롯에 속한 매도 trade id 목록
+  const tradeIdsForSlot = (slotLabel: string): string[] => {
+    return (actualSells as any[])
+      .filter((t) => (t.sellRound || 0) === selectedBuyLevel &&
+        (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0
+          ? t.sellSlotSplit.some((s: any) => s.slot === slotLabel)
+          : t.sellSlot === slotLabel))
+      .map((t) => String(t.id));
+  };
+
+  const retagSlot = async (fromSlot: string, toSlot: string) => {
+    const ids = tradeIdsForSlot(fromSlot);
+    if (ids.length === 0) { alert('이동할 매도를 찾을 수 없습니다.'); return; }
+    // 분배(sellSlotSplit) 매도가 섞이면 부분만 이동 불가 → 안내
+    const hasSplit = (actualSells as any[]).some((t) => ids.includes(String(t.id)) && Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0);
+    if (hasSplit) { alert('부분 분배된 매도는 먼저 분배를 해제한 뒤 이동하세요.'); return; }
+    setRetagBusy(true);
+    try {
+      const res = await fetch(RETAG_SELLS_API, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tradeIds: ids, toSlot }),
+      });
+      const data = await res.json();
+      if (!data.success) { alert('이동 실패: ' + (data.error || '')); setRetagBusy(false); return; }
+      lastUserActionRef.current = 0; // onSnapshot 즉시 반영
+      setMaMoveIdx(null);
+    } catch (e: any) {
+      alert('이동 오류: ' + e.message);
+    }
+    setRetagBusy(false);
+  };
+
   // ── 부분 분배: 한 매도(체결)를 여러 차수로 나눔 (급등 시 2차수 분량 한번에 매도) ──
   const SET_SELL_SPLIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/setSellSplit';
   const [distributePercent, setDistributePercent] = useState<number | null>(null);
@@ -3929,8 +3966,39 @@ export default function StockDetail({
                         {ms.filled ? '체결' : '미체결'}
                       </span>
                     </td>
-                    <td>
+                    <td style={{ position: 'relative' }}>
                       {ms.filled && ms.filledDate ? ms.filledDate.slice(5) : <span className={styles.dashText}>-</span>}
+                      {ms.filled && (
+                        <button
+                          onClick={() => setMaMoveIdx(maMoveIdx === ms.ma ? null : ms.ma)}
+                          style={{
+                            marginLeft: 6, padding: '1px 6px', fontSize: 10, fontWeight: 700,
+                            background: '#e3f2fd', color: '#1565c0', border: '1px solid #90caf9',
+                            borderRadius: 4, cursor: 'pointer',
+                          }}
+                          title="이 MA 매도를 다른 차수/MA로 이동 (태그 변경)"
+                        >↕️ 이동</button>
+                      )}
+                      {maMoveIdx === ms.ma && (
+                        <div className={styles.moveSellPopup} style={{ right: 0, minWidth: 200 }}>
+                          <div className={styles.moveSellTitle}>↕️ MA{ms.ma} 매도 이동 ({ms.quantity}주)</div>
+                          <div className={styles.moveSellHint}>이동할 슬롯 선택:</div>
+                          <div className={styles.moveSellTargets}>
+                            {['+5%', '+10%', '+15%', '+20%', '+25%', 'MA20', 'MA60', 'MA120']
+                              .filter((s) => s !== `MA${ms.ma}`)
+                              .map((slot) => (
+                                <button
+                                  key={slot}
+                                  className={styles.moveSellTargetBtn}
+                                  disabled={retagBusy}
+                                  onClick={() => retagSlot(`MA${ms.ma}`, slot)}
+                                  title={`MA${ms.ma} → ${slot} 이동`}
+                                >{slot} ↗</button>
+                              ))}
+                          </div>
+                          <button className={styles.sellEditCancel} onClick={() => setMaMoveIdx(null)}>취소</button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );

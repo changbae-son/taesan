@@ -5757,6 +5757,56 @@ export const reconcileHoldingsTruth = functions
     });
   });
 
+// 매도 슬롯 재지정(이동): POST /retagSells
+//   body: { tradeIds:[...], toSlot:'+5%'|'MA120'|... }
+//   지정한 매도 trade들의 sellSlot을 toSlot으로 변경(분배 해제) → reconcile.
+//   MA→수익차수, 수익차수→MA, 차수간 이동 모두 태그 변경 1경로로 처리.
+export const retagSells = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {tradeIds, toSlot} = req.body || {};
+        if (!Array.isArray(tradeIds) || tradeIds.length === 0 || !toSlot) {
+          res.status(400).json({success: false, error: "tradeIds[], toSlot 필수"});
+          return;
+        }
+        const valid = /^(\+(5|10|15|20|25)%|MA(20|60|120))$/.test(String(toSlot));
+        if (!valid) {
+          res.status(400).json({success: false, error: `잘못된 toSlot: ${toSlot}`});
+          return;
+        }
+        let stockName = "";
+        const batch = db.batch();
+        for (const id of tradeIds) {
+          const ref = db.collection("trades").doc(String(id));
+          const snap = await ref.get();
+          if (!snap.exists) continue;
+          const t = snap.data() as any;
+          if (t.type !== "sell") continue;
+          if (!stockName) stockName = t.stockName;
+          batch.update(ref, {
+            sellSlot: toSlot,
+            sellSlotSplit: admin.firestore.FieldValue.delete(),
+          });
+        }
+        await batch.commit();
+        let reconcile: any = null;
+        if (stockName) {
+          try {
+            reconcile = await reconcileStockPlans(stockName);
+          } catch (e: any) {
+            console.error(`[retagSells] reconcile 실패: ${e.message}`);
+          }
+        }
+        res.json({success: true, stockName, count: tradeIds.length, toSlot, reconcile});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
 // 매도 부분분배 저장: POST /setSellSplit
 //   body: { tradeId, splits:[{slot:'+5%',qty:60},...] }  또는 { tradeId, clear:true }
 //   한 매도 trade를 여러 차수 슬롯에 부분 배정. 합계 = trade.quantity 여야 함.
