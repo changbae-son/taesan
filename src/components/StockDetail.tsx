@@ -982,6 +982,66 @@ export default function StockDetail({
     setSplitIdx(null);
   };
 
+  // ── 부분 분배: 한 매도(체결)를 여러 차수로 나눔 (급등 시 2차수 분량 한번에 매도) ──
+  const SET_SELL_SPLIT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/setSellSplit';
+  const [distributePercent, setDistributePercent] = useState<number | null>(null);
+  const [distributeDraft, setDistributeDraft] = useState<Record<number, string>>({});
+  const [distributeBusy, setDistributeBusy] = useState(false);
+
+  // 현재 라운드 + 해당 슬롯(%)에 속한 매도 trade들 (분배 또는 단일태그)
+  const findSlotTrades = (percent: number) => {
+    const slotLabel = `+${percent}%`;
+    return (actualSells as any[]).filter((t) =>
+      (t.sellRound || 0) === selectedBuyLevel &&
+      (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0
+        ? t.sellSlotSplit.some((s: any) => s.slot === slotLabel)
+        : t.sellSlot === slotLabel));
+  };
+
+  const openDistribute = (percent: number) => {
+    const ts = findSlotTrades(percent);
+    if (ts.length !== 1) {
+      alert(`부분 분배는 단일 체결 매도에만 가능합니다 (이 슬롯 매도 ${ts.length}건). 합치기로 1건으로 만든 뒤 시도하세요.`);
+      return;
+    }
+    const t = ts[0];
+    const totalQty = Number(t.quantity) || 0;
+    const draft: Record<number, string> = {};
+    [5, 10, 15, 20, 25].forEach((p) => { draft[p] = p === percent ? String(totalQty) : ''; });
+    setDistributeDraft(draft);
+    setDistributePercent(percent);
+    setMoveSellIdx(null);
+  };
+
+  const applyDistribute = async () => {
+    if (distributePercent === null) return;
+    const ts = findSlotTrades(distributePercent);
+    if (ts.length !== 1) { alert('대상 매도를 찾을 수 없습니다.'); return; }
+    const t = ts[0];
+    const totalQty = Number(t.quantity) || 0;
+    const splits = [5, 10, 15, 20, 25]
+      .map((p) => ({ slot: `+${p}%`, qty: Math.round(Number(distributeDraft[p]) || 0) }))
+      .filter((s) => s.qty > 0);
+    const sum = splits.reduce((a, s) => a + s.qty, 0);
+    if (sum !== totalQty) { alert(`분배 합계 ${sum}주 ≠ 매도수량 ${totalQty}주`); return; }
+    if (splits.length < 2) { alert('2개 이상 차수에 나눠주세요. (1개면 일반 이동을 쓰세요)'); return; }
+    setDistributeBusy(true);
+    try {
+      const res = await fetch(SET_SELL_SPLIT_API, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tradeId: t.id, splits }),
+      });
+      const data = await res.json();
+      if (!data.success) { alert('분배 저장 실패: ' + (data.error || '')); setDistributeBusy(false); return; }
+      // 백엔드 reconcile이 슬롯 재파생 → onSnapshot이 갱신. grace 풀어 즉시 반영
+      lastUserActionRef.current = 0;
+      setDistributePercent(null);
+    } catch (e: any) {
+      alert('분배 저장 오류: ' + e.message);
+    }
+    setDistributeBusy(false);
+  };
+
   // fromIdx의 체결 데이터를 toPercent 차수로 이동 또는 합치기
   // - 도착이 비어있으면 단순 이동
   // - 도착에 이미 체결 있으면 confirm 후 가중평균 합산
@@ -1635,26 +1695,37 @@ export default function StockDetail({
     }
 
     // ✅ 방안 B Phase 3: tradeTagBasedMapping ON이면 trade.sellRound/sellSlot 기반 슬롯 집계
-    //   각 +p% 슬롯 = sellRound===현재라운드 && sellSlot===`+p%`인 매도 trade 합산
-    //   → 가격 구간 추측 없이 정확 (흥구석유 6/08이 +5%에 잘못 가던 문제 근본 해결)
+    //   각 슬롯 = sellRound===현재라운드 && (분배 sellSlotSplit 우선 / 단일 sellSlot) 매도 합산
+    //   → 가격 구간 추측 없이 정확. 부분분배(1매도 여러차수)도 portion으로 집계.
+    const collectSlotFE = (slotLabel: string) => {
+      let qty = 0; let amt = 0; let date = '';
+      for (const t of actualSells as any[]) {
+        if ((t.sellRound || 0) !== selectedBuyLevel) continue;
+        const price = Number(t.price) || 0;
+        let portion = 0;
+        if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0) {
+          const part = t.sellSlotSplit.find((s: any) => s.slot === slotLabel);
+          portion = part ? (Number(part.qty) || 0) : 0;
+        } else if (t.sellSlot === slotLabel) {
+          portion = Number(t.quantity) || 0;
+        }
+        if (portion <= 0) continue;
+        qty += portion; amt += price * portion;
+        const d = normDate(t.date);
+        if (d > date) date = d;
+      }
+      return { qty, avgPrice: qty > 0 ? Math.round(amt / qty) : 0, date };
+    };
     const sellSlots = featureFlags.tradeTagBasedMapping
       ? percents.map((p, i) => {
           const targetPrice = targetPrices[i];
-          const slotTrades = actualSells.filter(
-            (t: any) => (t.sellRound || 0) === selectedBuyLevel && t.sellSlot === `+${p}%`
-          );
-          if (slotTrades.length === 0) {
+          const a = collectSlotFE(`+${p}%`);
+          if (a.qty === 0) {
             return { percent: p, price: targetPrice, quantity: slotQty, filled: false, filledDate: '' };
           }
-          const qty = slotTrades.reduce((s: number, t: any) => s + (Number(t.quantity) || 0), 0);
-          const amt = slotTrades.reduce((s: number, t: any) => s + (Number(t.price) || 0) * (Number(t.quantity) || 0), 0);
-          const lastDate = slotTrades.reduce((m: string, t: any) => {
-            const d = normDate(t.date);
-            return d > m ? d : m;
-          }, '');
           return {
-            percent: p, price: targetPrice, quantity: qty, filled: true,
-            filledDate: lastDate, filledPrice: qty > 0 ? Math.round(amt / qty) : 0,
+            percent: p, price: targetPrice, quantity: a.qty, filled: true,
+            filledDate: a.date, filledPrice: a.avgPrice,
           };
         })
       : percents.map((p, i) => {
@@ -1671,21 +1742,13 @@ export default function StockDetail({
     //   각 MA선(20/60/120) = sellRound===현재라운드 && sellSlot===`MA${ma}`인 매도 합산.
     //   다음 차수 매수 시 그 라운드로 넘어가므로 자동 리셋. 수동 입력 없음.
     const maSlots = [20, 60, 120].map((ma) => {
-      const slotTrades = actualSells.filter(
-        (t: any) => (t.sellRound || 0) === selectedBuyLevel && t.sellSlot === `MA${ma}`
-      );
-      if (slotTrades.length === 0) {
+      const a = collectSlotFE(`MA${ma}`);
+      if (a.qty === 0) {
         return { ma, price: 0, quantity: 0, filled: false, filledDate: '' };
       }
-      const qty = slotTrades.reduce((s: number, t: any) => s + (Number(t.quantity) || 0), 0);
-      const amt = slotTrades.reduce((s: number, t: any) => s + (Number(t.price) || 0) * (Number(t.quantity) || 0), 0);
-      const lastDate = slotTrades.reduce((m: string, t: any) => {
-        const d = normDate(t.date);
-        return d > m ? d : m;
-      }, '');
       return {
-        ma, price: qty > 0 ? Math.round(amt / qty) : 0, quantity: qty,
-        filled: true, filledDate: lastDate,
+        ma, price: a.avgPrice, quantity: a.qty,
+        filled: true, filledDate: a.date,
       };
     });
 
@@ -3494,7 +3557,66 @@ export default function StockDetail({
                                 );
                               })}
                             </div>
+                            <button
+                              onClick={() => openDistribute(sp.percent)}
+                              style={{
+                                width: '100%', marginTop: 6, padding: '5px', fontSize: 12, fontWeight: 700,
+                                background: '#e3f2fd', color: '#1565c0', border: '1px solid #90caf9',
+                                borderRadius: 4, cursor: 'pointer',
+                              }}
+                              title="이 매도를 여러 차수로 나눔 (급등 시 2차수 분량 한번에 매도)"
+                            >
+                              ✂️ 부분 분배 (여러 차수로 나누기)
+                            </button>
                             <button className={styles.sellEditCancel} onClick={() => setMoveSellIdx(null)}>취소</button>
+                          </div>
+                        )}
+                        {distributePercent === sp.percent && (
+                          <div className={styles.moveSellPopup} style={{ minWidth: 240 }}>
+                            <div className={styles.moveSellTitle}>✂️ +{sp.percent}% 매도 부분 분배</div>
+                            <div className={styles.moveSellInfo}>
+                              {(() => {
+                                const t = findSlotTrades(sp.percent)[0];
+                                const q = t ? (Number(t.quantity) || 0) : 0;
+                                const pr = t ? (Number(t.price) || 0) : 0;
+                                const entered = [5, 10, 15, 20, 25].reduce((a, p) => a + (Number(distributeDraft[p]) || 0), 0);
+                                return (
+                                  <>
+                                    {pr.toLocaleString()}원 × {q}주 →
+                                    <b style={{ color: entered === q ? '#2e7d32' : '#c62828', marginLeft: 4 }}>
+                                      입력 {entered}/{q}주
+                                    </b>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                            <div className={styles.moveSellHint}>차수별 수량 입력 (합계=매도수량):</div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '4px 0' }}>
+                              {[5, 10, 15, 20, 25].map((p) => (
+                                <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span style={{ width: 36, fontSize: 12, color: '#1565c0', fontWeight: 700 }}>+{p}%</span>
+                                  <input
+                                    type="number"
+                                    style={{ flex: 1, padding: '3px 6px', fontSize: 12, border: '1px solid #bbb', borderRadius: 4 }}
+                                    placeholder="0"
+                                    value={distributeDraft[p] || ''}
+                                    onChange={(e) => setDistributeDraft({ ...distributeDraft, [p]: e.target.value })}
+                                  />
+                                  <span style={{ fontSize: 11, color: '#999' }}>주</span>
+                                </div>
+                              ))}
+                            </div>
+                            <button
+                              onClick={applyDistribute}
+                              disabled={distributeBusy}
+                              style={{
+                                width: '100%', padding: '5px', fontSize: 12, fontWeight: 700, borderRadius: 4, border: 'none',
+                                background: distributeBusy ? '#cfd8dc' : '#1565c0', color: '#fff', cursor: 'pointer', marginBottom: 4,
+                              }}
+                            >
+                              {distributeBusy ? '저장 중…' : '분배 저장'}
+                            </button>
+                            <button className={styles.sellEditCancel} onClick={() => setDistributePercent(null)}>취소</button>
                           </div>
                         )}
                         {sellEditIdx === i && sellEditDraft && (

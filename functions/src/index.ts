@@ -4569,21 +4569,36 @@ function deriveSellSlotsFromTags(
   const slotQty = holding > 0 ? Math.round(holding / 5) : 0;
 
   const existingSell: any[] = Array.isArray(stock.sellPlans) ? stock.sellPlans : [];
-  const aggr = (tagged: any[]) => {
-    const qty = tagged.reduce((s: number, t: any) => s + (Number(t.quantity) || 0), 0);
-    const amt = tagged.reduce((s: number, t: any) => s + (Number(t.price) || 0) * (Number(t.quantity) || 0), 0);
-    const date = tagged.map((t: any) => normD(t.date)).sort().pop() || "";
-    return {qty, avgPrice: qty > 0 ? Math.round(amt / qty) : 0, date, ids: tagged.map((t: any) => String(t.id))};
+  // 슬롯별 집계 — 부분분배(sellSlotSplit) 우선, 없으면 단일 sellSlot.
+  //   roundFilter: 현재 라운드만 볼지 (수익/MA 슬롯=true)
+  const collectSlot = (slotLabel: string, roundFilter: boolean) => {
+    let qty = 0; let amt = 0; let date = ""; const ids: string[] = [];
+    for (const t of sells) {
+      if (roundFilter && (Number(t.sellRound) || 0) !== currentRound) continue;
+      const price = Number(t.price) || 0;
+      let portion = 0;
+      if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0) {
+        const part = t.sellSlotSplit.find((sp: any) => sp.slot === slotLabel);
+        portion = part ? (Number(part.qty) || 0) : 0;
+      } else if (t.sellSlot === slotLabel) {
+        portion = Number(t.quantity) || 0;
+      }
+      if (portion <= 0) continue;
+      qty += portion;
+      amt += price * portion;
+      const d = normD(t.date);
+      if (d > date) date = d;
+      ids.push(String(t.id));
+    }
+    return {qty, avgPrice: qty > 0 ? Math.round(amt / qty) : 0, date, ids};
   };
 
   // 수익 슬롯(+5~+25%): 현재 라운드 태그만 (추가매수 시 라운드 리셋 — 태산 규칙)
   const sellPlans = [5, 10, 15, 20, 25].map((p, i) => {
-    const tagged = sells.filter((t: any) =>
-      (Number(t.sellRound) || 0) === currentRound && t.sellSlot === `+${p}%`);
+    const a = collectSlot(`+${p}%`, true);
     const ex = existingSell[i];
     const target = avg > 0 ? Math.round(avg * (1 + p / 100)) : (Number(ex?.price) || 0);
-    if (tagged.length > 0) {
-      const a = aggr(tagged);
+    if (a.qty > 0) {
       return {
         percent: p, price: target, quantity: a.qty, filled: true,
         filledDate: a.date, filledQuantity: a.qty, filledPrice: a.avgPrice,
@@ -4603,10 +4618,8 @@ function deriveSellSlotsFromTags(
   const maSells = [20, 60, 120].map((ma) => {
     const ex = existingMa.find((m: any) => m.ma === ma) ||
       {ma, price: 0, quantity: 0, filled: false};
-    const tagged = sells.filter((t: any) =>
-      (Number(t.sellRound) || 0) === currentRound && t.sellSlot === `MA${ma}`);
-    if (tagged.length > 0) {
-      const a = aggr(tagged);
+    const a = collectSlot(`MA${ma}`, true);
+    if (a.qty > 0) {
       return {
         ...ex, filled: true, quantity: a.qty, price: a.avgPrice,
         filledDate: a.date, consumedTradeIds: a.ids,
@@ -4668,7 +4681,8 @@ async function reconcileStockPlans(stockName: string): Promise<{
       .filter((t: any) => t.type === "buy")
       .map((t: any) => ({date: t.date, price: t.price, quantity: t.quantity}));
     const untaggedSells = trades
-      .filter((t: any) => t.type === "sell" && !t.sellSlot)
+      .filter((t: any) => t.type === "sell" && !t.sellSlot &&
+        !(Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0))
       .map((t: any) => ({id: t.id, date: t.date, price: t.price, quantity: t.quantity}));
     if (untaggedSells.length > 0 && buyTradesForTag.length > 0) {
       const tags = computeSellTags(buyTradesForTag, untaggedSells);
@@ -5737,6 +5751,69 @@ export const reconcileHoldingsTruth = functions
           mismatchCount: mismatches.length,
           mismatches,
         });
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
+// 매도 부분분배 저장: POST /setSellSplit
+//   body: { tradeId, splits:[{slot:'+5%',qty:60},...] }  또는 { tradeId, clear:true }
+//   한 매도 trade를 여러 차수 슬롯에 부분 배정. 합계 = trade.quantity 여야 함.
+//   저장 후 해당 종목 reconcile → 슬롯 재파생 (각 슬롯 1회 매도로 카운트).
+export const setSellSplit = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {tradeId, splits, clear} = req.body || {};
+        if (!tradeId) {
+          res.status(400).json({success: false, error: "tradeId 필수"});
+          return;
+        }
+        const tref = db.collection("trades").doc(String(tradeId));
+        const tsnap = await tref.get();
+        if (!tsnap.exists) {
+          res.status(404).json({success: false, error: "trade 없음"});
+          return;
+        }
+        const trade = tsnap.data() as any;
+        if (trade.type !== "sell") {
+          res.status(400).json({success: false, error: "매도 trade만 분배 가능"});
+          return;
+        }
+        const stockName = trade.stockName;
+
+        if (clear) {
+          await tref.update({sellSlotSplit: admin.firestore.FieldValue.delete()});
+        } else {
+          if (!Array.isArray(splits) || splits.length === 0) {
+            res.status(400).json({success: false, error: "splits 필요"});
+            return;
+          }
+          const clean = splits
+            .map((s: any) => ({slot: String(s.slot), qty: Math.round(Number(s.qty) || 0)}))
+            .filter((s: any) => s.qty > 0);
+          const sum = clean.reduce((a: number, s: any) => a + s.qty, 0);
+          const tradeQty = Number(trade.quantity) || 0;
+          if (sum !== tradeQty) {
+            res.status(400).json({success: false, error: `분배 합계 ${sum} ≠ 매도수량 ${tradeQty}`});
+            return;
+          }
+          // 분배 저장 + sellSlot은 'split' 마커 (자동태깅 재처리 방지, 단일 슬롯 해석 무력화)
+          await tref.update({sellSlotSplit: clean, sellSlot: "split"});
+        }
+
+        let reconcile: any = null;
+        if (stockName) {
+          try {
+            reconcile = await reconcileStockPlans(stockName);
+          } catch (e: any) {
+            console.error(`[setSellSplit] reconcile 실패: ${e.message}`);
+          }
+        }
+        res.json({success: true, tradeId, stockName, cleared: !!clear, reconcile});
       } catch (e: any) {
         res.status(500).json({success: false, error: e.message});
       }

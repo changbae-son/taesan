@@ -238,6 +238,10 @@ export interface Trade {
   //   1 매도 trade = 1 라운드 + 1 슬롯 → 중복 물리적 불가, 미분류=태그 없거나 'unmapped'
   sellRound?: number;
   sellSlot?: string;
+  // 부분 분배: 한 번의 큰 매도(급등 등)를 여러 차수 슬롯에 나눠 배정.
+  //   예: 120주 1회 매도 → [{slot:'+5%',qty:60},{slot:'+10%',qty:60}]
+  //   합계 = quantity. 있으면 sellSlot 대신 이 분배가 우선. 각 슬롯이 1회 매도로 카운트.
+  sellSlotSplit?: Array<{ slot: string; qty: number }>;
   createdAt: number;
 }
 
