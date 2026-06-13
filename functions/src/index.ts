@@ -4597,12 +4597,14 @@ function deriveSellSlotsFromTags(
     return {percent: p, price: target, quantity: slotQty, filled: false, filledDate: ""};
   });
 
-  // MA 슬롯: 라운드 무관 누적 (태산 규칙: MA 매도는 사이클당 1회 종결, 라운드 리셋 없음)
+  // MA 슬롯: 수익 슬롯과 동일하게 현재 라운드만 (다음 차수 매수 시 리셋).
+  //   과거 라운드 MA 매도는 프론트 복기 뷰(roundView.maSlots)에 라운드별 표시.
   const existingMa: any[] = Array.isArray(stock.maSells) ? stock.maSells : [];
   const maSells = [20, 60, 120].map((ma) => {
     const ex = existingMa.find((m: any) => m.ma === ma) ||
       {ma, price: 0, quantity: 0, filled: false};
-    const tagged = sells.filter((t: any) => t.sellSlot === `MA${ma}`);
+    const tagged = sells.filter((t: any) =>
+      (Number(t.sellRound) || 0) === currentRound && t.sellSlot === `MA${ma}`);
     if (tagged.length > 0) {
       const a = aggr(tagged);
       return {
@@ -5569,18 +5571,19 @@ async function reconcileStockPlans(stockName: string): Promise<{
     }
     const tradesComplete = tradesNetQty === stockTotalQty;
 
-    // ✅ totalQuantity 보정: trades 기반 순보유수량이 Firestore 값과 다르면 갱신
-    // 특히 매매완료(전량매도) 종목이 "진행중"으로 잘못 표시되는 케이스 방지
-    // tradesNetQty = buyQty - sellQty (trades 원본 기준, 음수는 0으로 처리)
+    // ✅ 단일 진실: 잔고(totalQuantity)의 주인은 키움(kiwoomSync/reconcileHoldingsTruth).
+    //    reconcile은 trades로 잔고를 "올리지" 않는다 — trades 누락(키움 조회범위 밖
+    //    과거 매도)이 있으면 trades 순보유가 실제보다 많아 매매완료 종목을 되살리는
+    //    "원점 회귀" 발생 (CS: 매도60 누락 → trades 60남음 → 키움0 무시하고 60으로 부활).
+    //    → 전량매도 감지(trades 순보유 0)일 때 0으로 내리는 것만 허용. 증가는 금지.
     const tradesBasedQty = Math.max(0, tradesNetQty);
-    if (tradesBasedQty !== stockTotalQty) {
-      reconcileUpdate.totalQuantity = tradesBasedQty;
-      console.log(`[reconcile] ${stockName} totalQuantity 보정: ${stockTotalQty} → ${tradesBasedQty} (trades 기반)`);
-      // 완전 매도된 경우 avgPrice도 0으로 초기화
-      if (tradesBasedQty === 0) {
-        reconcileUpdate.avgPrice = 0;
-        console.log(`[reconcile] ${stockName} 전량매도 확인 → avgPrice 0 리셋`);
-      }
+    if (tradesBasedQty === 0 && stockTotalQty !== 0) {
+      reconcileUpdate.totalQuantity = 0;
+      reconcileUpdate.avgPrice = 0;
+      console.log(`[reconcile] ${stockName} 전량매도(trades 순보유 0) → totalQuantity/avgPrice 0`);
+    } else if (tradesBasedQty !== stockTotalQty) {
+      // 불일치하지만 증가 방향 → 키움 잔고 신뢰, 건드리지 않음 (로그만)
+      console.log(`[reconcile] ${stockName} totalQuantity 불일치 무시: trades ${tradesBasedQty} vs 키움 ${stockTotalQty} (키움 신뢰)`);
     }
 
     // ✅ 합병/감자 보정 이력 있는 종목은 trades 기반 단순 평단 덮어쓰기 SKIP

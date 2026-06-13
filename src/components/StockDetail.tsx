@@ -1667,7 +1667,29 @@ export default function StockDetail({
           return { percent: p, price: targetPrice, quantity: slotQty, filled: false, filledDate: '' };
         });
 
-    return { roundAvgPrice, holdingAtStart, slotQty, sellSlots, roundSells, thisBuyDate, nextBuyDate };
+    // ── 라운드별 MA 매도 슬롯 (방식2: 실제 체결 trade만, 태그 기반) ──
+    //   각 MA선(20/60/120) = sellRound===현재라운드 && sellSlot===`MA${ma}`인 매도 합산.
+    //   다음 차수 매수 시 그 라운드로 넘어가므로 자동 리셋. 수동 입력 없음.
+    const maSlots = [20, 60, 120].map((ma) => {
+      const slotTrades = actualSells.filter(
+        (t: any) => (t.sellRound || 0) === selectedBuyLevel && t.sellSlot === `MA${ma}`
+      );
+      if (slotTrades.length === 0) {
+        return { ma, price: 0, quantity: 0, filled: false, filledDate: '' };
+      }
+      const qty = slotTrades.reduce((s: number, t: any) => s + (Number(t.quantity) || 0), 0);
+      const amt = slotTrades.reduce((s: number, t: any) => s + (Number(t.price) || 0) * (Number(t.quantity) || 0), 0);
+      const lastDate = slotTrades.reduce((m: string, t: any) => {
+        const d = normDate(t.date);
+        return d > m ? d : m;
+      }, '');
+      return {
+        ma, price: qty > 0 ? Math.round(amt / qty) : 0, quantity: qty,
+        filled: true, filledDate: lastDate,
+      };
+    });
+
+    return { roundAvgPrice, holdingAtStart, slotQty, sellSlots, maSlots, roundSells, thisBuyDate, nextBuyDate };
   })();
 
   // ── 복기 모드: roundHistory 관리 ──
@@ -3714,11 +3736,20 @@ export default function StockDetail({
 
       {/* 이동평균선 매도 */}
       <div className={styles.card} style={{ borderLeft: '3px solid #ff9800' }}>
-        <h3 className={styles.cardTitle} style={{ color: '#ff9800' }}>
+        <h3 className={styles.cardTitle} style={{ color: '#ff9800', display: 'flex', alignItems: 'center', gap: 8 }}>
           이동평균선 매도
+          {featureFlags.tradeTagBasedMapping && (
+            <span style={{
+              fontSize: 12, fontWeight: 700, padding: '1px 8px', borderRadius: 10,
+              background: isCurrentRound ? '#fff3e0' : '#eceff1',
+              color: isCurrentRound ? '#e65100' : '#607d8b',
+            }}>
+              {isCurrentRound ? `${selectedBuyLevel}차 현재 라운드` : `${selectedBuyLevel}차 복기`}
+            </span>
+          )}
         </h3>
         <p className={styles.maWarning}>
-          손실이어도 매도 원칙! (이동평균선 도달 시 반드시 매도)
+          손실이어도 매도 원칙! (이동평균선 도달 시 반드시 매도) · 라운드별 표시
         </p>
         <table className={styles.planTable}>
           <thead>
@@ -3732,11 +3763,55 @@ export default function StockDetail({
             </tr>
           </thead>
           <tbody>
-            {local.maSells.map((ms, i) => {
-              const maProfit =
-                local.avgPrice > 0
-                  ? ((ms.price - local.avgPrice) / local.avgPrice) * 100
-                  : 0;
+            {(featureFlags.tradeTagBasedMapping ? roundView.maSlots : local.maSells).map((ms: any, i: number) => {
+              const tagMode = featureFlags.tradeTagBasedMapping;
+              // 미체결: 현재 이평선 값(도달 목표 참고) / 체결: 실제 매도가
+              const maLineVal = ms.ma === 20 ? (local.ma20 || 0) : ms.ma === 60 ? (local.ma60 || 0) : (local.ma120 || 0);
+              const baseAvg = roundView.roundAvgPrice > 0 ? roundView.roundAvgPrice : local.avgPrice;
+
+              if (tagMode) {
+                // ── 방식2: 라운드별 실제 체결 MA 매도만 표시 (읽기전용, 단일 진실) ──
+                const refPrice = ms.filled ? ms.price : maLineVal;
+                const maProfit = baseAvg > 0 && refPrice > 0 ? ((refPrice - baseAvg) / baseAvg) * 100 : 0;
+                const maNearInfo = !ms.filled && maLineVal > 0 ? getNearInfo(maLineVal) : null;
+                return (
+                  <tr key={i} className={`${ms.filled ? styles.maFilledRow : ''} ${maNearInfo ? styles.nearbySellRow : ''}`}>
+                    <td>
+                      {ms.ma}일선
+                      {maNearInfo && (
+                        <span className={`${styles.nearbySellChip} ${
+                          maNearInfo.urgency === 3 ? styles.chipUrgency3 : maNearInfo.urgency === 2 ? styles.chipUrgency2 : styles.chipUrgency1
+                        }`}>
+                          {maNearInfo.gap >= 0 ? '+' : ''}{maNearInfo.gap.toFixed(1)}%
+                        </span>
+                      )}
+                    </td>
+                    <td className={styles.numCell}>
+                      {refPrice > 0 ? refPrice.toLocaleString() : '-'}
+                      {!ms.filled && maLineVal > 0 && (
+                        <span style={{ display: 'block', fontSize: 10, color: '#999' }}>이평선</span>
+                      )}
+                    </td>
+                    <td className={styles.numCell}>
+                      {ms.filled && ms.quantity > 0 ? ms.quantity.toLocaleString() : '-'}
+                    </td>
+                    <td className={styles.numCell} style={{ color: maProfit >= 0 ? '#4caf50' : '#f44336', textAlign: 'right' }}>
+                      {refPrice > 0 && baseAvg > 0 ? `${maProfit.toFixed(2)}%` : '-'}
+                    </td>
+                    <td>
+                      <span className={`${styles.fillBtn} ${ms.filled ? styles.maBtnActive : ''}`} style={{ cursor: 'default' }}>
+                        {ms.filled ? '체결' : '미체결'}
+                      </span>
+                    </td>
+                    <td>
+                      {ms.filled && ms.filledDate ? ms.filledDate.slice(5) : <span className={styles.dashText}>-</span>}
+                    </td>
+                  </tr>
+                );
+              }
+
+              // ── 레거시(flag OFF): 기존 수동 편집 가능 render ──
+              const maProfit = local.avgPrice > 0 ? ((ms.price - local.avgPrice) / local.avgPrice) * 100 : 0;
               const maNearInfo = !ms.filled && ms.price > 0 ? getNearInfo(ms.price) : null;
               return (
                 <tr key={i} className={`${ms.filled ? styles.maFilledRow : ''} ${maNearInfo ? styles.nearbySellRow : ''}`}>
@@ -3754,45 +3829,22 @@ export default function StockDetail({
                     )}
                   </td>
                   <td>
-                    <input
-                      type="number"
-                      className={styles.maInput}
-                      value={ms.price || ''}
-                      onChange={(e) => updateMAPrice(i, Number(e.target.value))}
-                    />
+                    <input type="number" className={styles.maInput} value={ms.price || ''} onChange={(e) => updateMAPrice(i, Number(e.target.value))} />
                   </td>
                   <td>
-                    <input
-                      type="number"
-                      className={styles.maInput}
-                      value={ms.quantity || ''}
-                      onChange={(e) => updateMAQty(i, Number(e.target.value))}
-                    />
+                    <input type="number" className={styles.maInput} value={ms.quantity || ''} onChange={(e) => updateMAQty(i, Number(e.target.value))} />
                   </td>
-                  <td
-                    className={styles.numCell}
-                    style={{ color: maProfit >= 0 ? '#4caf50' : '#f44336' }}
-                  >
-                    {ms.price > 0 && local.avgPrice > 0
-                      ? `${maProfit.toFixed(2)}%`
-                      : '-'}
+                  <td className={styles.numCell} style={{ color: maProfit >= 0 ? '#4caf50' : '#f44336' }}>
+                    {ms.price > 0 && local.avgPrice > 0 ? `${maProfit.toFixed(2)}%` : '-'}
                   </td>
                   <td>
-                    <button
-                      className={`${styles.fillBtn} ${ms.filled ? styles.maBtnActive : ''}`}
-                      onClick={() => toggleMAFilled(i)}
-                    >
+                    <button className={`${styles.fillBtn} ${ms.filled ? styles.maBtnActive : ''}`} onClick={() => toggleMAFilled(i)}>
                       {ms.filled ? '체결' : '미체결'}
                     </button>
                   </td>
                   <td>
                     {ms.filled ? (
-                      <input
-                        type="date"
-                        className={styles.maDateInput}
-                        value={ms.filledDate || ''}
-                        onChange={(e) => updateMAFilledDate(i, e.target.value)}
-                      />
+                      <input type="date" className={styles.maDateInput} value={ms.filledDate || ''} onChange={(e) => updateMAFilledDate(i, e.target.value)} />
                     ) : (
                       <span className={styles.dashText}>-</span>
                     )}
