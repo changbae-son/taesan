@@ -5671,6 +5671,75 @@ async function reconcileStockPlans(stockName: string): Promise<{
  * - trade_kiwoom_* 만 처리 (사용자 수동 작성분은 매매일지만 남고 plan에 영향 없음)
  * - 해당 종목의 buyPlans / sellPlans filled 플래그 자동 갱신
  */
+// ─── 잔고 진실 복구: 키움 잔고(kt00005) ↔ stocks.totalQuantity 대조/정정 ───
+// GET /reconcileHoldingsTruth[?apply=true]
+//   잔고의 진실 = 키움. 키움 잔고에 없는데 totalQuantity>0 인 종목(매매완료 오염,
+//   예: CS 0→60 부활)과 수량 불일치 종목을 찾아 dry-run 보고, apply=true면 정정.
+//   avgPrice는 보유>0 인 경우만 키움 값으로 갱신 (매매완료 종목은 이력 보존).
+export const reconcileHoldingsTruth = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 300,
+    memory: "512MB",
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const apply = String(req.query.apply || "") === "true";
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const holdings = await fetchHoldings(config, token);
+
+        const byCode: Record<string, any> = {};
+        const byName: Record<string, any> = {};
+        for (const h of holdings) {
+          const c = String(h.code || "").replace(/^A/, "");
+          if (c) byCode[c] = h;
+          if (h.name) byName[h.name] = h;
+        }
+
+        const snap = await db.collection("stocks").get();
+        const mismatches: any[] = [];
+        let checked = 0;
+        for (const d of snap.docs) {
+          const s = d.data() as any;
+          if (!s.code) continue; // 수동 종목 제외 (키움 진실 없음)
+          checked++;
+          const code = String(s.code).replace(/^A/, "");
+          const h = byCode[code] || byName[s.name];
+          const kiwoomQty = h ? (Number(h.quantity) || 0) : 0;
+          const storedQty = Number(s.totalQuantity) || 0;
+          if (kiwoomQty === storedQty) continue;
+          const fix: any = {totalQuantity: kiwoomQty, updatedAt: Date.now()};
+          if (kiwoomQty > 0 && h && (Number(h.avgPrice) || 0) > 0) {
+            fix.avgPrice = Number(h.avgPrice);
+          }
+          mismatches.push({
+            name: s.name, code: s.code,
+            stored: storedQty, kiwoom: kiwoomQty,
+            avgPriceFix: fix.avgPrice || null,
+          });
+          if (apply) {
+            await d.ref.update(fix);
+          }
+        }
+
+        res.json({
+          success: true,
+          applied: apply,
+          checked,
+          kiwoomHoldings: holdings.length,
+          mismatchCount: mismatches.length,
+          mismatches,
+        });
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
 // 단일 종목/전체 reconcile 수동 트리거 (단일 진실 검증·운영용)
 // GET /reconcileNow?stockName=흥구석유  또는  ?all=true
 export const reconcileNow = functions
