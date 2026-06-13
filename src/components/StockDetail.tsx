@@ -3349,8 +3349,12 @@ export default function StockDetail({
                     ? (isFilled ? rvSlot.quantity : 0)
                     : (actual ? actual.qty : sp.filledQuantity || 0);
                   const realDate = rvSlot ? (rvSlot.filledDate || '') : (actual?.date || sp.filledDate || '');
-                  // 목표가: 복기 모드 → 해당 라운드 평단 기반 / 현재 → sp.price
-                  const targetPrice = rvSlot ? rvSlot.price : sp.price;
+                  // 목표가: 항상 라운드평단 기준(reviewSlots[i].price)으로 통일.
+                  //   체결 슬롯이 sp.price(전체평단 기준)를 쓰면 +5%가 +15%와 충돌하던 버그 수정
+                  //   (삼천당제약: +5% 전체평단 311,658×1.05 vs +15% 라운드평단 285,033×1.15).
+                  const targetPrice = (reviewSlots[i]?.price && reviewSlots[i].price > 0)
+                    ? reviewSlots[i].price
+                    : (rvSlot ? rvSlot.price : sp.price);
                   // 계획 수량: 복기 모드 → roundView.slotQty / 현재 → sp.quantity
                   const planQty = rvSlot ? roundView.slotQty : sp.quantity;
 
