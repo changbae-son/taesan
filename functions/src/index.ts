@@ -3130,8 +3130,9 @@ export const kiwoomAutoSync = functions
       const stockDataList = stockDocs.docs.map((d) => ({id: d.id, data: d.data()}));
       await checkRealtimeAlerts(stockDataList, holdingsMap);
 
-      // 관심종목 현재가도 업데이트 (텔레그램 알림은 15:05~15:15에만)
-      const isSignalTime = timeNum >= 1505 && timeNum <= 1515;
+      // 관심종목 현재가는 항상 갱신, 1차 매수신호 텔레그램은 종가 무렵(15:10~15:40)에만
+      //   (매수신호는 종가 기준 — runBuySignalCheck 게이트와 동일 윈도우)
+      const isSignalTime = timeNum >= 1510 && timeNum <= 1540;
       await updateWatchlistPrices(config, token, isSignalTime);
 
       // 이동평균선 계산 (15:20~15:30, 하루 1회) — MA값 갱신 전용, 알림은 checkRealtimeAlerts가 담당
@@ -3603,7 +3604,12 @@ async function updateWatchlistPrices(config: KiwoomConfig, token: string, enable
 // ─── 매수신호 체크 핵심 로직 ───
 async function runBuySignalCheck(): Promise<string> {
     const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
-    console.log(`[매수신호] 체크 시작 ${kst.getHours()}:${kst.getMinutes()}`);
+    // 매수신호(첫 양봉) 텔레그램은 종가 무렵(15:10~15:40)에만 발송.
+    //   태산매매법은 종가 매수 — 장중/NXT 시간엔 양봉이어도 종가에 음봉될 수 있어 의미 없음.
+    //   그 외 상태 갱신(buySignal 화면표시)·관심종목 가격감시는 NXT 시간 포함 항상 수행.
+    const _timeNum = kst.getHours() * 100 + kst.getMinutes();
+    const isCloseWindow = _timeNum >= 1510 && _timeNum <= 1540;
+    console.log(`[매수신호] 체크 시작 ${kst.getHours()}:${kst.getMinutes()} (종가윈도우=${isCloseWindow})`);
 
     try {
       const config = await getKiwoomConfig();
@@ -3717,15 +3723,19 @@ async function runBuySignalCheck(): Promise<string> {
           const isYangbong = openPrice > 0 && cur > openPrice;
           if (isYangbong) {
             const firstAlert = !(e.sent && e.sentLevel === e.level);
-            await db.collection("stocks").doc(e.docId).update({
+            const upd: any = {
               buySignal: "signal",
               buySignalAt: now,
               buySignalOpen: openPrice,
               buySignalFiredLevel: e.level, // 신호이력 (체결/이탈 전까지 유지)
-              buySignalSent: true,
-              buySignalLevel: e.level,
-            });
-            if (firstAlert) {
+            };
+            // 텔레그램 발송·dedup 마킹은 종가 윈도우에만. 그 외엔 화면 상태만 갱신.
+            if (isCloseWindow) {
+              upd.buySignalSent = true;
+              upd.buySignalLevel = e.level;
+            }
+            await db.collection("stocks").doc(e.docId).update(upd);
+            if (firstAlert && isCloseWindow) {
               signals.push({...e, nextBuyPrice: base, nextBuyLevel: e.level, openPrice});
             }
             console.log(`[매수신호] ${e.name}: 🔴 ${e.level}차 기준 ${base} ≥ 현재 ${cur}, 양봉(시가 ${openPrice})${firstAlert ? " 첫알림" : ""}`);
@@ -3762,14 +3772,18 @@ async function runBuySignalCheck(): Promise<string> {
           continue;
         }
         if (isYangbong && !c.alreadySent) {
-          await db.collection("stocks").doc(c.docId).update({
-            "reentry.signalSent": true,
-            "reentry.signalDate": new Date().toISOString().slice(0, 10),
+          const upd: any = {
             buySignal: "signal",
             buySignalAt: now,
             buySignalOpen: openPrice,
-          });
-          signals.push({...c, openPrice});
+          };
+          // 재진입 매수신호 발송·dedup 마킹도 종가 윈도우에만
+          if (isCloseWindow) {
+            upd["reentry.signalSent"] = true;
+            upd["reentry.signalDate"] = new Date().toISOString().slice(0, 10);
+          }
+          await db.collection("stocks").doc(c.docId).update(upd);
+          if (isCloseWindow) signals.push({...c, openPrice});
         } else if (isYangbong && c.alreadySent) {
           await db.collection("stocks").doc(c.docId).update({buySignal: "signal", buySignalAt: now, buySignalOpen: openPrice});
         } else {
@@ -3822,8 +3836,8 @@ async function runBuySignalCheck(): Promise<string> {
         }
       }
 
-      // 대기 종목도 참고 알림 (첫 양봉 미발생 종목)
-      if (waitings.length > 0 && signals.length === 0) {
+      // 대기 종목도 참고 알림 (첫 양봉 미발생 종목) — 매수 관련이라 종가 윈도우에만
+      if (waitings.length > 0 && signals.length === 0 && isCloseWindow) {
         let msg = `<b>⏳ 태산매매법 매수 대기</b>\n`;
         msg += `<i>${y}-${m}-${d} ${hh}:${mm}</i>\n\n`;
         for (const c of waitings) {
@@ -4029,6 +4043,10 @@ async function runBuySignalCheck(): Promise<string> {
 
         // alertLevel이 상승했거나 3(매수준비)인 경우 알림
         if (alertLevel > w.prevAlertLevel || alertLevel === 3) {
+          // 🔴 alertLevel=3(양봉 1차 매수신호)은 종가 윈도우(15:10~15:40)에만 발송.
+          //    ⚠️👀 alertLevel 1·2(매수 임박/눈여겨볼것 = 가격 근접)는 NXT 시간 포함 항상.
+          //    (watchlist 상태/alertLevel은 위에서 이미 갱신됨 — 텔레그램만 게이트)
+          if (alertLevel === 3 && !isCloseWindow) continue;
           const emoji = alertLevel === 3 ? "🔴" : alertLevel === 2 ? "⚠️" : "👀";
           const label = alertLevel === 3 ? "1차 매수신호!" : alertLevel === 2 ? "매수 임박" : "눈여겨볼것";
           const targetPrice = Math.round(w.peakPrice * (1 + w.targetPercent / 100));
