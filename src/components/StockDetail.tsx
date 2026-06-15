@@ -1304,20 +1304,41 @@ export default function StockDetail({
     }
   };
 
-  // ── MA 행 드래그 이동 → 단일 진실: 드롭한 차수로 슬롯 재지정(retag) ──
-  //   (옛 insertAfterPercent 시각이동은 reconcile이 태그로 재파생하며 되돌려져 폐기)
+  // ── MA 행 드래그 이동 → 표시 위치(insertAfterPercent)만 변경, sellSlot은 MA 유지 ──
+  //   MA를 % 슬롯에 합치지 않고 +N%와 +(N+5)% "사이"에 독립 행으로 표시.
+  //   deriveSellSlotsFromTags가 ...ex로 insertAfterPercent를 보존하므로 reconcile 후에도
+  //   위치가 유지됨(과거 원복 버그는 단일진실 reconcile 개선으로 해결). 화면은
+  //   m.insertAfterPercent === sp.percent 위치에 MA 행을 렌더(0 = 1차 이전).
+  //   ※ % 슬롯에 '합치기'는 MA 섹션 '↕️ 이동' 버튼(retagSlot)으로 별도 수행.
   const [draggingMaIdx, setDraggingMaIdx] = useState<number | null>(null);
 
   const moveMaToInsertAfter = async (maIdx: number, newInsertAfter: number) => {
     const m = local.maSells[maIdx];
     if (!m) return;
-    if (!(newInsertAfter > 0)) {
-      // '1차 이전' 등 슬롯이 아닌 위치로는 이동 불가 (수익차수 또는 MA로만)
-      alert('MA 매도는 수익 차수(+5~+25%) 행 위에 드롭해서 이동하세요.');
+    if (![0, 5, 10, 15, 20, 25].includes(newInsertAfter)) {
+      alert('MA 매도는 수익 차수(+5~+25%) 행 또는 1차 이전 위치에 드롭하세요.');
       setDraggingMaIdx(null);
       return;
     }
-    await retagSlot(`MA${m.ma}`, `+${newInsertAfter}%`);
+    setRetagBusy(true);
+    try {
+      const res = await fetch(MANUAL_SELL_EDIT_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          stockName: local.name,
+          maSellEdits: [{ ma: m.ma, set: { insertAfterPercent: newInsertAfter } }],
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) { alert('이동 실패: ' + (data.error || '')); setRetagBusy(false); return; }
+      lastUserActionRef.current = 0; // onSnapshot 즉시 반영
+      setMaMoveIdx(null);
+      setDraggingMaIdx(null);
+    } catch (e: any) {
+      alert('이동 오류: ' + e.message);
+    }
+    setRetagBusy(false);
   };
 
   // ── MA 행 → sellPlan 복원 ──
