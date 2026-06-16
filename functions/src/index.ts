@@ -4568,6 +4568,37 @@ async function getTagModeEnabled(): Promise<boolean> {
   }
 }
 
+// 매도 fallback↔ord_no 안전 dedup.
+//   키움 ka10072가 같은 매도를 통합(ord_no 있음)과 부분체결(ord_no 없음 → sell_…
+//   fallback id) 두 형식으로 반환해 중복 저장되는 케이스 제거.
+//   ⚠️ 안전 조건(둘 다 충족할 때만 제거):
+//     1) fallback 수량 합 == ord_no 매도 중 하나의 수량 (= 통합/부분 동일 매도 증거)
+//     2) fallback 전부 미분류(sellSlot 없음/unmapped) — 사용자 수동분류 보존
+//   → 분류된 fallback(하림지주 MA20)·수량 불일치(현대약품 80≠88)는 건드리지 않음.
+function dedupSellFallback(trades: any[]): string[] {
+  const sells = trades.filter((t) => t.type === "sell" && (Number(t.quantity) || 0) > 0);
+  const groups: Record<string, {ordno: any[]; fallback: any[]}> = {};
+  for (const t of sells) {
+    const id = String(t.id || "");
+    const key = `${t.date}|${Number(t.price) || 0}`;
+    if (!groups[key]) groups[key] = {ordno: [], fallback: []};
+    if (/^trade_kiwoom_sell_/.test(id)) groups[key].fallback.push(t);
+    else if (/^trade_kiwoom_\d/.test(id)) groups[key].ordno.push(t);
+    // 구포맷/manual 등은 dedup 대상 제외 (보수적)
+  }
+  const del: string[] = [];
+  for (const g of Object.values(groups)) {
+    if (g.ordno.length === 0 || g.fallback.length === 0) continue;
+    const fbSum = g.fallback.reduce((s, x) => s + (Number(x.quantity) || 0), 0);
+    const matchOrd = g.ordno.some((x) => (Number(x.quantity) || 0) === fbSum);
+    const fbAllUnmapped = g.fallback.every((x) => !x.sellSlot || x.sellSlot === "unmapped");
+    if (matchOrd && fbAllUnmapped) {
+      for (const f of g.fallback) del.push(String(f.id));
+    }
+  }
+  return del;
+}
+
 function deriveSellSlotsFromTags(
   stock: any,
   trades: any[]
@@ -4686,7 +4717,18 @@ async function reconcileStockPlans(stockName: string): Promise<{
     return {updated: false, buyFilled: 0, sellFilled: 0, exceedsBuy: 0, exceedsSell: 0};
   }
 
-  const trades = tradesSnap.docs.map((d) => ({id: d.id, ...(d.data() as any)}));
+  let trades = tradesSnap.docs.map((d) => ({id: d.id, ...(d.data() as any)}));
+
+  // ✅ 안전 자동 dedup (태깅 전): ka10072 통합/부분체결 중복 fallback 제거.
+  //   조건 = fallback 합 == ord_no 수량 AND fallback 전부 미분류 (dedupSellFallback 참조).
+  const _fbDelIds = dedupSellFallback(trades);
+  if (_fbDelIds.length > 0) {
+    const delBatch = db.batch();
+    for (const id of _fbDelIds) delBatch.delete(db.collection("trades").doc(id));
+    await delBatch.commit();
+    trades = trades.filter((t) => !_fbDelIds.includes(t.id));
+    console.log(`[reconcile/dedup] ${stockName} fallback 중복 ${_fbDelIds.length}건 제거: ${_fbDelIds.join(", ")}`);
+  }
 
   // 단일 진실 모드 (방안B Phase 4): 매도 슬롯 = 태그 집계 파생만
   const tagMode = await getTagModeEnabled();
@@ -5975,6 +6017,61 @@ export const onTradeCreated = functions
  *   - 잔여 = 매수 - 매도 vs 키움 totalQuantity
  *   - 불일치 종목 + 영향 표시
  */
+
+// 매도 fallback↔ord_no 중복 진단: GET /diagSellDup
+//   같은 종목+날짜+가격 그룹에 ord_no 매도(trade_kiwoom_숫자)와 fallback 매도
+//   (trade_kiwoom_sell_…)가 공존하는 케이스 전수 조사.
+//   근본 dedup 규칙(ord_no 존재 시 fallback 제거)의 안전성·영향 범위 검증용.
+export const diagSellDup = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 120})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const snap = await db.collection("trades").get();
+        const groups: Record<string, {ordno: any[]; fallback: any[]; other: any[]}> = {};
+        snap.forEach((doc) => {
+          const t = doc.data() as any;
+          if (t.type !== "sell") return;
+          const id = doc.id;
+          const key = `${t.stockName}|${t.date}|${t.price}`;
+          if (!groups[key]) groups[key] = {ordno: [], fallback: [], other: []};
+          const item = {id, qty: Number(t.quantity) || 0, sellSlot: t.sellSlot || null};
+          if (/^trade_kiwoom_sell_/.test(id)) groups[key].fallback.push(item);
+          else if (/^trade_kiwoom_\d/.test(id)) groups[key].ordno.push(item);
+          else groups[key].other.push(item); // 구포맷/manual 등
+        });
+        const dups: Array<Record<string, any>> = [];
+        for (const [key, g] of Object.entries(groups)) {
+          if (g.ordno.length > 0 && g.fallback.length > 0) {
+            const ordSum = g.ordno.reduce((s, x) => s + x.qty, 0);
+            const fbSum = g.fallback.reduce((s, x) => s + x.qty, 0);
+            // fallback 합이 ord_no 매도 중 하나의 수량과 정확히 일치? (통합/부분 중복 강한 증거)
+            const matchOrdQty = g.ordno.find((x) => x.qty === fbSum);
+            // fallback 일부가 이미 슬롯 분류됨? (제거 시 분류 손실 위험 체크)
+            const fbClassified = g.fallback.filter((x) => x.sellSlot && x.sellSlot !== "unmapped");
+            dups.push({
+              key, ordSum, fbSum,
+              fbMatchesAnOrd: !!matchOrdQty,
+              fbAllUnmapped: fbClassified.length === 0,
+              ordno: g.ordno, fallback: g.fallback,
+            });
+          }
+        }
+        dups.sort((a, b) => (a.fbMatchesAnOrd === b.fbMatchesAnOrd ? 0 : a.fbMatchesAnOrd ? -1 : 1));
+        res.json({
+          success: true,
+          dupGroupCount: dups.length,
+          cleanMatch: dups.filter((d) => d.fbMatchesAnOrd && d.fbAllUnmapped).length,
+          riskyGroups: dups.filter((d) => !d.fbMatchesAnOrd || !d.fbAllUnmapped).length,
+          dups,
+        });
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
 export const diagPlansConsistency = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 60})
