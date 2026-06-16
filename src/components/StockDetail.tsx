@@ -907,21 +907,15 @@ export default function StockDetail({
     await persistSellEdit(plans, local.maSells);
   };
 
-  const moveUnmappedToMa = async (t: { id: string; date: string; price: number; quantity: number }) => {
-    const maStr = prompt('어느 이동평균선으로? (20 / 60 / 120)', '20');
-    if (!maStr) return;
-    const ma = parseInt(maStr.replace(/\D/g, ''));
+  const moveUnmappedToMa = async (
+    t: { id: string; date: string; price: number; quantity: number },
+    ma: number,
+    insertAfter: number
+  ) => {
     if (![20, 60, 120].includes(ma)) {
       alert('20, 60, 120 중 하나만 가능합니다.');
       return;
     }
-    const insertStr = prompt(
-      '몇 % 차수 다음에 표시할까요? (0 / 5 / 10 / 15 / 20 / 25)\n' +
-      '(0: 1차 이전, 25: 5차 이후)',
-      '25'
-    );
-    if (!insertStr) return;
-    const insertAfter = parseInt(insertStr.replace(/\D/g, ''));
     if (![0, 5, 10, 15, 20, 25].includes(insertAfter)) {
       alert('0, 5, 10, 15, 20, 25 중 하나만 가능합니다.');
       return;
@@ -986,6 +980,10 @@ export default function StockDetail({
   const RETAG_SELLS_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/retagSells';
   const [maMoveIdx, setMaMoveIdx] = useState<number | null>(null); // 이동 팝업 연 MA선(20/60/120)
   const [retagBusy, setRetagBusy] = useState(false);
+  // 미분류 매도 → MA 분류 팝업 (prompt 대신 버튼 선택)
+  const [unmapMaTradeId, setUnmapMaTradeId] = useState<string | null>(null);
+  const [unmapMaSel, setUnmapMaSel] = useState<number>(20);
+  const [unmapInsertSel, setUnmapInsertSel] = useState<number>(25);
 
   // 현재 라운드에서 특정 슬롯에 속한 매도 trade id 목록
   const tradeIdsForSlot = (slotLabel: string): string[] => {
@@ -3896,22 +3894,68 @@ export default function StockDetail({
                     ? ((t.price - local.avgPrice) / local.avgPrice) * 100
                     : 0;
                   return (
-                    <div key={idx} className={styles.unmappedRow}>
-                      <span className={styles.unmappedDate}>{t.date.slice(5)}</span>
-                      <span className={styles.unmappedPrice}>
-                        {t.price.toLocaleString()}원 × {t.quantity}주
-                        {local.avgPrice > 0 && (
-                          <span className={styles.unmappedProfit} style={{ color: profitPct >= 0 ? '#2e7d32' : '#c62828' }}>
-                            {' '}{profitPct >= 0 ? '+' : ''}{profitPct.toFixed(1)}%
-                          </span>
-                        )}
-                      </span>
-                      <button className={styles.unmappedBtnSell} onClick={() => moveUnmappedToSell(t)}>
-                        ↗ 수익매도로
-                      </button>
-                      <button className={styles.unmappedBtnMa} onClick={() => moveUnmappedToMa(t)}>
-                        📉 MA매도로
-                      </button>
+                    <div key={idx}>
+                      <div className={styles.unmappedRow}>
+                        <span className={styles.unmappedDate}>{t.date.slice(5)}</span>
+                        <span className={styles.unmappedPrice}>
+                          {t.price.toLocaleString()}원 × {t.quantity}주
+                          {local.avgPrice > 0 && (
+                            <span className={styles.unmappedProfit} style={{ color: profitPct >= 0 ? '#2e7d32' : '#c62828' }}>
+                              {' '}{profitPct >= 0 ? '+' : ''}{profitPct.toFixed(1)}%
+                            </span>
+                          )}
+                        </span>
+                        <button className={styles.unmappedBtnSell} onClick={() => moveUnmappedToSell(t)}>
+                          ↗ 수익매도로
+                        </button>
+                        <button
+                          className={styles.unmappedBtnMa}
+                          onClick={() => {
+                            setUnmapMaTradeId(unmapMaTradeId === t.id ? null : t.id);
+                            setUnmapMaSel(20);
+                            setUnmapInsertSel(25);
+                          }}
+                        >
+                          📉 MA매도로
+                        </button>
+                      </div>
+                      {unmapMaTradeId === t.id && (
+                        <div className={styles.moveSellPopup} style={{ position: 'relative', marginTop: 4, minWidth: 220 }}>
+                          <div className={styles.moveSellTitle}>📉 MA 매도로 분류</div>
+                          <div className={styles.moveSellHint}>이동평균선 선택:</div>
+                          <div className={styles.moveSellTargets}>
+                            {[20, 60, 120].map((ma) => (
+                              <button
+                                key={ma}
+                                className={styles.moveSellTargetBtn}
+                                style={unmapMaSel === ma ? { background: '#1976d2', color: '#fff' } : {}}
+                                onClick={() => setUnmapMaSel(ma)}
+                              >MA{ma}</button>
+                            ))}
+                          </div>
+                          <div className={styles.moveSellHint}>표시 위치 (차수 다음):</div>
+                          <div className={styles.moveSellTargets}>
+                            {[0, 5, 10, 15, 20, 25].map((p) => (
+                              <button
+                                key={p}
+                                className={styles.moveSellTargetBtn}
+                                style={unmapInsertSel === p ? { background: '#1976d2', color: '#fff' } : {}}
+                                onClick={() => setUnmapInsertSel(p)}
+                              >{p === 0 ? '1차이전' : `+${p}%`}</button>
+                            ))}
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                            <button
+                              className={styles.sellEditSave}
+                              onClick={async () => {
+                                await moveUnmappedToMa(t, unmapMaSel, unmapInsertSel);
+                                setUnmapMaTradeId(null);
+                              }}
+                            >확인</button>
+                            <button className={styles.sellEditCancel} onClick={() => setUnmapMaTradeId(null)}>취소</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
