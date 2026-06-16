@@ -11522,3 +11522,925 @@ export const sScreenerCheckNow = functions
       }
     });
   });
+
+/**
+ * ════════════════════════════════════════════════════════════════
+ *  diagSellMigrateDryRun — 1단계 체결 정본화 시뮬레이션 (Read-Only)
+ *  docs/ARCHITECTURE_SOURCE_OF_TRUTH.md §7-1
+ *
+ *  목적: kt00007 ord_no를 매도 정본으로 전환 시
+ *        - 어떤 fallback이 어떤 ord_no로 대체되는지
+ *        - sellSlot(분류) 승계 미리보기
+ *        - 모호/무매칭 케이스 식별
+ *        → 실데이터 건드리기 전 100% 확인.
+ *
+ *  안전: Firestore write 0건. 키움 API 조회만.
+ *
+ *  사용:
+ *    GET /diagSellMigrateDryRun
+ *    GET /diagSellMigrateDryRun?from=20260318&to=20260616
+ *    GET /diagSellMigrateDryRun?stockName=앱클론
+ *
+ *  기본 범위: 최근 90일 (영업일만 조회).
+ *
+ *  출력: { summary, byStock, details }
+ *  - details verdict: willReplace | ambiguous | noMatch
+ *  - ambiguous → candidates 배열 (사용자가 수동 결정)
+ * ════════════════════════════════════════════════════════════════
+ */
+export const diagSellMigrateDryRun = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 540,
+    memory: "512MB",
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      const startedAt = Date.now();
+      try {
+        const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const fmt = (d: Date) =>
+          `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+        const todayStr = fmt(kstNow);
+        const defaultFrom = new Date(kstNow.getTime() - 90 * 24 * 60 * 60 * 1000);
+        const defaultFromStr = fmt(defaultFrom);
+        const from = (req.query.from as string || defaultFromStr).replace(/-/g, "");
+        const to = (req.query.to as string || todayStr).replace(/-/g, "");
+        const stockNameFilter = (req.query.stockName as string || "").trim();
+
+        const dates: string[] = [];
+        const fromDate = new Date(`${from.slice(0, 4)}-${from.slice(4, 6)}-${from.slice(6, 8)}T00:00:00+09:00`);
+        const toDate = new Date(`${to.slice(0, 4)}-${to.slice(4, 6)}-${to.slice(6, 8)}T00:00:00+09:00`);
+        for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
+          const dow = d.getDay();
+          if (dow === 0 || dow === 6) continue;
+          dates.push(fmt(d));
+        }
+
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        type KwSell = {ord_no: string; qty: number; price: number; credit: boolean; ioTpNm: string};
+        const kwByCodeDate = new Map<string, KwSell[]>();
+        let kwFetchedDates = 0;
+        let kwSellCount = 0;
+        let kwFetchFailed = 0;
+
+        for (const dt of dates) {
+          try {
+            const r7 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": `Bearer ${token}`,
+                "api-id": "kt00007",
+              },
+              body: JSON.stringify({
+                ord_dt: dt,
+                qry_tp: "1",
+                stk_bond_tp: "0",
+                sell_tp: "0",
+                stk_cd: "",
+                fr_ord_no: "",
+                dmst_stex_tp: "%",
+              }),
+            });
+            const d7 = await r7.json() as any;
+            if (d7.return_code && d7.return_code !== 0 && d7.return_code !== "0") {
+              kwFetchFailed++;
+              continue;
+            }
+            let items7: any[] = [];
+            for (const k of Object.keys(d7)) {
+              if (Array.isArray(d7[k]) && d7[k].length > 0) {items7 = d7[k]; break;}
+            }
+            for (const item of items7) {
+              const qty = parseInt(item.cntr_qty || "0");
+              if (qty <= 0) continue;
+              const ioTp = (item.io_tp_nm || "").trim();
+              if (!ioTp.includes("매도")) continue;
+              const code = cleanKiwoomField(item.stk_cd).replace(/^[A-Za-z]/, "");
+              if (!code) continue;
+              const price = parseInt(item.cntr_uv || "0");
+              const ordNo = String(item.ord_no || "").trim();
+              if (!ordNo) continue;
+              const crdTp = (item.crd_tp || "").trim();
+              const isCredit = ioTp.includes("융자") || ioTp.includes("신용") ||
+                crdTp.includes("융자") || crdTp.includes("신용");
+              const key = `${code}_${dt}`;
+              if (!kwByCodeDate.has(key)) kwByCodeDate.set(key, []);
+              kwByCodeDate.get(key)!.push({ord_no: ordNo, qty, price, credit: isCredit, ioTpNm: ioTp});
+              kwSellCount++;
+            }
+            kwFetchedDates++;
+            await new Promise((r) => setTimeout(r, 150));
+          } catch (e) {
+            kwFetchFailed++;
+          }
+        }
+
+        const fromDash = `${from.slice(0, 4)}-${from.slice(4, 6)}-${from.slice(6, 8)}`;
+        const toDash = `${to.slice(0, 4)}-${to.slice(4, 6)}-${to.slice(6, 8)}`;
+        // composite index 회피 — 단일 필드 쿼리 후 in-memory 필터
+        const tsnapAll = await db.collection("trades")
+          .where("type", "==", "sell")
+          .get();
+        const tradeDocs = tsnapAll.docs.filter((doc) => {
+          const date = String((doc.data() as any).date || "");
+          return date >= fromDash && date <= toDash;
+        });
+
+        const isFallback = (on: string): boolean =>
+          !on || on.startsWith("sell_") || on.startsWith("buy_") ||
+          on.startsWith("fb_") || on.startsWith("kt07_") || on.startsWith("kt15_");
+
+        type Detail = {
+          docId: string;
+          stockName: string;
+          code: string;
+          date: string;
+          price: number;
+          qty: number;
+          orderNo: string;
+          currentSellSlot: string | null;
+          verdict: "willReplace" | "ambiguous" | "noMatch";
+          candidates?: Array<{ord_no: string; qty: number; price: number; credit: boolean; ioTpNm: string}>;
+          newOrderNo?: string;
+          newDocId?: string;
+          inheritedSellSlot?: string | null;
+          inheritedSellSlotSplit?: any;
+        };
+        const details: Detail[] = [];
+        const byStock: Record<string, {fallback: number; willReplace: number; ambiguous: number; noMatch: number}> = {};
+        let realCount = 0;
+
+        tradeDocs.forEach((doc) => {
+          const t = doc.data() as any;
+          const orderNo = String(t.orderNo || "").trim();
+          const stockName = String(t.stockName || "");
+          if (stockNameFilter && !stockName.includes(stockNameFilter)) return;
+          if (!isFallback(orderNo)) {realCount++; return;}
+
+          const code = String(t.code || "").replace(/^A/, "");
+          const date = String(t.date || "").replace(/-/g, "");
+          const qty = Number(t.quantity) || 0;
+          const price = Number(t.price) || 0;
+          const key = `${code}_${date}`;
+          const candidates = (kwByCodeDate.get(key) || [])
+            .filter((c) => c.qty === qty && c.price === price);
+
+          let verdict: "willReplace" | "ambiguous" | "noMatch";
+          let newOrderNo: string | undefined;
+          if (candidates.length === 1) {
+            verdict = "willReplace";
+            newOrderNo = candidates[0].ord_no;
+          } else if (candidates.length > 1) {
+            verdict = "ambiguous";
+          } else {
+            verdict = "noMatch";
+          }
+
+          if (!byStock[stockName]) byStock[stockName] = {fallback: 0, willReplace: 0, ambiguous: 0, noMatch: 0};
+          byStock[stockName].fallback++;
+          byStock[stockName][verdict]++;
+
+          const baseDetail: Detail = {
+            docId: doc.id,
+            stockName,
+            code,
+            date: String(t.date || ""),
+            price,
+            qty,
+            orderNo,
+            currentSellSlot: t.sellSlot || null,
+            verdict,
+          };
+          if (verdict === "willReplace" && newOrderNo) {
+            baseDetail.newOrderNo = newOrderNo;
+            baseDetail.newDocId = `trade_kiwoom_${newOrderNo}_${code}`;
+            baseDetail.inheritedSellSlot = t.sellSlot || null;
+            baseDetail.inheritedSellSlotSplit = t.sellSlotSplit || null;
+          } else if (verdict === "ambiguous") {
+            baseDetail.candidates = candidates;
+          }
+          details.push(baseDetail);
+        });
+
+        const summary = {
+          dateRange: {from: fromDash, to: toDash, weekdayCount: dates.length},
+          kiwoomFetch: {datesQueried: kwFetchedDates, datesFailed: kwFetchFailed, sellOrders: kwSellCount},
+          firestoreSells: {totalAll: tsnapAll.size, inRange: tradeDocs.length, realOrdNo: realCount, fallback: details.length},
+          migration: {
+            willReplace: details.filter((d) => d.verdict === "willReplace").length,
+            ambiguous: details.filter((d) => d.verdict === "ambiguous").length,
+            noMatch: details.filter((d) => d.verdict === "noMatch").length,
+          },
+          elapsedMs: Date.now() - startedAt,
+        };
+
+        const byStockArr = Object.entries(byStock)
+          .map(([name, v]) => ({name, ...v}))
+          .sort((a, b) => b.fallback - a.fallback);
+
+        res.json({
+          success: true,
+          summary,
+          byStock: byStockArr,
+          details,
+        });
+      } catch (e: any) {
+        console.error("[diagSellMigrateDryRun] 실패:", e.message);
+        res.status(500).json({success: false, error: e.message, elapsedMs: Date.now() - startedAt});
+      }
+    });
+  });
+
+/**
+ * ════════════════════════════════════════════════════════════════
+ *  diagSellNoMatchProbe — noMatch 매도의 정체 정밀 진단 (Read-Only)
+ *  docs/ARCHITECTURE_SOURCE_OF_TRUTH.md §7-1 후속
+ *
+ *  목적: diagSellMigrateDryRun에서 kt00007에 매칭 안 된 fallback 매도들을
+ *        ka10072 + kt00007 양쪽 API로 다시 조회해 정체를 분류:
+ *        - ka10072O_kt7X : ka10072엔 있고 kt00007엔 없음 (API 차이 — kt7 정본화 불가 대상)
+ *        - bothMissing   : 양쪽 다 없음 (수동입력 / 옛 데이터 의심)
+ *        - kt7HasOther   : kt00007에 같은 종목·날짜 매도는 있으나 가격/수량 다름
+ *        → noMatch 81건의 처리 방향 결정.
+ *
+ *  안전: Firestore write 0건. 키움 API 조회만.
+ *
+ *  사용:
+ *    GET /diagSellNoMatchProbe                    (최근 90일)
+ *    GET /diagSellNoMatchProbe?from=20260318&to=20260616
+ *    GET /diagSellNoMatchProbe?stockName=엠아이큐브솔루션
+ * ════════════════════════════════════════════════════════════════
+ */
+export const diagSellNoMatchProbe = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 540,
+    memory: "512MB",
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      const startedAt = Date.now();
+      try {
+        const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const fmt = (d: Date) =>
+          `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+        const todayStr = fmt(kstNow);
+        const defaultFrom = new Date(kstNow.getTime() - 90 * 24 * 60 * 60 * 1000);
+        const from = (req.query.from as string || fmt(defaultFrom)).replace(/-/g, "");
+        const to = (req.query.to as string || todayStr).replace(/-/g, "");
+        const stockNameFilter = (req.query.stockName as string || "").trim();
+
+        const fromDash = `${from.slice(0, 4)}-${from.slice(4, 6)}-${from.slice(6, 8)}`;
+        const toDash = `${to.slice(0, 4)}-${to.slice(4, 6)}-${to.slice(6, 8)}`;
+
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+
+        const isFallback = (on: string): boolean =>
+          !on || on.startsWith("sell_") || on.startsWith("buy_") ||
+          on.startsWith("fb_") || on.startsWith("kt07_") || on.startsWith("kt15_");
+
+        // ─── 1) Firestore 매도 fallback 수집 (날짜 범위) ───
+        const tsnapAll = await db.collection("trades").where("type", "==", "sell").get();
+        type FbSell = {docId: string; stockName: string; code: string; date: string; dt: string; qty: number; price: number; orderNo: string; sellSlot: string | null};
+        const fallbacks: FbSell[] = [];
+        tsnapAll.docs.forEach((doc) => {
+          const t = doc.data() as any;
+          const date = String(t.date || "");
+          if (date < fromDash || date > toDash) return;
+          const stockName = String(t.stockName || "");
+          if (stockNameFilter && !stockName.includes(stockNameFilter)) return;
+          const orderNo = String(t.orderNo || "").trim();
+          if (!isFallback(orderNo)) return;
+          fallbacks.push({
+            docId: doc.id,
+            stockName,
+            code: String(t.code || "").replace(/^A/, ""),
+            date,
+            dt: date.replace(/-/g, ""),
+            qty: Number(t.quantity) || 0,
+            price: Number(t.price) || 0,
+            orderNo,
+            sellSlot: t.sellSlot || null,
+          });
+        });
+
+        // ─── 2) 필요한 날짜 집합만 양쪽 API 조회 ───
+        const neededDates = Array.from(new Set(fallbacks.map((f) => f.dt))).sort();
+
+        // (code,dt) → ka10072 매도 목록
+        type ApiSell = {qty: number; price: number; ord_no: string};
+        const ka72 = new Map<string, ApiSell[]>();
+        const kt7 = new Map<string, ApiSell[]>();
+
+        for (const dt of neededDates) {
+          // ka10072 (매도 실현손익)
+          try {
+            const r72 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "ka10072"},
+              body: JSON.stringify({strt_dt: dt, end_dt: dt, ord_dt: dt, stk_cd: "", sell_tp: "1", qry_tp: "0", stk_bond_tp: "1", dmst_stex_tp: "KRX"}),
+            });
+            const d72 = await r72.json() as any;
+            const items = d72.dt_stk_div_rlzt_pl || [];
+            for (const item of items) {
+              if (!(item.stk_nm || "").trim()) continue;
+              const qty = parseInt(item.cntr_qty || "0");
+              if (qty <= 0) continue;
+              const code = cleanKiwoomField(item.stk_cd).replace(/^[A-Za-z]/, "");
+              const price = parseInt(item.cntr_pric || "0");
+              const ord = String(item.ord_no || item.cntr_no || "").trim();
+              const key = `${code}_${dt}`;
+              if (!ka72.has(key)) ka72.set(key, []);
+              ka72.get(key)!.push({qty, price, ord_no: ord});
+            }
+          } catch (e) { /* skip */ }
+          await new Promise((r) => setTimeout(r, 120));
+
+          // kt00007 (주문체결상세) — 매도 전체 (현금 포함)
+          try {
+            const r7 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "kt00007"},
+              body: JSON.stringify({ord_dt: dt, qry_tp: "1", stk_bond_tp: "0", sell_tp: "0", stk_cd: "", fr_ord_no: "", dmst_stex_tp: "%"}),
+            });
+            const d7 = await r7.json() as any;
+            let items7: any[] = [];
+            for (const k of Object.keys(d7)) {
+              if (Array.isArray(d7[k]) && d7[k].length > 0) {items7 = d7[k]; break;}
+            }
+            for (const item of items7) {
+              const qty = parseInt(item.cntr_qty || "0");
+              if (qty <= 0) continue;
+              if (!(item.io_tp_nm || "").includes("매도")) continue;
+              const code = cleanKiwoomField(item.stk_cd).replace(/^[A-Za-z]/, "");
+              const price = parseInt(item.cntr_uv || "0");
+              const ord = String(item.ord_no || "").trim();
+              const key = `${code}_${dt}`;
+              if (!kt7.has(key)) kt7.set(key, []);
+              kt7.get(key)!.push({qty, price, ord_no: ord});
+            }
+          } catch (e) { /* skip */ }
+          await new Promise((r) => setTimeout(r, 120));
+        }
+
+        // ─── 3) 각 fallback 정체 분류 ───
+        type Probe = FbSell & {
+          category: "ka72O_kt7X" | "ka72O_kt7O" | "bothMissing" | "kt7HasOther" | "ka72HasOther";
+          ka72Match: ApiSell[];
+          kt7Match: ApiSell[];
+          kt7SameCodeDate: ApiSell[];
+          ka72SameCodeDate: ApiSell[];
+        };
+        const probes: Probe[] = [];
+        const catCount: Record<string, number> = {};
+        const catByStock: Record<string, Record<string, number>> = {};
+
+        for (const f of fallbacks) {
+          const key = `${f.code}_${f.dt}`;
+          const ka72All = ka72.get(key) || [];
+          const kt7All = kt7.get(key) || [];
+          const ka72Match = ka72All.filter((x) => x.qty === f.qty && x.price === f.price);
+          const kt7Match = kt7All.filter((x) => x.qty === f.qty && x.price === f.price);
+
+          let category: Probe["category"];
+          if (kt7Match.length > 0) {
+            category = "ka72O_kt7O"; // kt7에도 있음 (dryRun에서 noMatch였다면 ord_no 없는 케이스)
+          } else if (ka72Match.length > 0) {
+            category = "ka72O_kt7X"; // ka72엔 있는데 kt7엔 없음 (API 차이)
+          } else if (kt7All.length > 0) {
+            category = "kt7HasOther"; // kt7에 같은 종목·날짜 다른 가격/수량
+          } else if (ka72All.length > 0) {
+            category = "ka72HasOther";
+          } else {
+            category = "bothMissing"; // 양쪽 다 없음
+          }
+
+          catCount[category] = (catCount[category] || 0) + 1;
+          if (!catByStock[f.stockName]) catByStock[f.stockName] = {};
+          catByStock[f.stockName][category] = (catByStock[f.stockName][category] || 0) + 1;
+
+          probes.push({
+            ...f,
+            category,
+            ka72Match,
+            kt7Match,
+            kt7SameCodeDate: kt7All,
+            ka72SameCodeDate: ka72All,
+          });
+        }
+
+        const summary = {
+          dateRange: {from: fromDash, to: toDash},
+          fallbackProbed: fallbacks.length,
+          datesQueried: neededDates.length,
+          categories: catCount,
+          legend: {
+            ka72O_kt7X: "ka10072엔 있고 kt00007엔 없음 — kt7 정본화 불가, ka72 ord_no 사용 검토",
+            ka72O_kt7O: "양쪽 API에 있음 — dryRun에서 ord_no 누락된 케이스(재확인)",
+            kt7HasOther: "kt7에 같은 종목·날짜 매도 있으나 가격/수량 불일치",
+            ka72HasOther: "ka72에 같은 종목·날짜 매도 있으나 가격/수량 불일치",
+            bothMissing: "양쪽 API 모두 없음 — 수동입력/옛데이터 의심",
+          },
+          elapsedMs: Date.now() - startedAt,
+        };
+
+        const byStockArr = Object.entries(catByStock)
+          .map(([name, cats]) => ({name, total: Object.values(cats).reduce((a, b) => a + b, 0), ...cats}))
+          .sort((a, b) => b.total - a.total);
+
+        res.json({success: true, summary, byStock: byStockArr, probes});
+      } catch (e: any) {
+        console.error("[diagSellNoMatchProbe] 실패:", e.message);
+        res.status(500).json({success: false, error: e.message, elapsedMs: Date.now() - startedAt});
+      }
+    });
+  });
+
+// ════════════════════════════════════════════════════════════════
+//  매도 정본화 공용 로직 (dry-run / 실행 공유)
+//  docs/ARCHITECTURE_SOURCE_OF_TRUTH.md §5-1 (A안: kt00007 주문 정본 + split 승계)
+// ════════════════════════════════════════════════════════════════
+
+type KtOrder = {ord_no: string; qty: number; price: number; credit: boolean};
+type FbTrade = {docId: string; qty: number; price: number; sellSlot: string | null; sellSlotSplit: any[] | null; sellRound: number | null; raw: any};
+type SlotPart = {slot: string; qty: number};
+
+// fallback 1건을 슬롯 파트로 펼침 (기존 split 우선, 없으면 단일 sellSlot, 없으면 unmapped)
+function fbToSlotParts(f: FbTrade): SlotPart[] {
+  if (Array.isArray(f.sellSlotSplit) && f.sellSlotSplit.length > 0) {
+    return f.sellSlotSplit.map((sp: any) => ({slot: String(sp.slot || "unmapped"), qty: Number(sp.qty) || 0}));
+  }
+  return [{slot: f.sellSlot || "unmapped", qty: f.qty}];
+}
+
+// items 중 합이 정확히 target인 부분집합 — 여러 해 중 가중평균가가 refPrice에 가장 가까운 것
+function findExactSubset(items: FbTrade[], target: number, refPrice: number): FbTrade[] | null {
+  // 과대 N 방어: 15개 초과면 그리디(qty desc)로 근사
+  if (items.length > 15) {
+    const sorted = [...items].sort((a, b) => b.qty - a.qty);
+    const chosen: FbTrade[] = [];
+    let sum = 0;
+    for (const it of sorted) {
+      if (sum + it.qty <= target) {chosen.push(it); sum += it.qty;}
+      if (sum === target) return chosen;
+    }
+    return null;
+  }
+  let best: FbTrade[] | null = null;
+  let bestDiff = Infinity;
+  const chosen: FbTrade[] = [];
+  const dfs = (start: number, sumQty: number) => {
+    if (sumQty === target) {
+      let amt = 0;
+      for (const c of chosen) amt += c.price * c.qty;
+      const wavg = amt / target;
+      const diff = Math.abs(wavg - refPrice);
+      if (diff < bestDiff) {bestDiff = diff; best = chosen.slice();}
+      return;
+    }
+    if (sumQty > target) return;
+    for (let i = start; i < items.length; i++) {
+      chosen.push(items[i]);
+      dfs(i + 1, sumQty + items[i].qty);
+      chosen.pop();
+    }
+  };
+  dfs(0, 0);
+  return best;
+}
+
+type MigAction = {
+  type: "replace" | "merge";
+  ordNo: string;
+  newDocId: string;
+  qty: number;
+  ktPrice: number;
+  fromDocIds: string[];
+  sellSlot?: string | null;        // replace
+  sellSlotSplit?: SlotPart[];      // merge
+  weightedAvg?: number;            // merge 가격검증
+  priceDiff?: number;              // |weightedAvg - ktPrice|
+  credit: boolean;
+};
+type MigGroup = {
+  code: string;
+  date: string;
+  stockName: string;
+  status: "ok" | "qtyMismatch" | "partialFail";
+  ktTotalQty: number;
+  fbTotalQty: number;
+  actions: MigAction[];
+  unmatchedKtOrders?: KtOrder[];
+  unmatchedFallbacks?: Array<{docId: string; qty: number; price: number; sellSlot: string | null}>;
+};
+
+// 한 (code,date) 그룹의 매도 정본화 계획 산출 (write 없음)
+function planSellMigrationGroup(
+  code: string, date: string, stockName: string,
+  ktOrders: KtOrder[], fbs: FbTrade[]
+): MigGroup {
+  const ktTotalQty = ktOrders.reduce((s, o) => s + o.qty, 0);
+  const fbTotalQty = fbs.reduce((s, f) => s + f.qty, 0);
+  const g: MigGroup = {code, date, stockName, status: "ok", ktTotalQty, fbTotalQty, actions: []};
+
+  // 총량 불일치 → 자동 배정 보류 (사용자 검토)
+  if (ktTotalQty !== fbTotalQty) {
+    g.status = "qtyMismatch";
+    g.unmatchedKtOrders = ktOrders;
+    g.unmatchedFallbacks = fbs.map((f) => ({docId: f.docId, qty: f.qty, price: f.price, sellSlot: f.sellSlot}));
+    return g;
+  }
+
+  const pool = [...fbs];
+  const orders = [...ktOrders].sort((a, b) => b.qty - a.qty);
+  for (const order of orders) {
+    const subset = findExactSubset(pool, order.qty, order.price);
+    if (!subset || subset.length === 0) {
+      g.status = "partialFail";
+      g.unmatchedKtOrders = g.unmatchedKtOrders || [];
+      g.unmatchedKtOrders.push(order);
+      continue;
+    }
+    // pool에서 subset 제거
+    for (const s of subset) {
+      const idx = pool.findIndex((p) => p.docId === s.docId);
+      if (idx >= 0) pool.splice(idx, 1);
+    }
+    const fromDocIds = subset.map((s) => s.docId);
+    const newDocId = `trade_kiwoom_${order.ord_no}_${code}`;
+    if (subset.length === 1) {
+      g.actions.push({
+        type: "replace", ordNo: order.ord_no, newDocId, qty: order.qty, ktPrice: order.price,
+        fromDocIds, sellSlot: subset[0].sellSlot, credit: order.credit,
+      });
+    } else {
+      // 슬롯 집계 (split 승계)
+      const slotMap = new Map<string, number>();
+      let amt = 0;
+      for (const s of subset) {
+        amt += s.price * s.qty;
+        for (const part of fbToSlotParts(s)) {
+          slotMap.set(part.slot, (slotMap.get(part.slot) || 0) + part.qty);
+        }
+      }
+      const split: SlotPart[] = Array.from(slotMap.entries())
+        .map(([slot, qty]) => ({slot, qty}))
+        .sort((a, b) => b.qty - a.qty);
+      const wavg = Math.round(amt / order.qty);
+      g.actions.push({
+        type: "merge", ordNo: order.ord_no, newDocId, qty: order.qty, ktPrice: order.price,
+        fromDocIds, sellSlotSplit: split, weightedAvg: wavg, priceDiff: Math.abs(wavg - order.price),
+        credit: order.credit,
+      });
+    }
+  }
+  if (pool.length > 0) {
+    g.status = g.status === "ok" ? "partialFail" : g.status;
+    g.unmatchedFallbacks = pool.map((f) => ({docId: f.docId, qty: f.qty, price: f.price, sellSlot: f.sellSlot}));
+  }
+  return g;
+}
+
+// 키움 kt00007 + Firestore fallback 수집 → (code,date) 그룹 빌드 (dry-run/실행 공유)
+async function buildSellMigrationGroups(
+  config: KiwoomConfig, token: string, fromDash: string, toDash: string, stockNameFilter: string
+): Promise<{groups: MigGroup[]; kwDates: number; kwFail: number}> {
+  const fmt = (dash: string) => dash.replace(/-/g, "");
+
+  const isFallback = (on: string): boolean =>
+    !on || on.startsWith("sell_") || on.startsWith("buy_") ||
+    on.startsWith("fb_") || on.startsWith("kt07_") || on.startsWith("kt15_");
+
+  // Firestore fallback 매도 수집
+  const tsnap = await db.collection("trades").where("type", "==", "sell").get();
+  const fbByKey = new Map<string, FbTrade[]>();
+  const nameByKey = new Map<string, string>();
+  tsnap.docs.forEach((doc) => {
+    const t = doc.data() as any;
+    const date = String(t.date || "");
+    if (date < fromDash || date > toDash) return;
+    const stockName = String(t.stockName || "");
+    if (stockNameFilter && !stockName.includes(stockNameFilter)) return;
+    const orderNo = String(t.orderNo || "").trim();
+    if (!isFallback(orderNo)) return;
+    const code = String(t.code || "").replace(/^A/, "");
+    const key = `${code}_${fmt(date)}`;
+    if (!fbByKey.has(key)) fbByKey.set(key, []);
+    fbByKey.get(key)!.push({
+      docId: doc.id,
+      qty: Number(t.quantity) || 0,
+      price: Number(t.price) || 0,
+      sellSlot: t.sellSlot || null,
+      sellSlotSplit: Array.isArray(t.sellSlotSplit) ? t.sellSlotSplit : null,
+      sellRound: t.sellRound != null ? Number(t.sellRound) : null,
+      raw: {stockName, code, date},
+    });
+    nameByKey.set(key, stockName);
+  });
+
+  // 필요한 날짜만 kt00007 조회
+  const neededDates = Array.from(new Set(Array.from(fbByKey.keys()).map((k) => k.split("_")[1]))).sort();
+  const ktByKey = new Map<string, KtOrder[]>();
+  let kwDates = 0; let kwFail = 0;
+  for (const dt of neededDates) {
+    try {
+      const r7 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "kt00007"},
+        body: JSON.stringify({ord_dt: dt, qry_tp: "1", stk_bond_tp: "0", sell_tp: "0", stk_cd: "", fr_ord_no: "", dmst_stex_tp: "%"}),
+      });
+      const d7 = await r7.json() as any;
+      let items7: any[] = [];
+      for (const k of Object.keys(d7)) {
+        if (Array.isArray(d7[k]) && d7[k].length > 0) {items7 = d7[k]; break;}
+      }
+      for (const item of items7) {
+        const qty = parseInt(item.cntr_qty || "0");
+        if (qty <= 0) continue;
+        const ioTp = (item.io_tp_nm || "").trim();
+        if (!ioTp.includes("매도")) continue;
+        const code = cleanKiwoomField(item.stk_cd).replace(/^[A-Za-z]/, "");
+        const ordNo = String(item.ord_no || "").trim();
+        if (!code || !ordNo) continue;
+        const price = parseInt(item.cntr_uv || "0");
+        const crdTp = (item.crd_tp || "").trim();
+        const credit = ioTp.includes("융자") || ioTp.includes("신용") || crdTp.includes("융자") || crdTp.includes("신용");
+        const key = `${code}_${dt}`;
+        if (!ktByKey.has(key)) ktByKey.set(key, []);
+        // 같은 ord_no가 여러 체결로 나오면 합산(주문단위)
+        const arr = ktByKey.get(key)!;
+        const existing = arr.find((o) => o.ord_no === ordNo);
+        if (existing) {
+          const totAmt = existing.price * existing.qty + price * qty;
+          existing.qty += qty;
+          existing.price = Math.round(totAmt / existing.qty);
+        } else {
+          arr.push({ord_no: ordNo, qty, price, credit});
+        }
+      }
+      kwDates++;
+      await new Promise((r) => setTimeout(r, 150));
+    } catch (e) {
+      kwFail++;
+    }
+  }
+
+  const groups: MigGroup[] = [];
+  for (const [key, fbs] of fbByKey.entries()) {
+    const [code, dt] = key.split("_");
+    const dateDash = `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`;
+    const ktOrders = ktByKey.get(key) || [];
+    groups.push(planSellMigrationGroup(code, dateDash, nameByKey.get(key) || "", ktOrders, fbs));
+  }
+  groups.sort((a, b) => (a.stockName).localeCompare(b.stockName) || a.date.localeCompare(b.date));
+  return {groups, kwDates, kwFail};
+}
+
+/**
+ * ════════════════════════════════════════════════════════════════
+ *  diagSellMergePlan — 매도 정본화 마이그레이션 계획 (Read-Only, A안)
+ *  docs/ARCHITECTURE_SOURCE_OF_TRUTH.md §5-1
+ *
+ *  kt00007 주문(ord_no)을 정본으로, fallback 매도 체결을 부분합 매칭하여
+ *  - 1:1 → replace (sellSlot 승계)
+ *  - N:1 → merge (sellSlotSplit로 분류 승계, 가격검증)
+ *  실데이터 write 0건. 계획만 출력 → 검토 후 실행 endpoint로.
+ *
+ *  GET /diagSellMergePlan                    (최근 90일)
+ *  GET /diagSellMergePlan?from=20260318&to=20260616
+ *  GET /diagSellMergePlan?stockName=네이블
+ *  GET /diagSellMergePlan?status=partialFail  (특정 상태만)
+ * ════════════════════════════════════════════════════════════════
+ */
+export const diagSellMergePlan = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 540, memory: "512MB"})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      const startedAt = Date.now();
+      try {
+        const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const toDash = (req.query.to as string) ? (req.query.to as string).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : fmt(kstNow);
+        const fromDefault = new Date(kstNow.getTime() - 90 * 24 * 60 * 60 * 1000);
+        const fromDash = (req.query.from as string) ? (req.query.from as string).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : fmt(fromDefault);
+        const stockNameFilter = (req.query.stockName as string || "").trim();
+        const statusFilter = (req.query.status as string || "").trim();
+
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const {groups, kwDates, kwFail} = await buildSellMigrationGroups(config, token, fromDash, toDash, stockNameFilter);
+
+        const filtered = statusFilter ? groups.filter((g) => g.status === statusFilter) : groups;
+
+        let replaceCnt = 0; let mergeCnt = 0; let mergedTradesIn = 0;
+        const statusCount: Record<string, number> = {};
+        let priceWarnings = 0;
+        for (const g of groups) {
+          statusCount[g.status] = (statusCount[g.status] || 0) + 1;
+          for (const a of g.actions) {
+            if (a.type === "replace") replaceCnt++;
+            else {
+              mergeCnt++;
+              mergedTradesIn += a.fromDocIds.length;
+              if ((a.priceDiff || 0) > 5) priceWarnings++;
+            }
+          }
+        }
+
+        res.json({
+          success: true,
+          summary: {
+            dateRange: {from: fromDash, to: toDash},
+            kiwoom: {datesQueried: kwDates, datesFailed: kwFail},
+            groups: groups.length,
+            statusCount,
+            actions: {replace: replaceCnt, merge: mergeCnt, mergedFallbacksConsumed: mergedTradesIn},
+            priceWarnings,
+            elapsedMs: Date.now() - startedAt,
+          },
+          groups: filtered,
+        });
+      } catch (e: any) {
+        console.error("[diagSellMergePlan] 실패:", e.message);
+        res.status(500).json({success: false, error: e.message, elapsedMs: Date.now() - startedAt});
+      }
+    });
+  });
+
+/**
+ * ════════════════════════════════════════════════════════════════
+ *  migrateSellExecute — 매도 정본화 실제 실행 (A안, WRITE)
+ *  docs/ARCHITECTURE_SOURCE_OF_TRUTH.md §5-1
+ *
+ *  diagSellMergePlan의 ok 그룹을 실제로 적용:
+ *   - replace: trade_kiwoom_{ord_no}_{code} 생성(sellSlot 승계) + fallback 삭제
+ *   - merge:   생성(sellSlotSplit 승계, sellSlot="split") + fallback들 삭제
+ *  qtyMismatch/partialFail 그룹은 자동 스킵.
+ *
+ *  안전장치:
+ *   - ?execute=true 없으면 거부 (기본 거부)
+ *   - 삭제 전 원본을 trades_backup_premerge 에 백업
+ *   - 멱등: 새 docId 이미 있으면 set 생략(삭제만 보장)
+ *   - newDocId가 fromDocIds에 포함되면 삭제 제외(덮어쓰기)
+ *   - 영향 종목 reconcile 자동 트리거
+ *
+ *  사용:
+ *    GET /migrateSellExecute?stockName=네이블            (dry: execute 없음 → 거부 안내)
+ *    GET /migrateSellExecute?stockName=네이블&execute=true
+ *    GET /migrateSellExecute?execute=true               (전체 — 신중)
+ * ════════════════════════════════════════════════════════════════
+ */
+export const migrateSellExecute = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 540, memory: "512MB"})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      const startedAt = Date.now();
+      try {
+        const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const toDash = (req.query.to as string) ? (req.query.to as string).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : fmt(kstNow);
+        const fromDefault = new Date(kstNow.getTime() - 90 * 24 * 60 * 60 * 1000);
+        const fromDash = (req.query.from as string) ? (req.query.from as string).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : fmt(fromDefault);
+        const stockNameFilter = (req.query.stockName as string || "").trim();
+        const execute = (req.query.execute as string) === "true";
+
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const {groups} = await buildSellMigrationGroups(config, token, fromDash, toDash, stockNameFilter);
+
+        const okGroups = groups.filter((g) => g.status === "ok");
+        const skipped = groups.filter((g) => g.status !== "ok")
+          .map((g) => ({stockName: g.stockName, date: g.date, status: g.status}));
+
+        // 실행 계획 집계
+        let replacePlanned = 0; let mergePlanned = 0; let fallbacksToDelete = 0;
+        for (const g of okGroups) {
+          for (const a of g.actions) {
+            if (a.type === "replace") replacePlanned++; else mergePlanned++;
+            fallbacksToDelete += a.fromDocIds.length;
+          }
+        }
+
+        if (!execute) {
+          res.json({
+            success: true,
+            dryRun: true,
+            message: "execute=true 를 붙여야 실제 적용됩니다.",
+            scope: {from: fromDash, to: toDash, stockName: stockNameFilter || "(전체)"},
+            planned: {okGroups: okGroups.length, replace: replacePlanned, merge: mergePlanned, fallbacksToDelete},
+            skipped,
+            elapsedMs: Date.now() - startedAt,
+          });
+          return;
+        }
+
+        // ─── 실제 실행 ───
+        const affectedStocks = new Set<string>();
+        let created = 0; let deleted = 0; let backedUp = 0; let skippedIdempotent = 0;
+        const errors: Array<{group: string; error: string}> = [];
+
+        for (const g of okGroups) {
+          for (const a of g.actions) {
+            try {
+              const newRef = db.collection("trades").doc(a.newDocId);
+              const newSnap = await newRef.get();
+
+              // 원본 첫 문서에서 메타 승계
+              const srcRef = db.collection("trades").doc(a.fromDocIds[0]);
+              const srcSnap = await srcRef.get();
+              if (!srcSnap.exists) {
+                // 이미 정본 docId가 있고 원본이 없으면 = 이미 마이그레이션됨 (멱등)
+                skippedIdempotent++;
+                continue;
+              }
+              const src = srcSnap.data() as any;
+
+              const newDoc: any = {
+                stockName: g.stockName,
+                code: g.code,
+                type: "sell",
+                date: src.date || g.date,
+                price: a.ktPrice,
+                quantity: a.qty,
+                orderNo: a.ordNo,
+                isCreditTrade: a.credit,
+                createdAt: src.createdAt || Date.now(),
+                migratedFrom: a.fromDocIds,
+                migratedAt: Date.now(),
+              };
+              if (src.sellRound != null) newDoc.sellRound = src.sellRound;
+              if (src.time) newDoc.time = src.time;
+              if (a.type === "replace") {
+                if (a.sellSlot) newDoc.sellSlot = a.sellSlot;
+              } else {
+                newDoc.sellSlotSplit = a.sellSlotSplit;
+                newDoc.sellSlot = "split";
+              }
+
+              const batch = db.batch();
+              // 백업 + 삭제 (newDocId 자신은 삭제 제외)
+              for (const fid of a.fromDocIds) {
+                if (fid === a.newDocId) continue;
+                const fref = db.collection("trades").doc(fid);
+                const fsnap = await fref.get();
+                if (fsnap.exists) {
+                  batch.set(db.collection("trades_backup_premerge").doc(fid), {
+                    ...fsnap.data(), _backupAt: Date.now(), _migrateTo: a.newDocId,
+                  });
+                  batch.delete(fref);
+                  backedUp++; deleted++;
+                }
+              }
+              // 새 정본 문서 생성 (멱등: 이미 있으면 메타만 갱신)
+              if (newSnap.exists) {
+                batch.set(newRef, newDoc, {merge: true});
+                skippedIdempotent++;
+              } else {
+                batch.set(newRef, newDoc);
+                created++;
+              }
+              await batch.commit();
+              affectedStocks.add(g.stockName);
+            } catch (e: any) {
+              errors.push({group: `${g.stockName} ${g.date} ${a.ordNo}`, error: e.message});
+            }
+          }
+        }
+
+        // 영향 종목 reconcile
+        const reconciled: Array<{name: string; updated?: boolean; error?: string}> = [];
+        for (const name of affectedStocks) {
+          try {
+            const r = await reconcileStockPlans(name);
+            reconciled.push({name, updated: r.updated});
+          } catch (e: any) {
+            reconciled.push({name, error: e.message});
+          }
+        }
+
+        res.json({
+          success: true,
+          executed: true,
+          scope: {from: fromDash, to: toDash, stockName: stockNameFilter || "(전체)"},
+          result: {created, deleted, backedUp, skippedIdempotent, affectedStocks: affectedStocks.size},
+          reconciled,
+          skipped,
+          errors,
+          elapsedMs: Date.now() - startedAt,
+        });
+      } catch (e: any) {
+        console.error("[migrateSellExecute] 실패:", e.message);
+        res.status(500).json({success: false, error: e.message, elapsedMs: Date.now() - startedAt});
+      }
+    });
+  });
