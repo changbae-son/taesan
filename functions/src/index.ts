@@ -872,9 +872,9 @@ async function fetchTradeHistory(
         // ✅ kt00007 보강 정책:
         //   - 신용 매수/매도: 모두 추가 (kt00015는 위탁만 반환, 신용 누락)
         //   - 현금 매수: 추가 (kt00015가 일부 현금매수도 누락 — 흥구석유 5/27 케이스)
-        //       → dedup이 (code,date,type,price,qty) 기준으로 중복 제거,
-        //         kt00015에 없는 누락분만 살아남음
-        //   - 현금 매도: 스킵 (ka10072가 부분체결까지 정밀 처리 — 충돌 방지)
+        //   - 현금 매도: 스킵 (ka10072 담당). ⚠️ kt00007 ord_no 정본화는 기존 ka10072
+        //       fallback 데이터와 중복(앱클론 18주 등) 발생 — fallback→ord_no 대체
+        //       마이그레이션이 선행돼야 안전. 단순 수집은 보류(연관성 검증으로 확인).
         if (!isCredit && type7 !== "buy") {
           continue;
         }
@@ -955,11 +955,22 @@ async function fetchTradeHistory(
         );
         dedupMap.set(key, merged);
       } else if (tReal && exReal) {
-        // ✅ Phase 1a 보강: 둘 다 real ord_no — kt00015/kt00007이 같은 체결을 다른 ord_no로 반환
-        // 기존 trade 유지 + kt00007의 신용 정보 (isCreditTrade/loanDt/rawCreditType) 병합
-        if ((t.isCreditTrade === true && !existing.isCreditTrade) ||
+        // ✅ 매도: 같은 가격·수량인데 ord_no가 다르면 = 별개 체결(분할매도/부분체결).
+        //   같은 매도면 ka10072/kt00007이 동일 ord_no를 반환하므로 ord_no가 다르면
+        //   서로 다른 주문이 확실 → 둘 다 보존(과거엔 같은 체결로 오판해 1건 버렸음).
+        //   (id = trade_kiwoom_{ord_no}_{code} 라 각자 유니크하게 저장됨)
+        if (t.type === "sell" && t.orderNo !== existing.orderNo) {
+          let suffix = 2;
+          while (dedupMap.has(`${key}_${suffix}`)) suffix++;
+          dedupMap.set(`${key}_${suffix}`, t);
+          console.log(
+            `[dedup] 매도 같은 가격·수량 다른 ord_no → 별개 보존: ` +
+            `${existing.orderNo} + ${t.orderNo} (${t.code} ${t.price}@${t.quantity})`
+          );
+        } else if ((t.isCreditTrade === true && !existing.isCreditTrade) ||
             (t.loanDt && !existing.loanDt) ||
             (t.rawCreditType && !existing.rawCreditType)) {
+          // 매수 또는 같은 ord_no: kt00015/kt00007 신용 정보 병합 (기존 동작)
           if (t.isCreditTrade === true) existing.isCreditTrade = true;
           if (t.loanDt) existing.loanDt = t.loanDt;
           if (t.rawCreditType) existing.rawCreditType = t.rawCreditType;
@@ -6086,10 +6097,15 @@ export const diagSellGap = functions
           `${kstNow.getFullYear()}${String(kstNow.getMonth() + 1).padStart(2, "0")}${String(kstNow.getDate()).padStart(2, "0")}`;
         const config = await getKiwoomConfig();
         const token = await getAccessToken(config);
+        // source=kt00007(주문체결내역상세, ord_no·정확단가·신용 완비) 또는 ka10076(기본)
+        const source = (req.query.source as string) === "kt00007" ? "kt00007" : "ka10076";
+        const apiBody = source === "kt00007" ?
+          {ord_dt: date, qry_tp: "1", stk_bond_tp: "0", sell_tp: "0", stk_cd: "", fr_ord_no: "", dmst_stex_tp: "%"} :
+          {ord_dt: date, stk_cd: "", sell_tp: "0", qry_tp: "0", stk_bond_tp: "1", stex_tp: "1", dmst_stex_tp: "KRX"};
         const r = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
           method: "POST",
-          headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "ka10076"},
-          body: JSON.stringify({ord_dt: date, stk_cd: "", sell_tp: "0", qry_tp: "0", stk_bond_tp: "1", stex_tp: "1", dmst_stex_tp: "KRX"}),
+          headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": source},
+          body: JSON.stringify(apiBody),
         });
         const data = await r.json() as any;
         let items: any[] = [];
