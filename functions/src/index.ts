@@ -6072,6 +6072,74 @@ export const diagSellDup = functions
     });
   });
 
+// 매도 수집 누락 진단: GET /diagSellGap[?date=20260616]
+//   ka10076(sell_tp=0, 전체) 키움 당일 매도 vs trades 저장 매도를 종목별 대조.
+//   ka10072만으로 놓친 매도(같은 가격·수량 충돌 등)의 영향 범위 검증용.
+export const diagSellGap = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const date = (req.query.date as string || "").replace(/-/g, "") ||
+          `${kstNow.getFullYear()}${String(kstNow.getMonth() + 1).padStart(2, "0")}${String(kstNow.getDate()).padStart(2, "0")}`;
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const r = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "ka10076"},
+          body: JSON.stringify({ord_dt: date, stk_cd: "", sell_tp: "0", qry_tp: "0", stk_bond_tp: "1", stex_tp: "1", dmst_stex_tp: "KRX"}),
+        });
+        const data = await r.json() as any;
+        let items: any[] = [];
+        for (const k of Object.keys(data)) {
+          if (Array.isArray(data[k]) && data[k].length > 0) { items = data[k]; break; }
+        }
+        const sells = items.filter((x: any) => String(x.io_tp_nm || "").includes("매도") && parseInt(x.cntr_qty || "0") > 0);
+        const kiwoomByCode: Record<string, {name: string; qty: number; ords: string[]; detail: Record<string, any>}> = {};
+        for (const s of sells) {
+          const code = cleanKiwoomField(s.stk_cd).replace(/^A/, "");
+          const qty = parseInt(s.cntr_qty || "0");
+          const ord = String(s.ord_no || "").trim();
+          const price = parseInt(s.cntr_uv || s.cntr_pric || s.ord_uv || "0");
+          const isCredit = String(s.io_tp_nm || "").includes("신용") || String(s.io_tp_nm || "").includes("융자");
+          if (!kiwoomByCode[code]) kiwoomByCode[code] = {name: cleanKiwoomField(s.stk_nm), qty: 0, ords: [], detail: {}};
+          kiwoomByCode[code].qty += qty;
+          if (ord) {
+            kiwoomByCode[code].ords.push(ord);
+            kiwoomByCode[code].detail[ord] = {qty, price, credit: isCredit, io: s.io_tp_nm};
+          }
+        }
+        const dateDash = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
+        const tsnap = await db.collection("trades").where("date", "==", dateDash).where("type", "==", "sell").get();
+        const savedByCode: Record<string, {qty: number; ords: Set<string>}> = {};
+        tsnap.forEach((doc) => {
+          const t = doc.data() as any;
+          const code = String(t.code || "").replace(/^A/, "");
+          if (!savedByCode[code]) savedByCode[code] = {qty: 0, ords: new Set()};
+          savedByCode[code].qty += Number(t.quantity) || 0;
+          const m = doc.id.match(/^trade_kiwoom_(\d+)_/);
+          if (m) savedByCode[code].ords.add(m[1]);
+        });
+        const gaps: Array<Record<string, any>> = [];
+        for (const [code, kw] of Object.entries(kiwoomByCode)) {
+          const saved = savedByCode[code] || {qty: 0, ords: new Set<string>()};
+          const missingOrds = kw.ords.filter((o) => !saved.ords.has(o));
+          if (kw.qty !== saved.qty || missingOrds.length > 0) {
+            gaps.push({
+              code, name: kw.name, kiwoomQty: kw.qty, savedQty: saved.qty, diff: kw.qty - saved.qty,
+              missingOrds, missingDetail: missingOrds.map((o) => ({ord: o, ...kw.detail[o]})),
+            });
+          }
+        }
+        res.json({success: true, date: dateDash, kiwoomSellCodes: Object.keys(kiwoomByCode).length, gapCount: gaps.length, gaps});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
 export const diagPlansConsistency = functions
   .region("asia-northeast3")
   .runWith({timeoutSeconds: 60})
@@ -9875,6 +9943,7 @@ export const manualInjectTrade = functions
         const {
           stockName, code, date, type, price, quantity,
           memo = "", isCreditTrade = false, tags = [],
+          tradeIdOverride = "",
         } = req.body || {};
         if (!stockName || !date || !type || !price || !quantity) {
           res.status(400).json({success: false, error: "stockName/date/type/price/quantity 필수"});
@@ -9885,28 +9954,37 @@ export const manualInjectTrade = functions
           return;
         }
 
-        // 중복 체크
-        const existing = await db.collection("trades")
-          .where("stockName", "==", stockName)
-          .where("date", "==", date)
-          .where("type", "==", type)
-          .get();
-        for (const doc of existing.docs) {
-          const t = doc.data();
-          if (Number(t.price) === Number(price) && Number(t.quantity) === Number(quantity)) {
-            res.status(409).json({
-              success: false,
-              error: "중복 trade 존재",
-              existingId: doc.id,
-              existing: t,
-            });
+        // tradeIdOverride 지정 시: 그 id 존재로만 중복 판정(같은 가격·수량 다건 매도 보강용).
+        //   미지정 시: 기존 동작(같은 종목·날짜·타입·가격·수량 = 중복 거부).
+        if (tradeIdOverride) {
+          const ex = await db.collection("trades").doc(String(tradeIdOverride)).get();
+          if (ex.exists) {
+            res.status(409).json({success: false, error: "중복 trade 존재(id)", existingId: tradeIdOverride});
             return;
+          }
+        } else {
+          const existing = await db.collection("trades")
+            .where("stockName", "==", stockName)
+            .where("date", "==", date)
+            .where("type", "==", type)
+            .get();
+          for (const doc of existing.docs) {
+            const t = doc.data();
+            if (Number(t.price) === Number(price) && Number(t.quantity) === Number(quantity)) {
+              res.status(409).json({
+                success: false,
+                error: "중복 trade 존재",
+                existingId: doc.id,
+                existing: t,
+              });
+              return;
+            }
           }
         }
 
         const ts = Date.now();
         const slug = stockName.replace(/[^a-zA-Z0-9가-힣]/g, "").slice(0, 20);
-        const tradeId = `trade_manual_${ts}_${slug}`;
+        const tradeId = tradeIdOverride ? String(tradeIdOverride) : `trade_manual_${ts}_${slug}`;
 
         const finalTags: string[] = Array.isArray(tags) ? [...tags] : [];
         if (isCreditTrade && !finalTags.includes("신용")) finalTags.push("신용");
