@@ -4780,6 +4780,61 @@ async function reconcileStockPlans(stockName: string): Promise<{
     console.warn(`[reconcile/태깅] ${stockName} 자동 태깅 실패: ${e.message}`);
   }
 
+  // ✅ 2단계 분류 잠금: 같은 (라운드, 슬롯)에 서로 다른 (날짜,가격) 매도가 2단위 이상이면
+  //   둘째 단위부터 미분류(unmapped). 같은날·같은가격(부분체결)은 1단위로 합산 유지.
+  //   사용자 확정(slotLocked)은 충돌 시 우선 유지. 자동 분류만 미분류 처리.
+  //   (3대 정본 ③: 분류=사용자 확정 / 자동은 제안. docs ARCHITECTURE_SOURCE_OF_TRUTH 2단계)
+  try {
+    const effSlot = (t: any): string | null => {
+      if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length === 1) return String(t.sellSlotSplit[0].slot || "");
+      if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 1) return null; // 다중 split 보존
+      const s = t.sellSlot;
+      if (s && s !== "unmapped" && s !== "split") return String(s);
+      return null;
+    };
+    const grp: Record<string, any[]> = {};
+    for (const t of trades) {
+      if (t.type !== "sell") continue;
+      const slot = effSlot(t);
+      if (!slot) continue;
+      const key = `${Number(t.sellRound) || 0}|${slot}`;
+      if (!grp[key]) grp[key] = [];
+      grp[key].push(t);
+    }
+    const unmapIds: string[] = [];
+    for (const arr of Object.values(grp)) {
+      arr.sort((a, b) =>
+        ((b.slotLocked ? 1 : 0) - (a.slotLocked ? 1 : 0)) ||
+        String(a.date).localeCompare(String(b.date)) ||
+        (Number(a.price) || 0) - (Number(b.price) || 0));
+      const firstDP = `${arr[0].date}|${arr[0].price}`;
+      for (const t of arr) {
+        if (t.slotLocked) continue; // 사용자 확정 유지
+        if (`${t.date}|${t.price}` !== firstDP) unmapIds.push(String(t.id));
+      }
+    }
+    if (unmapIds.length > 0) {
+      const cb = db.batch();
+      for (const id of unmapIds) {
+        cb.update(db.collection("trades").doc(id), {
+          sellSlot: "unmapped",
+          sellSlotSplit: admin.firestore.FieldValue.delete(),
+        });
+      }
+      await cb.commit();
+      const us = new Set(unmapIds);
+      for (const t of trades) {
+        if (us.has(String((t as any).id))) {
+          (t as any).sellSlot = "unmapped";
+          delete (t as any).sellSlotSplit;
+        }
+      }
+      console.log(`[reconcile/충돌] ${stockName} 슬롯 충돌 ${unmapIds.length}건 미분류 처리`);
+    }
+  } catch (e: any) {
+    console.warn(`[reconcile/충돌] ${stockName} 충돌 해소 실패: ${e.message}`);
+  }
+
   // 매수: 날짜 그룹핑 (같은 날 매수 = 같은 차수)
   const buyByDate: Record<string, {qty: number; amt: number}> = {};
 
@@ -5860,6 +5915,7 @@ export const retagSells = functions
           batch.update(ref, {
             sellSlot: toSlot,
             sellSlotSplit: admin.firestore.FieldValue.delete(),
+            slotLocked: true, // 사용자 확정 = 정본. 자동 충돌 미분류에서 제외(잠금)
           });
         }
         await batch.commit();
@@ -6028,6 +6084,73 @@ export const onTradeCreated = functions
  *   - 잔여 = 매수 - 매도 vs 키움 totalQuantity
  *   - 불일치 종목 + 영향 표시
  */
+
+// 슬롯 충돌 진단(2단계 분류잠금 영향): GET /diagSlotConflict
+//   전 종목 매도에서 같은 (종목, 라운드, 슬롯)에 서로 다른 주문(다른 날/가격/id)이
+//   둘 이상 모인 케이스 전수 조사. = 2단계에서 "둘째부터 미분류"로 빠질 후보.
+//   부분체결은 1단계 정본화로 1주문(merge)이라 여기선 다른 주문만 충돌로 잡힘.
+export const diagSlotConflict = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 120})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const snap = await db.collection("trades").get();
+        const groups: Record<string, Array<{id: string; date: string; price: number; qty: number}>> = {};
+        snap.forEach((doc) => {
+          const t = doc.data() as any;
+          if (t.type !== "sell") return;
+          const id = doc.id;
+          const round = Number(t.sellRound) || 0;
+          const stock = t.stockName || "";
+          // effective slots: split이면 각 part, 단일 sellSlot이면 그 라벨
+          let slots: Array<{slot: string; qty: number}> = [];
+          if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0) {
+            slots = t.sellSlotSplit.map((sp: any) => ({slot: String(sp.slot || ""), qty: Number(sp.qty) || 0}));
+          } else if (t.sellSlot && t.sellSlot !== "unmapped" && t.sellSlot !== "split") {
+            slots = [{slot: String(t.sellSlot), qty: Number(t.quantity) || 0}];
+          }
+          for (const s of slots) {
+            if (!s.slot || s.slot === "unmapped") continue;
+            const key = `${stock}|R${round}|${s.slot}`;
+            if (!groups[key]) groups[key] = [];
+            groups[key].push({id, date: t.date, price: Number(t.price) || 0, qty: s.qty});
+          }
+        });
+        const conflicts: Array<Record<string, any>> = [];
+        for (const [key, arr] of Object.entries(groups)) {
+          // 충돌 단위 = (날짜,가격). 같은날·같은가격 = 부분체결 → 1단위(합산).
+          //   다른 날 OR 같은날 다른가격 = 별개 매도 → 별도 단위.
+          const byDP: Record<string, {date: string; price: number; qty: number; ids: string[]}> = {};
+          for (const x of arr) {
+            const k = `${x.date}|${x.price}`;
+            if (!byDP[k]) byDP[k] = {date: x.date, price: x.price, qty: 0, ids: []};
+            byDP[k].qty += x.qty;
+            byDP[k].ids.push(x.id);
+          }
+          const units = Object.values(byDP).sort((a, b) =>
+            String(a.date).localeCompare(String(b.date)) || a.price - b.price);
+          if (units.length >= 2) {
+            conflicts.push({
+              key, unitCount: units.length,
+              totalQty: arr.reduce((s, x) => s + x.qty, 0),
+              keep: units[0], // 첫 단위(가장 이른 날/가격) = 슬롯 유지
+              unmapped: units.slice(1), // 나머지 = 미분류 대상
+            });
+          }
+        }
+        conflicts.sort((a, b) => b.unitCount - a.unitCount);
+        res.json({
+          success: true,
+          conflictCount: conflicts.length,
+          unmappedTradeCount: conflicts.reduce((s, c) => s + c.unmapped.reduce((q: number, u: any) => q + u.ids.length, 0), 0),
+          conflicts,
+        });
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
 
 // 매도 fallback↔ord_no 중복 진단: GET /diagSellDup
 //   같은 종목+날짜+가격 그룹에 ord_no 매도(trade_kiwoom_숫자)와 fallback 매도
