@@ -6110,6 +6110,110 @@ export const onTradeCreated = functions
  *   - 불일치 종목 + 영향 표시
  */
 
+// ✅ 4단계 상설 검증: "키움 정본 = 시스템" 전 종목 헬스체크
+//   ① 잔고 불일치(키움 qty vs totalQuantity) ② 평단 불일치(키움 buy_uv vs avgPrice)
+//   ③ 슬롯 충돌(같은 라운드+슬롯 다른 date·price 2단위↑ — 2단계 적용 후 0이어야)
+async function runHealthCheck(): Promise<any> {
+  const config = await getKiwoomConfig();
+  const token = await getAccessToken(config);
+  const holdings = await fetchHoldings(config, token);
+  const norm = (c: string) => (c || "").replace(/^[*A]+/, "").trim();
+  const hMap: Record<string, any> = {};
+  for (const h of holdings) hMap[norm(h.code)] = h;
+
+  const stocksSnap = await db.collection("stocks").get();
+  const balanceIssues: any[] = [];
+  const avgIssues: any[] = [];
+  stocksSnap.forEach((doc) => {
+    const s = doc.data() as any;
+    const code = norm(s.code);
+    const sysQty = Number(s.totalQuantity) || 0;
+    const kh = hMap[code];
+    const kQty = kh ? kh.quantity : 0;
+    if (sysQty !== kQty) balanceIssues.push({name: s.name, sys: sysQty, kiwoom: kQty, diff: sysQty - kQty});
+    if (kh && sysQty > 0) {
+      const ad = (Number(s.avgPrice) || 0) - kh.avgPrice;
+      if (Math.abs(ad) > 1) avgIssues.push({name: s.name, sys: Number(s.avgPrice) || 0, kiwoom: kh.avgPrice, diff: ad});
+    }
+  });
+
+  // 슬롯 충돌 (date+price 단위)
+  const tradesSnap = await db.collection("trades").get();
+  const grp: Record<string, Set<string>> = {};
+  tradesSnap.forEach((doc) => {
+    const t = doc.data() as any;
+    if (t.type !== "sell") return;
+    const round = Number(t.sellRound) || 0;
+    const stock = t.stockName || "";
+    let slots: Array<{slot: string}> = [];
+    if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0) {
+      slots = t.sellSlotSplit.map((sp: any) => ({slot: String(sp.slot || "")}));
+    } else if (t.sellSlot && t.sellSlot !== "unmapped" && t.sellSlot !== "split") {
+      slots = [{slot: String(t.sellSlot)}];
+    }
+    for (const sl of slots) {
+      if (!sl.slot || sl.slot === "unmapped") continue;
+      const key = `${stock}|R${round}|${sl.slot}`;
+      if (!grp[key]) grp[key] = new Set();
+      grp[key].add(`${t.date}|${Number(t.price) || 0}`);
+    }
+  });
+  const slotConflicts: any[] = [];
+  for (const [key, dps] of Object.entries(grp)) {
+    if (dps.size >= 2) slotConflicts.push({key, units: dps.size});
+  }
+
+  const totalIssues = balanceIssues.length + avgIssues.length + slotConflicts.length;
+  return {checkedStocks: stocksSnap.size, totalIssues, balanceIssues, avgIssues, slotConflicts};
+}
+
+// GET /diagHealthCheck — 수동 정합성 점검
+export const diagHealthCheck = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const r = await runHealthCheck();
+        res.json({success: true, ...r});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
+// 매일 15:50 KST 정기 헬스체크 — 이상 시에만 텔레그램
+export const healthCheckCron = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
+  .pubsub.schedule("50 15 * * 1-5")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    try {
+      const r = await runHealthCheck();
+      if (r.totalIssues <= 0) {
+        console.log("[healthCheck] 정합성 정상 (이상 0)");
+        return;
+      }
+      let msg = `<b>⚠️ 태산 정합성 점검 — 이상 ${r.totalIssues}건</b>\n\n`;
+      if (r.balanceIssues.length) {
+        msg += `<b>잔고 불일치 ${r.balanceIssues.length}</b>\n`;
+        for (const b of r.balanceIssues.slice(0, 8)) msg += `· ${b.name}: sys ${b.sys} ≠ 키움 ${b.kiwoom}\n`;
+      }
+      if (r.avgIssues.length) {
+        msg += `<b>평단 불일치 ${r.avgIssues.length}</b>\n`;
+        for (const a of r.avgIssues.slice(0, 8)) msg += `· ${a.name}: ${a.sys} ≠ ${a.kiwoom}\n`;
+      }
+      if (r.slotConflicts.length) {
+        msg += `<b>슬롯 충돌 ${r.slotConflicts.length}</b>\n`;
+        for (const c of r.slotConflicts.slice(0, 8)) msg += `· ${c.key}\n`;
+      }
+      await sendTelegram(msg);
+    } catch (e: any) {
+      console.error(`[healthCheck] 실패: ${e.message}`);
+    }
+  });
+
 // 슬롯 충돌 진단(2단계 분류잠금 영향): GET /diagSlotConflict
 //   전 종목 매도에서 같은 (종목, 라운드, 슬롯)에 서로 다른 주문(다른 날/가격/id)이
 //   둘 이상 모인 케이스 전수 조사. = 2단계에서 "둘째부터 미분류"로 빠질 후보.
