@@ -114,9 +114,23 @@ A안(kt00007 주문 정본 + sellSlotSplit 분류 승계)으로 구현·실행 �
 - **결론: "수정 없이 관리"의 진짜 관문 = sync 자체를 kt00007 ord_no 정본화 + fallback
   마이그레이션 동반.** 1단계 kt00007 정본화(현재 보류, 중복 부작용)를 마이그레이션 붙여 완성해야.
 
-### 다음 작업 (우선순위)
-1. **sync 정본화(1단계 완성)** — kiwoomSync/AutoSync 매도 수집을 kt00007(ord_no) 정본으로 +
-   기존/신규 fallback→ord_no 대체(분류 승계). 이게 슬롯충돌·평단 재발의 근본.
-2. 평단 회귀 원인(reconcile avgPrice 키움 신뢰 정책) 점검.
-3. line 878 현금매도 스킵 제거(정본화 후).
-4. 미분류 ~42건 사용자 분류(slotLocked), qtyMismatch 2건 정리.
+### ✅ 정합 0 달성 + 평단/positions 회귀 수정 (2026-06-17)
+- **평단 정본 회귀 수정(28b6f97)**: reconcile이 tradesComplete면 매도 종목도 매수가중
+  override→키움 무시. tradesSoldQty>0이면 SKIP(키움 평단 유지).
+- **positions 단일포지션 수정(66db521)**: 현물전용/신용전용은 키움 totalAvg 사용
+  (시지메드텍 신용 positions 1512→1503).
+- 검증: kiwoomSync+reconcileAll 후 **healthCheck 총 이상 0**(잔고0/평단0/슬롯0).
+  reconcileAll 재실행해도 회귀 없음.
+
+### 핵심 판단 — sync 정본화는 "보류, 모니터링 우선" (사용자 결정 2026-06-17)
+- healthCheck 0이 의미: 평단·잔고·슬롯이 이미 정본 일치. sync가 fallback 재생성해도
+  **2단계 충돌해소 + 평단 SKIP + 키움 신뢰가 매 reconcile마다 정합을 복원**.
+- sync 정본화(kt00007 ord_no)의 실익=trade 목록 깔끔화뿐(슬롯·평단·잔고는 이미 정확),
+  위험=중복 부작용(앱클론18) + sync 전면 재설계로 정합 0을 깰 수 있음.
+- → **강행 보류. 매일 healthCheck(15:50 cron)로 재발 패턴 관찰**하며 정말 필요한지 확인 후
+  dry-run 기반 신중 진행. 지금은 정합 안정이 더 큰 가치.
+
+### 남은 작업 (낮은 우선순위)
+1. healthCheck 며칠 모니터링 → 재발 패턴 보고 sync 정본화 필요성 재판단.
+2. 미분류 ~42건 사용자 분류(retagSells→slotLocked), qtyMismatch 2건(하림지주·현대약품) 정리.
+3. line 878 현금매도 스킵 — sync 정본화 진행 시에만.
