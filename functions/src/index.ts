@@ -229,6 +229,17 @@ function computePositionsFromTrades(
   // 잔여가 키움 totalQty와 일치하면 그대로 사용
   if (tradesNetTotal === totalQuantity) {
     const out: Array<any> = [];
+    // ✅ 정본 ②: 단일 포지션(현물전용/신용전용)은 키움 통합평단(totalAvg) 사용.
+    //   cashAvg/creditAvg(매수가중)는 매도분 원가차감을 안 해 키움과 달라짐(시지메드텍 1512 vs 1503).
+    if (cashNetQty > 0 && creditNetQty === 0 && totalAvg > 0) {
+      out.push({type: "cash", quantity: cashNetQty, avgPrice: totalAvg, since: cashFirstDate});
+      return out;
+    }
+    if (creditNetQty > 0 && cashNetQty === 0 && totalAvg > 0) {
+      out.push(enrichCredit({type: "credit", quantity: creditNetQty, avgPrice: totalAvg, since: creditFirstDate}));
+      return out;
+    }
+    // 혼합(현물+신용): 키움 통합평단을 type별로 못 나눔 → 각 매수가중 유지
     if (cashNetQty > 0) out.push({type: "cash", quantity: cashNetQty, avgPrice: cashAvg, since: cashFirstDate});
     if (creditNetQty > 0) out.push(enrichCredit({type: "credit", quantity: creditNetQty, avgPrice: creditAvg, since: creditFirstDate}));
     return out;
