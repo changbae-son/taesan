@@ -5704,10 +5704,11 @@ async function reconcileStockPlans(stockName: string): Promise<{
     // 조건: trades net qty (매수-매도) == 키움 totalQuantity 인 경우에만 override
     const stockTotalQty = Number(stock.totalQuantity) || 0;
     let tradesNetQty = 0;
+    let tradesSoldQty = 0;
     for (const t of trades) {
       const q = Number(t.quantity) || 0;
       if (t.type === "buy") tradesNetQty += q;
-      else if (t.type === "sell") tradesNetQty -= q;
+      else if (t.type === "sell") { tradesNetQty -= q; tradesSoldQty += q; }
     }
     const tradesComplete = tradesNetQty === stockTotalQty;
 
@@ -5729,10 +5730,15 @@ async function reconcileStockPlans(stockName: string): Promise<{
     // ✅ 합병/감자 보정 이력 있는 종목은 trades 기반 단순 평단 덮어쓰기 SKIP
     // 키움이 합병 시점에 평단을 재설정하는데 (예: 재영솔루텍 5:1 합병 후 평단 재산정)
     // 단순 가중평균(매수금액÷매수수량) 으로 덮으면 키움 실제 평단과 차이남
+    // ✅ 정본 ②(평단=키움): 매도가 있는 종목은 매수가중(stockAvg)이 키움 이동평균(매도분
+    //    원가차감)과 달라지므로 override 금지 — 키움 평단(stock.avgPrice) 유지.
+    //    매도 없는 종목만 buyPlans 매수가중으로 보정(액면병합 등 미갱신 케이스, 이땐 매수가중=키움).
     const hasCorporateActions = Array.isArray(stock.corporateActions) && stock.corporateActions.length > 0;
-    if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && tradesComplete && !hasCorporateActions) {
+    if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && tradesComplete && !hasCorporateActions && tradesSoldQty === 0) {
       reconcileUpdate.avgPrice = stockAvg;
-      console.log(`[reconcile] ${stockName} avgPrice 보정: ${stock.avgPrice} → ${stockAvg} (trades 완전)`);
+      console.log(`[reconcile] ${stockName} avgPrice 보정: ${stock.avgPrice} → ${stockAvg} (trades 완전, 매도없음)`);
+    } else if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && tradesComplete && !hasCorporateActions && tradesSoldQty > 0) {
+      console.log(`[reconcile] ${stockName} avgPrice 보정 SKIP (매도 ${tradesSoldQty}주 존재 → 키움 평단 ${stock.avgPrice} 유지, 매수가중 ${stockAvg} 무시)`);
     } else if (stockAvg > 0 && tradesBasedQty > 0 && stockAvg !== (Number(stock.avgPrice) || 0) && !tradesComplete) {
       console.log(`[reconcile] ${stockName} avgPrice 보정 SKIP (trades 누락: ${tradesNetQty}주 / 키움 ${stockTotalQty}주, 키움 평단 ${stock.avgPrice} 유지)`);
     } else if (hasCorporateActions && stockAvg > 0 && stockAvg !== (Number(stock.avgPrice) || 0)) {
