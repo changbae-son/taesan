@@ -101,8 +101,22 @@ A안(kt00007 주문 정본 + sellSlotSplit 분류 승계)으로 구현·실행 �
   트리거 6회 모두 3~116ms skip, reconcile 재호출 0.
 - 실작동: 프론트 룰B 설정/저점 확정 시 자동 reconcile(firebase log onStockRuleChange로 확인).
 
-### 다음 작업
-1. **상설 검증 게이트** — 매 변경마다 "키움 정본 = 시스템" 전 종목 진단(diagSellGap/diagValuation/diagSlotConflict).
-2. line 878 현금매도 스킵 제거 — 단, kt00007 현금매도 누락(수동대기 2건) 확인됨. 제거 전 영향 재검토.
-3. 미분류로 빠진 ~42건은 사용자가 화면에서 직접 분류(retagSells → slotLocked로 영구 고정).
-4. qtyMismatch 수동대기 2건(하림지주·현대약품) 정리.
+### ✅ 4단계 상설 검증 게이트 — 완료 (2026-06-17)
+- `diagHealthCheck`(수동) + `healthCheckCron`(매일 15:50, 이상 시에만 텔레그램):
+  잔고·평단(키움 vs 시스템)·슬롯충돌(date+price 단위) 전 종목 점검.
+- 첫 점검 발견: 이상 19건(잔고0/평단6/슬롯13). **게이트가 핵심 회귀를 잡음.**
+
+### ⚠️ 핵심 발견 — 다음 최우선 (4단계가 입증)
+**1·2단계는 과거 데이터 1회 마이그레이션일 뿐, sync 경로엔 미반영.**
+- 자동동기화(kiwoomAutoSync/kiwoomSync)가 **ka10072 fallback + 부분체결을 매번 재수집**
+  → 1단계 merge가 다시 쪼개지고, 새 매도도 fallback로 들어옴 → 2단계 충돌이 매일 재발.
+- 평단 6건: sync/reconcile이 키움 평단 대신 매수가중으로 회귀(예: 삼천당 sys311658 vs 키움285033).
+- **결론: "수정 없이 관리"의 진짜 관문 = sync 자체를 kt00007 ord_no 정본화 + fallback
+  마이그레이션 동반.** 1단계 kt00007 정본화(현재 보류, 중복 부작용)를 마이그레이션 붙여 완성해야.
+
+### 다음 작업 (우선순위)
+1. **sync 정본화(1단계 완성)** — kiwoomSync/AutoSync 매도 수집을 kt00007(ord_no) 정본으로 +
+   기존/신규 fallback→ord_no 대체(분류 승계). 이게 슬롯충돌·평단 재발의 근본.
+2. 평단 회귀 원인(reconcile avgPrice 키움 신뢰 정책) 점검.
+3. line 878 현금매도 스킵 제거(정본화 후).
+4. 미분류 ~42건 사용자 분류(slotLocked), qtyMismatch 2건 정리.
