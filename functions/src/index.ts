@@ -6040,6 +6040,31 @@ export const reconcileNow = functions
     });
   });
 
+// ✅ 3단계 자동 재계산 트리거: 룰B 관련(rule/저점/기준최고가) 변경 시 buyPlans 자동 재계산.
+//   네이블 케이스(룰B 설정·저점 확정했는데 차수별 매수계획 안 바뀜) 해결.
+//   reconcile은 rule/bottomPrice/referencePeak를 안 바꾸므로(reconcileUpdate 필드 확인) 무한루프 없음.
+export const onStockRuleChange = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 120})
+  .firestore.document("stocks/{stockId}")
+  .onUpdate(async (change) => {
+    try {
+      const before = change.before.data() as any;
+      const after = change.after.data() as any;
+      const ruleChanged = String(before.rule || "") !== String(after.rule || "");
+      const bottomChanged = (Number(before.bottomPrice) || 0) !== (Number(after.bottomPrice) || 0);
+      const peakChanged =
+        (Number(before.referencePeakPrice) || 0) !== (Number(after.referencePeakPrice) || 0) ||
+        String(before.referencePeakDate || "") !== String(after.referencePeakDate || "");
+      if (!ruleChanged && !bottomChanged && !peakChanged) return;
+      if (!after.name) return;
+      console.log(`[trigger/ruleChange] ${after.name}: rule=${ruleChanged} bottom=${bottomChanged} peak=${peakChanged} → reconcile`);
+      await reconcileStockPlans(after.name);
+    } catch (e: any) {
+      console.error(`[trigger/ruleChange] 실패: ${e.message}`);
+    }
+  });
+
 export const onTradeCreated = functions
   .region("asia-northeast3")
   .firestore.document("trades/{tradeId}")

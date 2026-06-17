@@ -93,8 +93,16 @@ A안(kt00007 주문 정본 + sellSlotSplit 분류 승계)으로 구현·실행 �
 - 검증: 앱클론 R2+5% 6/16 미분류(6/15 유지), 전 49종목 errors=0, 남은 충돌 0그룹.
   dry-run에서 같은날 분할 대량 미분류 부작용 확인 → 사용자가 기준2 명시 선택(엄격).
 
+### ✅ 3단계 자동 재계산 트리거 — 완료 (2026-06-17)
+네이블 케이스(룰B 설정·저점 확정했는데 buyPlans 차수별 rule·매수가 안 바뀜) 해결.
+- `onStockRuleChange`: Firestore `stocks/{id}` onUpdate 트리거. before/after에서
+  rule·bottomPrice·referencePeakPrice·referencePeakDate 변경 감지 시 reconcileStockPlans 자동.
+- 무한루프 없음: reconcileUpdate가 이 필드들을 안 바꿈(필드 확인). 검증 — reconcileNow→
+  트리거 6회 모두 3~116ms skip, reconcile 재호출 0.
+- 실작동: 프론트 룰B 설정/저점 확정 시 자동 reconcile(firebase log onStockRuleChange로 확인).
+
 ### 다음 작업
-1. line 878 현금매도 스킵 제거 — 단, kt00007 현금매도 누락(수동대기 2건) 확인됨. 제거 전 영향 재검토.
-2. **3단계 자동 재계산 트리거** — 룰B 설정·저점 확정·체결 변경 시 reconcile 자동(네이블 케이스).
-3. **상설 검증 게이트** — 매 변경마다 "키움 정본 = 시스템" 전 종목 진단(diagSellGap/diagValuation/diagSlotConflict).
-4. 미분류로 빠진 ~42건은 사용자가 화면에서 직접 분류(retagSells → slotLocked로 영구 고정).
+1. **상설 검증 게이트** — 매 변경마다 "키움 정본 = 시스템" 전 종목 진단(diagSellGap/diagValuation/diagSlotConflict).
+2. line 878 현금매도 스킵 제거 — 단, kt00007 현금매도 누락(수동대기 2건) 확인됨. 제거 전 영향 재검토.
+3. 미분류로 빠진 ~42건은 사용자가 화면에서 직접 분류(retagSells → slotLocked로 영구 고정).
+4. qtyMismatch 수동대기 2건(하림지주·현대약품) 정리.
