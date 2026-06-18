@@ -796,13 +796,48 @@ export default function StockDetail({
   // MA 매도 수동 편집 저장
   const confirmMAEdit = async () => {
     if (maEditIdx === null || !maEditDraft) return;
+    const m = local.maSells[maEditIdx];
+    const oldQty = m.quantity || 0;
+    const newQty = maEditDraft.qty || 0;
+    const delta = newQty - oldQty;
+    // ✅ 키움 관리 종목: 수량 변경은 trade 기반(splitSellSlot)으로 — 단일진실 derive가
+    //   stock 편집을 되돌리므로. 줄이면 MA→원래 차수, 늘리면 원래 차수→MA 로 delta 이동.
+    if (local.code && delta !== 0) {
+      if (!m.splitFromPercent) {
+        alert('이 MA 매도는 분리 출처(+N%) 정보가 없어 수량을 조정할 수 없습니다. 먼저 복원 후 다시 분리하세요.');
+        return;
+      }
+      setRetagBusy(true);
+      try {
+        const res = await fetch(SPLIT_SLOT_API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify({
+            stockName: local.name,
+            fromSlot: delta < 0 ? `MA${m.ma}` : `+${m.splitFromPercent}%`,
+            toSlot: delta < 0 ? `+${m.splitFromPercent}%` : `MA${m.ma}`,
+            qty: Math.abs(delta),
+          }),
+        });
+        const data = await res.json();
+        if (!data.success) { alert(`MA 수량 조정 실패: ${data.error || ''}`); return; }
+        setMaEditIdx(null);
+        setMaEditDraft(null);
+      } catch (e: any) {
+        alert(`MA 수량 조정 오류: ${e.message}`);
+      } finally {
+        setRetagBusy(false);
+      }
+      return;
+    }
+    // 수동 종목 또는 가격/날짜만 변경: 기존 stock 편집
     const maList = [...local.maSells];
     maList[maEditIdx] = {
       ...maList[maEditIdx],
-      filled: maEditDraft.qty > 0,
+      filled: newQty > 0,
       filledDate: maEditDraft.date,
       price: maEditDraft.price,
-      quantity: maEditDraft.qty,
+      quantity: newQty,
     };
     const ok = await persistSellEdit(local.sellPlans, maList);
     if (ok) {
@@ -978,6 +1013,7 @@ export default function StockDetail({
 
   // ── 매도 슬롯 재지정(이동): MA↔수익차수 등 태그 변경 (단일 진실) ──
   const RETAG_SELLS_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/retagSells';
+  const SPLIT_SLOT_API = 'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/splitSellSlot';
   const [maMoveIdx, setMaMoveIdx] = useState<number | null>(null); // 이동 팝업 연 MA선(20/60/120)
   const [retagBusy, setRetagBusy] = useState(false);
   // 미분류 매도 → MA 분류 팝업 (prompt 대신 버튼 선택)
@@ -1241,64 +1277,32 @@ export default function StockDetail({
       alert(`분리 수량(${splitQty})이 체결 수량(${currentFilledQty})을 초과합니다.`);
       return;
     }
-
-    // 1. sellPlan 차감
-    const plans = [...local.sellPlans];
-    const remaining = currentFilledQty - splitQty;
-    plans[splitIdx] = {
-      ...sp,
-      filledQuantity: remaining,
-      filled: remaining > 0,
-      manualOverride: true, // sync 보호
-    };
-    if (remaining === 0) {
-      plans[splitIdx].filledDate = '';
-      plans[splitIdx].filledPrice = 0;
-    }
-
-    // 2. maSells에 추가 (해당 MA 슬롯)
-    // ✅ 안전망: maSells가 없거나 해당 MA 슬롯 없으면 자동 생성
-    const maList = [...(local.maSells || [])];
-    let maIdx = maList.findIndex((m) => m.ma === splitDraft.ma);
-    if (maIdx < 0) {
-      // 해당 MA 슬롯이 아예 없는 경우 신규 추가
-      maList.push({
-        ma: splitDraft.ma,
-        price: 0,
-        quantity: 0,
-        filled: false,
+    // ✅ 단일진실: stock.sellPlans/maSells 직접 편집 대신 trade.sellSlotSplit으로 분리.
+    //   (구식 stock 편집은 derive가 trade 태그 기준 재생성하며 되돌렸음 → MA로 재합쳐짐)
+    setRetagBusy(true);
+    try {
+      const res = await fetch(SPLIT_SLOT_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          stockName: local.name,
+          fromSlot: `+${sp.percent}%`,
+          toSlot: `MA${splitDraft.ma}`,
+          qty: splitQty,
+        }),
       });
-      maIdx = maList.length - 1;
-    }
-    const existing = maList[maIdx];
-    // 기존 슬롯이 비어있으면 채우고, 이미 차있으면 수량 누적
-    if (existing.filled) {
-      const totalQty = existing.quantity + splitQty;
-      const totalAmt = existing.price * existing.quantity + splitDraft.price * splitQty;
-      maList[maIdx] = {
-        ...existing,
-        quantity: totalQty,
-        price: Math.round(totalAmt / totalQty),
-        filledDate: splitDraft.date,
-        insertAfterPercent: sp.percent,
-        splitFromPercent: sp.percent,
-      };
-    } else {
-      maList[maIdx] = {
-        ...existing,
-        quantity: splitQty,
-        price: splitDraft.price,
-        filled: true,
-        filledDate: splitDraft.date,
-        insertAfterPercent: sp.percent,
-        splitFromPercent: sp.percent,
-      };
-    }
-
-    const ok = await persistSellEdit(plans, maList);
-    if (ok) {
+      const data = await res.json();
+      if (!data.success) {
+        alert(`MA 분리 실패: ${data.error || '알 수 없는 오류'}`);
+        return;
+      }
+      // Firestore 구독이 local 자동 갱신
       setSplitIdx(null);
       setSplitDraft(null);
+    } catch (e: any) {
+      alert(`MA 분리 오류: ${e.message}`);
+    } finally {
+      setRetagBusy(false);
     }
   };
 
@@ -1346,36 +1350,30 @@ export default function StockDetail({
       alert('분리 정보가 없는 MA 매도는 복원할 수 없습니다.');
       return;
     }
-    const targetPercent = m.splitFromPercent;
-    const plans = [...local.sellPlans];
-    const targetIdx = plans.findIndex((p) => p.percent === targetPercent);
-    if (targetIdx < 0) return;
-
-    const sp = plans[targetIdx];
-    const currentQty = sp.filledQuantity || 0;
-    const currentPrice = sp.filledPrice || 0;
-    const newQty = currentQty + m.quantity;
-    const newAmt = currentPrice * currentQty + m.price * m.quantity;
-    const newPrice = newQty > 0 ? Math.round(newAmt / newQty) : 0;
-
-    plans[targetIdx] = {
-      ...sp,
-      filled: true,
-      filledQuantity: newQty,
-      filledPrice: newPrice,
-      filledDate: sp.filledDate || m.filledDate || '',
-    };
-
-    // maSells 항목 비움
-    const maList = [...local.maSells];
-    maList[maIdx] = {
-      ma: m.ma,
-      price: 0,
-      quantity: 0,
-      filled: false,
-    };
-
-    await persistSellEdit(plans, maList);
+    // ✅ 단일진실: trade.sellSlotSplit으로 MA→원래 수익차수 복원 (전량)
+    setRetagBusy(true);
+    try {
+      const res = await fetch(SPLIT_SLOT_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          stockName: local.name,
+          fromSlot: `MA${m.ma}`,
+          toSlot: `+${m.splitFromPercent}%`,
+          qty: m.quantity,
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(`MA 복원 실패: ${data.error || '알 수 없는 오류'}`);
+        return;
+      }
+      // Firestore 구독이 local 자동 갱신
+    } catch (e: any) {
+      alert(`MA 복원 오류: ${e.message}`);
+    } finally {
+      setRetagBusy(false);
+    }
   };
 
   // 평가손익: 보유 0주(매매완료) 또는 currentPrice=0이면 0%로 표시

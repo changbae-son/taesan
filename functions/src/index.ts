@@ -6068,6 +6068,98 @@ export const setSellSplit = functions
     });
   });
 
+// 매도 슬롯 부분 분리/이동: POST /splitSellSlot
+//   body: { stockName, fromSlot, toSlot, qty }
+//   현재 라운드의 fromSlot 매도를 FIFO(오래된 매도부터)로 qty만큼 toSlot으로 분배.
+//   → trade.sellSlotSplit에 기록(단일진실). stock.sellPlans/maSells 직접 편집(구식)을
+//      대체 — derive가 trade 태그 기준 재생성하므로 stock 편집은 reconcile이 되돌렸음
+//      (STX 6/12 120주가 MA20으로 다시 합쳐지던 문제). slotLocked=true로 자동 재태깅·
+//      충돌해소에서 보존. toSlot이 MA면 복원 메타(splitFromPercent) prime.
+export const splitSellSlot = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 60})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const {stockName, fromSlot, toSlot, qty} = req.body || {};
+        const slotRe = /^(\+(5|10|15|20|25)%|MA(20|60|120)|unmapped)$/;
+        if (!stockName || !slotRe.test(String(fromSlot)) || !slotRe.test(String(toSlot)) ||
+            String(fromSlot) === String(toSlot) || !(Number(qty) > 0)) {
+          res.status(400).json({success: false, error: "stockName, fromSlot≠toSlot(유효슬롯), qty>0 필수"});
+          return;
+        }
+        const moveQty = Math.round(Number(qty));
+        const nD = (d: any) => {
+          const x = String(d || "");
+          return x.length === 8 && !x.includes("-") ? `${x.slice(0, 4)}-${x.slice(4, 6)}-${x.slice(6, 8)}` : x;
+        };
+        const tsnap = await db.collection("trades").where("stockName", "==", stockName).get();
+        const all = tsnap.docs.map((d) => ({id: d.id, ref: d.ref, ...(d.data() as any)}));
+        const buyDates = [...new Set(all.filter((t) => t.type === "buy").map((b) => nD(b.date)))].filter(Boolean).sort();
+        const currentRound = Math.max(1, buyDates.length);
+        const allocOf = (t: any): number => {
+          if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0) {
+            const p = t.sellSlotSplit.find((s: any) => s.slot === fromSlot);
+            return p ? (Number(p.qty) || 0) : 0;
+          }
+          return t.sellSlot === fromSlot ? (Number(t.quantity) || 0) : 0;
+        };
+        const cands = all
+          .filter((t) => t.type === "sell" && (Number(t.sellRound) || 0) === currentRound && allocOf(t) > 0)
+          .sort((a, b) => (nD(a.date) < nD(b.date) ? -1 : 1));
+        let need = moveQty; let moved = 0;
+        const batch = db.batch();
+        for (const t of cands) {
+          if (need <= 0) break;
+          const alloc = allocOf(t);
+          const move = Math.min(alloc, need);
+          if (move <= 0) continue;
+          const parts: Record<string, number> = {};
+          if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0) {
+            for (const s of t.sellSlotSplit) parts[s.slot] = (parts[s.slot] || 0) + (Number(s.qty) || 0);
+          } else {
+            parts[t.sellSlot || "unmapped"] = Number(t.quantity) || 0;
+          }
+          parts[fromSlot] = (parts[fromSlot] || 0) - move;
+          parts[toSlot] = (parts[toSlot] || 0) + move;
+          const clean = Object.entries(parts).filter(([, q]) => q > 0).map(([slot, q]) => ({slot, qty: q}));
+          if (clean.length === 1) {
+            batch.update(t.ref, {sellSlot: clean[0].slot, sellSlotSplit: admin.firestore.FieldValue.delete(), slotLocked: true});
+          } else {
+            batch.update(t.ref, {sellSlot: "split", sellSlotSplit: clean, slotLocked: true});
+          }
+          need -= move; moved += move;
+        }
+        if (need > 0) {
+          res.status(400).json({success: false, error: `${fromSlot} 현재라운드 가용 ${moved} < 요청 ${moveQty}`});
+          return;
+        }
+        // toSlot이 MA면 stock.maSells에 복원/위치 메타 prime (derive가 ...ex로 보존)
+        const mMatch = String(toSlot).match(/^MA(20|60|120)$/);
+        if (mMatch) {
+          const fpMatch = String(fromSlot).match(/^\+(\d+)%$/);
+          const fromPct = fpMatch ? Number(fpMatch[1]) : null;
+          const ssnap = await db.collection("stocks").where("name", "==", stockName).limit(1).get();
+          if (!ssnap.empty && fromPct != null) {
+            const sref = ssnap.docs[0].ref;
+            const sd = ssnap.docs[0].data() as any;
+            const maList = Array.isArray(sd.maSells) ? [...sd.maSells] : [];
+            const maNum = Number(mMatch[1]);
+            let mi = maList.findIndex((m: any) => m.ma === maNum);
+            if (mi < 0) { maList.push({ma: maNum, price: 0, quantity: 0, filled: false}); mi = maList.length - 1; }
+            maList[mi] = {...maList[mi], splitFromPercent: fromPct, insertAfterPercent: fromPct};
+            await sref.update({maSells: maList});
+          }
+        }
+        await batch.commit();
+        const reconcile = await reconcileStockPlans(stockName);
+        res.json({success: true, stockName, fromSlot, toSlot, moved: moveQty, reconcile});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
 // 단일 종목/전체 reconcile 수동 트리거 (단일 진실 검증·운영용)
 // GET /reconcileNow?stockName=흥구석유  또는  ?all=true
 export const reconcileNow = functions
@@ -7259,6 +7351,8 @@ export const inspectStockTrades = functions
             isCreditTrade: data.isCreditTrade,
             sellRound: data.sellRound,
             sellSlot: data.sellSlot,
+            sellSlotSplit: data.sellSlotSplit || null,
+            slotLocked: data.slotLocked || false,
             createdAt: data.createdAt,
           };
         });
