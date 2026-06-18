@@ -4801,9 +4801,18 @@ async function reconcileStockPlans(stockName: string): Promise<{
     const buyTradesForTag = trades
       .filter((t: any) => t.type === "buy")
       .map((t: any) => ({date: t.date, price: t.price, quantity: t.quantity}));
+    //   재태깅 대상: 슬롯 없음 OR 고아 split(sellSlot="split"인데 분배배열 없음/빈배열).
+    //   고아 split = line 6042 수동분배 후 sellSlotSplit이 비워진 잔재 → 어느 슬롯에도
+    //   집계 안 돼 잔여수량이 매도 미반영(STX 6/12 120주 → 잔여 343 오표시). slotLocked
+    //   (사용자 확정)·unmapped(2단계 충돌 의도)·유효 split은 보존.
     const untaggedSells = trades
-      .filter((t: any) => t.type === "sell" && !t.sellSlot &&
-        !(Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0))
+      .filter((t: any) => {
+        if (t.type !== "sell") return false;
+        if (t.slotLocked) return false; // 사용자 확정 분류 보존
+        const hasValidSplit = Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0;
+        if (hasValidSplit) return false;
+        return !t.sellSlot || t.sellSlot === "split"; // 미태깅 또는 고아 split
+      })
       .map((t: any) => ({id: t.id, date: t.date, price: t.price, quantity: t.quantity}));
     if (untaggedSells.length > 0 && buyTradesForTag.length > 0) {
       const tags = computeSellTags(buyTradesForTag, untaggedSells);
@@ -4812,6 +4821,7 @@ async function reconcileStockPlans(stockName: string): Promise<{
         tagBatch.update(db.collection("trades").doc(tag.tradeId), {
           sellRound: tag.sellRound,
           sellSlot: tag.sellSlot,
+          sellSlotSplit: admin.firestore.FieldValue.delete(), // 고아 split 잔재 제거
         });
       }
       await tagBatch.commit();
@@ -4822,6 +4832,7 @@ async function reconcileStockPlans(stockName: string): Promise<{
         if (g) {
           (t as any).sellRound = g.sellRound;
           (t as any).sellSlot = g.sellSlot;
+          delete (t as any).sellSlotSplit; // 고아 split 잔재 정리
         }
       }
       console.log(`[reconcile/태깅] ${stockName} 신규 매도 ${tags.length}건 자동 태깅`);
