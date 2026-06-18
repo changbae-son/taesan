@@ -4612,6 +4612,52 @@ function dedupSellFallback(trades: any[]): string[] {
   return del;
 }
 
+// 매도 fallback↔ord_no 안전 dedup V2 (가격 미세차 + 기존 태깅 중복까지).
+//   V1 한계: (date,price) 정확 매칭이라 ord_no 통합(8099)과 부분체결 fallback(8100)이
+//   1~10원만 달라도 못 잡음. 또 fbAllUnmapped 조건 때문에 이전 reconcile에서 자동태깅돼
+//   저장된 중복 fallback도 영영 못 지움(네이블 6/16 잔고0 케이스).
+//   V2: 날짜별로 ord_no(정본) 단가에 근접한 미잠금 fallback 묶음을 찾아, 합이 ord 수량과
+//   정확히 같으면 그 fallback들을 같은 매도의 중복으로 보고 제거.
+//   ⚠️ 안전 조건:
+//     1) ord_no 존재(키움 정본) — 정본이 있어야 fallback을 지워도 매도 사실 유지.
+//     2) 근접 fallback 합 == ord 수량 (= 동일 매도의 부분체결 묶음 증거).
+//     3) slotLocked(사용자 확정 분류)는 보존 — 자동태깅(non-locked)만 제거(ord_no가 재태깅).
+//   tol = max(15원, ord단가×0.2%) — 부분체결 단가 미세차만 허용, 별개 매도(큰 차)는 제외.
+function dedupSellFallbackV2(trades: any[]): string[] {
+  const isFb = (t: any) => /^trade_kiwoom_sell_/.test(String(t.id || ""));
+  const isOrd = (t: any) => /^trade_kiwoom_\d/.test(String(t.id || ""));
+  const sells = trades.filter((t) => t.type === "sell" && (Number(t.quantity) || 0) > 0);
+  const byDate: Record<string, {ord: any[]; fb: any[]}> = {};
+  for (const t of sells) {
+    const d = String(t.date || "");
+    if (!byDate[d]) byDate[d] = {ord: [], fb: []};
+    if (isFb(t)) byDate[d].fb.push(t);
+    else if (isOrd(t)) byDate[d].ord.push(t);
+  }
+  const del: string[] = [];
+  for (const g of Object.values(byDate)) {
+    if (g.ord.length === 0 || g.fb.length === 0) continue;
+    // slotLocked(사용자 확정)은 후보에서 제외 — 분류 보존
+    let pool = g.fb.filter((f) => !f.slotLocked);
+    // 단가 낮은 ord부터 매칭(밴드 겹침 시 결정적 순서)
+    const ords = [...g.ord].sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
+    for (const o of ords) {
+      const op = Number(o.price) || 0;
+      const oq = Number(o.quantity) || 0;
+      if (oq <= 0 || pool.length === 0) continue;
+      const tol = Math.max(15, Math.round(op * 0.002));
+      const near = pool.filter((f) => Math.abs((Number(f.price) || 0) - op) <= tol);
+      const nearSum = near.reduce((s, x) => s + (Number(x.quantity) || 0), 0);
+      if (near.length > 0 && nearSum === oq) {
+        const nearIds = new Set(near.map((f) => String(f.id)));
+        for (const id of nearIds) del.push(id);
+        pool = pool.filter((f) => !nearIds.has(String(f.id)));
+      }
+    }
+  }
+  return del;
+}
+
 function deriveSellSlotsFromTags(
   stock: any,
   trades: any[]
@@ -4733,8 +4779,10 @@ async function reconcileStockPlans(stockName: string): Promise<{
   let trades = tradesSnap.docs.map((d) => ({id: d.id, ...(d.data() as any)}));
 
   // ✅ 안전 자동 dedup (태깅 전): ka10072 통합/부분체결 중복 fallback 제거.
-  //   조건 = fallback 합 == ord_no 수량 AND fallback 전부 미분류 (dedupSellFallback 참조).
-  const _fbDelIds = dedupSellFallback(trades);
+  //   V2: 날짜별 ord_no 단가근접 fallback 묶음(합==ord수량) 제거 + slotLocked만 보존.
+  //   → 가격 미세차(8099↔8100)·기존 자동태깅 중복까지 처리(앱클론18→9, 네이블 잔고0 류).
+  //   dry-run 검증: diagSellDedupV2 (33건 전부 진짜 중복, locked 보존 확인 2026-06-18).
+  const _fbDelIds = dedupSellFallbackV2(trades);
   if (_fbDelIds.length > 0) {
     const delBatch = db.batch();
     for (const id of _fbDelIds) delBatch.delete(db.collection("trades").doc(id));
@@ -6165,6 +6213,62 @@ export const diagCreditCheck = functions
         res.json({success: true, kiwoomCodes: Object.keys(byCode).length, mismatchCount: mismatches.length, mismatches});
       } catch (e: any) {
         res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
+// dedup V1 vs V2 비교 (dry-run, 쓰기 없음): GET /diagSellDedupV2
+//   V2가 추가로 지울 fallback(가격미세차·기존태깅 중복)을 전 종목에서 미리 점검.
+//   ?apply=true 면 V2 적용(삭제+reconcile) — 기본은 dry-run.
+export const diagSellDedupV2 = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 300})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const apply = req.query.apply === "true";
+        const stocksSnap = await db.collection("stocks").get();
+        const report: any[] = [];
+        let v2ExtraTotal = 0; let lockedSkipped = 0;
+        for (const doc of stocksSnap.docs) {
+          const s = doc.data() as any;
+          const name = s.name;
+          if (!name) continue;
+          const tradesSnap = await db.collection("trades").where("stockName", "==", name).get();
+          if (tradesSnap.empty) continue;
+          const trades = tradesSnap.docs.map((d) => ({id: d.id, ...(d.data() as any)}));
+          const v1 = new Set(dedupSellFallback(trades));
+          const v2 = dedupSellFallbackV2(trades);
+          const extra = v2.filter((id) => !v1.has(id));
+          // slotLocked인데 V2 후보에서 제외된(보존된) fallback 수 — 참고용
+          const lockedFbs = trades.filter((t: any) => t.type === "sell" &&
+            /^trade_kiwoom_sell_/.test(String(t.id || "")) && t.slotLocked);
+          lockedSkipped += lockedFbs.length;
+          if (extra.length > 0) {
+            const byId: Record<string, any> = {};
+            for (const t of trades) byId[String(t.id)] = t;
+            const extraDetail = extra.map((id) => {
+              const t = byId[id] || {};
+              return {id, date: t.date, price: t.price, qty: t.quantity, sellSlot: t.sellSlot || null, slotLocked: !!t.slotLocked};
+            });
+            // 같은 날 ord_no 정본(참고)
+            const dates = new Set(extraDetail.map((e) => e.date));
+            const ordCtx = trades.filter((t: any) => t.type === "sell" &&
+              /^trade_kiwoom_\d/.test(String(t.id || "")) && dates.has(t.date))
+              .map((t: any) => ({date: t.date, price: t.price, qty: t.quantity, sellSlot: t.sellSlot || null}));
+            v2ExtraTotal += extra.length;
+            report.push({name, v1Del: v1.size, v2Del: v2.length, extraDel: extra.length, extraDetail, ordContext: ordCtx});
+          }
+          if (apply && v2.length > 0) {
+            const delBatch = db.batch();
+            for (const id of v2) delBatch.delete(db.collection("trades").doc(id));
+            await delBatch.commit();
+            await reconcileStockPlans(name);
+          }
+        }
+        res.json({success: true, mode: apply ? "APPLIED" : "DRY-RUN", stocksWithExtra: report.length, v2ExtraTotal, lockedFallbacksPreserved: lockedSkipped, report});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message, stack: e.stack});
       }
     });
   });
