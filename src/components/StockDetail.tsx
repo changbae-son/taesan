@@ -1665,7 +1665,10 @@ export default function StockDetail({
       netCost += price * remainFromBuy;
       netQty += remainFromBuy;
     }
-    const roundAvgPrice = netQty > 0 ? Math.round(netCost / netQty) : 0;
+    // 현재 라운드 평단 = 키움 정본(local.avgPrice). 복기 라운드는 과거 시점이라 키움 현재
+    // 평단을 쓸 수 없으므로 FIFO 계산 유지. (기준가가 키움 평단과 어긋나던 문제 해소)
+    const fifoAvg = netQty > 0 ? Math.round(netCost / netQty) : 0;
+    const roundAvgPrice = (isCurrentRound && (local.avgPrice || 0) > 0) ? local.avgPrice : fifoAvg;
 
     const holdingAtStart = Math.max(0, totalBought - soldBeforeRound);
     const slotQty = holdingAtStart > 0 ? Math.round(holdingAtStart / 5) : 0;

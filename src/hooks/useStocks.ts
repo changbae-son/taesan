@@ -245,10 +245,13 @@ export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): 
   } else {
     s.totalQuantity = mappedRemain;
   }
-  // corporateActions 종목: 합병/감자 후 단순 buyPlans 가중평균은 부정확
-  // → reconcile이 키움 기반으로 설정한 Firestore avgPrice 유지
-  s.avgPrice = (hasCorporateActions && (stock.avgPrice || 0) > 0)
-    ? stock.avgPrice
+  // 3대 정본: 평단 = 키움(reconcile/sync가 기록한 Firestore avgPrice).
+  // 키움 관리 종목(code 有)·합병감자 종목은 키움 평단 유지 — 프론트 buyPlans 가중평균
+  // 재계산이 매도분 원가차감 평단(키움)을 덮어써서 기준가가 키움과 어긋나던 문제 방지
+  // (예: 젬백스 키움14957 vs buyPlans가중15940). 수동·신규 종목(code 無)만 계산값 사용.
+  const keepKiwoomAvg = (hasCorporateActions || !!s.code) && (stock.avgPrice || 0) > 0;
+  s.avgPrice = keepKiwoomAvg
+    ? (stock.avgPrice as number)
     : (totalQty > 0 ? Math.round(totalCost / totalQty) : 0);
 
   // 매도 계획 자동 계산 (체결된 항목의 실제 데이터는 보존)
