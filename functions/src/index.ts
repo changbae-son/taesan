@@ -251,19 +251,10 @@ function computePositionsFromTrades(
   }
 
   if (creditBoughtQty === 0) {
-    // 평단가 차이로 신용 비중 추정
-    if (cashAvg > 0 && Math.abs(totalAvg - cashAvg) / cashAvg > 0.02) {
-      const inferredCreditQty = Math.max(0, totalQuantity - cashNetQty);
-      if (inferredCreditQty > 0 && cashNetQty > 0) {
-        const inferredCreditAvg = Math.round(
-          (totalAvg * totalQuantity - cashAvg * cashNetQty) / inferredCreditQty
-        );
-        return [
-          {type: "cash", quantity: cashNetQty, avgPrice: cashAvg, since: cashFirstDate},
-          enrichCredit({type: "credit", quantity: inferredCreditQty, avgPrice: inferredCreditAvg > 0 ? inferredCreditAvg : totalAvg, since: existingCredit?.since}),
-        ];
-      }
-    }
+    // ✅ 신용 매수 trade가 없으면 전량 현금.
+    //   ⚠️ 과거: 평단차이(totalAvg vs cashAvg)>2%를 신용 비중으로 추정 → 매도 종목을
+    //      신용혼합으로 오판(젬백스 키움현금572 → cash502+credit70). 평단차이는 매도분
+    //      원가차감(키움 이동평균)이지 신용이 아님. → 추정 제거, 전량 현금(키움 totalAvg).
     return [{type: "cash", quantity: totalQuantity, avgPrice: totalAvg, since: cashFirstDate}];
   }
 
@@ -6130,6 +6121,54 @@ export const onTradeCreated = functions
 // ✅ 4단계 상설 검증: "키움 정본 = 시스템" 전 종목 헬스체크
 //   ① 잔고 불일치(키움 qty vs totalQuantity) ② 평단 불일치(키움 buy_uv vs avgPrice)
 //   ③ 슬롯 충돌(같은 라운드+슬롯 다른 date·price 2단위↑ — 2단계 적용 후 0이어야)
+// 신용/현금 판정 검증: GET /diagCreditCheck — 키움 crd_tp vs 시스템 positions/isCreditTrade
+export const diagCreditCheck = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const r = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "kt00005"},
+          body: JSON.stringify({dmst_stex_tp: "KRX"}),
+        });
+        const data = await r.json() as any;
+        const list = (data.stk_cntr_remn || []).filter((i: any) => parseInt(i.cur_qty || "0") > 0);
+        const byCode: Record<string, any> = {};
+        for (const it of list) {
+          const code = cleanKiwoomField(it.stk_cd).replace(/^A/, "");
+          const crd = String(it.crd_tp || "").trim();
+          const qty = parseInt(it.cur_qty || "0");
+          if (!byCode[code]) byCode[code] = {name: cleanKiwoomField(it.stk_nm), cash: 0, credit: 0, crds: new Set<string>()};
+          if (crd === "00") byCode[code].cash += qty; else byCode[code].credit += qty;
+          byCode[code].crds.add(crd);
+        }
+        const stocksSnap = await db.collection("stocks").get();
+        const mismatches: any[] = [];
+        stocksSnap.forEach((doc) => {
+          const s = doc.data() as any;
+          const code = String(s.code || "").replace(/^A/, "");
+          const kw = byCode[code];
+          if (!kw) return;
+          const sysCredit = s.isCreditTrade === true || (Array.isArray(s.positions) && s.positions.some((p: any) => p.type === "credit"));
+          const kiwoomCredit = kw.credit > 0;
+          if (sysCredit !== kiwoomCredit) {
+            mismatches.push({
+              name: s.name, sysCredit, kiwoomCash: kw.cash, kiwoomCredit: kw.credit,
+              crds: [...kw.crds], sysPositions: (s.positions || []).map((p: any) => `${p.type}:${p.quantity}`),
+            });
+          }
+        });
+        res.json({success: true, kiwoomCodes: Object.keys(byCode).length, mismatchCount: mismatches.length, mismatches});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
 async function runHealthCheck(): Promise<any> {
   const config = await getKiwoomConfig();
   const token = await getAccessToken(config);
