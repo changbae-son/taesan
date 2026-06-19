@@ -3323,7 +3323,11 @@ export default function StockDetail({
                 };
 
                 // MA 행 + (펼침 시) 2차 매도 건별 행을 rows에 평탄하게 추가 (드래그 보존)
-                const pushMARow = (m: typeof local.maSells[0], mi: number) => {
+                const pushMARow = (m: typeof local.maSells[0]) => {
+                  // ✅ mi는 반드시 local.maSells 인덱스 — moveMaToInsertAfter가 local.maSells[mi]를
+                  //   참조하므로, displayMaSells(필터된) 인덱스를 쓰면 다른 MA슬롯을 편집해 드래그가
+                  //   제자리로 원복됨(기산텔레콤 MA120). m.ma로 전체 배열 인덱스 재계산.
+                  const mi = local.maSells.findIndex((x) => x.ma === m.ma);
                   rows.push(renderMARow(m, mi));
                   const cnt = Array.isArray(m.consumedTradeIds) ? m.consumedTradeIds.length : 0;
                   if (cnt > 1 && expandedSlots[`MA${m.ma}`]) {
@@ -3365,9 +3369,9 @@ export default function StockDetail({
                 }
 
                 // [insertAfterPercent === 0] 1차 이전 MA 매도
-                displayMaSells.forEach((m, mi) => {
+                displayMaSells.forEach((m) => {
                   if (m.filled && m.insertAfterPercent === 0) {
-                    pushMARow(m, mi);
+                    pushMARow(m);
                   }
                 });
 
@@ -3826,9 +3830,9 @@ export default function StockDetail({
                   }
 
                   // 이 sellPlan 다음에 끼어드는 MA 매도들
-                  displayMaSells.forEach((m, mi) => {
+                  displayMaSells.forEach((m) => {
                     if (m.filled && m.insertAfterPercent === sp.percent) {
-                      pushMARow(m, mi);
+                      pushMARow(m);
                     }
                   });
                 });
