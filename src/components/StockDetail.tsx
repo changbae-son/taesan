@@ -3187,18 +3187,7 @@ export default function StockDetail({
                     ? ((m.price - displayAvgPrice) / displayAvgPrice) * 100 : null;
                   const shortD = m.filledDate ? m.filledDate.slice(5) : '';
                   const isDragging = draggingMaIdx === mi;
-                  const maKey = `MA${m.ma}`;
-                  const maCnt = Array.isArray(m.consumedTradeIds) ? m.consumedTradeIds.length : 0;
-                  const maExpandRows = (maCnt > 1 && expandedSlots[maKey])
-                    ? slotTradeDetails(m.consumedTradeIds).map((d, di) => (
-                        <tr key={`ma-${mi}-d-${di}`} className={styles.maInsertedRow}>
-                          <td colSpan={5} style={{ paddingLeft: 28, fontSize: '0.82em', color: '#777', background: '#fafafa' }}>
-                            └ {d.date.slice(5)} · {d.price.toLocaleString()}원 × {d.qty.toLocaleString()}주
-                          </td>
-                        </tr>
-                      ))
-                    : [];
-                  return [
+                  return (
                     <tr
                       key={`ma-${mi}`}
                       className={`${styles.maInsertedRow} ${isDragging ? styles.maRowDragging : ''}`}
@@ -3329,9 +3318,24 @@ export default function StockDetail({
                           </div>
                         )}
                       </td>
-                    </tr>,
-                    ...maExpandRows,
-                  ];
+                    </tr>
+                  );
+                };
+
+                // MA 행 + (펼침 시) 2차 매도 건별 행을 rows에 평탄하게 추가 (드래그 보존)
+                const pushMARow = (m: typeof local.maSells[0], mi: number) => {
+                  rows.push(renderMARow(m, mi));
+                  const cnt = Array.isArray(m.consumedTradeIds) ? m.consumedTradeIds.length : 0;
+                  if (cnt > 1 && expandedSlots[`MA${m.ma}`]) {
+                    slotTradeDetails(m.consumedTradeIds).forEach((d, di) =>
+                      rows.push(
+                        <tr key={`ma-${mi}-d-${di}`} className={styles.maInsertedRow}>
+                          <td colSpan={5} style={{ paddingLeft: 28, fontSize: '0.82em', color: '#777', background: '#fafafa' }}>
+                            └ {d.date.slice(5)} · {d.price.toLocaleString()}원 × {d.qty.toLocaleString()}주
+                          </td>
+                        </tr>
+                      ));
+                  }
                 };
 
                 const rows: any[] = [];
@@ -3363,7 +3367,7 @@ export default function StockDetail({
                 // [insertAfterPercent === 0] 1차 이전 MA 매도
                 displayMaSells.forEach((m, mi) => {
                   if (m.filled && m.insertAfterPercent === 0) {
-                    rows.push(renderMARow(m, mi));
+                    pushMARow(m, mi);
                   }
                 });
 
@@ -3824,7 +3828,7 @@ export default function StockDetail({
                   // 이 sellPlan 다음에 끼어드는 MA 매도들
                   displayMaSells.forEach((m, mi) => {
                     if (m.filled && m.insertAfterPercent === sp.percent) {
-                      rows.push(renderMARow(m, mi));
+                      pushMARow(m, mi);
                     }
                   });
                 });
