@@ -1689,14 +1689,14 @@ export default function StockDetail({
     local.maSells.forEach(m => {
       if (!m.filled || !m.filledDate) return;
       const mDate = normDate(m.filledDate);
-      if (!(mDate > thisBuyDate && (!nextBuyDate || mDate < nextBuyDate))) return;
+      if (!(mDate >= thisBuyDate && (!nextBuyDate || mDate < nextBuyDate))) return;
       consumeSlot(m.quantity, m.consumedTradeIds as any);
     });
     local.sellPlans.forEach(sp => {
       if (sp.manualOverride !== true) return; // 수동 편집 슬롯만
       if (!sp.filled || !sp.filledDate) return;
       const spDate = normDate(sp.filledDate);
-      if (!(spDate > thisBuyDate && (!nextBuyDate || spDate < nextBuyDate))) return;
+      if (!(spDate >= thisBuyDate && (!nextBuyDate || spDate < nextBuyDate))) return;
       consumeSlot(sp.filledQuantity || 0, sp.consumedTradeIds as any);
     });
 
@@ -1704,7 +1704,7 @@ export default function StockDetail({
     const roundSells = [...actualSells]
       .filter(s => {
         const d = normDate(s.date);
-        return d > thisBuyDate && (!nextBuyDate || d < nextBuyDate);
+        return d >= thisBuyDate && (!nextBuyDate || d < nextBuyDate);
       })
       .map(s => {
         // MA가 소비한 수량 차감 (정수 보장)
@@ -3100,13 +3100,13 @@ export default function StockDetail({
                 local.sellPlans.forEach((sp) => {
                   if (!sp.filled) return;
                   const d = sp.filledDate || '';
-                  if (d <= roundView.thisBuyDate) return;
+                  if (d < roundView.thisBuyDate) return;
                   if (roundView.nextBuyDate && d >= roundView.nextBuyDate) return;
                   cnt++; qty += sp.filledQuantity || sp.quantity; amt += (sp.filledQuantity || sp.quantity) * (sp.filledPrice || sp.price);
                 });
                 local.maSells.forEach((m) => {
                   if (!m.filled || !m.filledDate) return;
-                  if (m.filledDate <= roundView.thisBuyDate) return;
+                  if (m.filledDate < roundView.thisBuyDate) return;
                   if (roundView.nextBuyDate && m.filledDate >= roundView.nextBuyDate) return;
                   cnt++; qty += m.quantity || 0; amt += (m.price || 0) * (m.quantity || 0);
                 });
@@ -3209,7 +3209,7 @@ export default function StockDetail({
                 const displayMaSells = local.maSells.filter((m) => {
                   if (!m.filled || !m.filledDate) return false;
                   const d = m.filledDate;
-                  return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
+                  return d >= roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
                 });
 
                 // 잔여 계산용: 이 라운드 MA 매도만 차감 (displayMaSells = 이 라운드 필터링됨)
@@ -3389,7 +3389,7 @@ export default function StockDetail({
                   // 현재 라운드에서도 reviewSlots(roundView 기반) 사용 → 1차 체결이 2차 슬롯에 잔존하지 않도록
                   // 단 sp 체결이 이 라운드 기간 내일 때만 sp 우선 (사용자 수동 편집·라운드 내 체결 보존)
                   const isSpInThisRound = sp.filled && !!sp.filledDate &&
-                    sp.filledDate > roundView.thisBuyDate &&
+                    sp.filledDate >= roundView.thisBuyDate &&
                     (!roundView.nextBuyDate || sp.filledDate < roundView.nextBuyDate);
                   // ✅ 현재 라운드: 라운드 내 sp 체결이면 sp 우선
                   // ✅ 복기 라운드: 라운드 내 sp가 manualOverride면 sp 우선 (사용자 합치기/이동 결과 반영)
@@ -3875,7 +3875,7 @@ export default function StockDetail({
             } else {
               roundUnmapped = unmappedTrades.filter((t) => {
                 const d = normD(t.date);
-                return d > roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
+                return d >= roundView.thisBuyDate && (!roundView.nextBuyDate || d < roundView.nextBuyDate);
               });
             }
             if (roundUnmapped.length === 0) return null;
