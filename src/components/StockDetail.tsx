@@ -969,6 +969,18 @@ export default function StockDetail({
   const [unmapMaTradeId, setUnmapMaTradeId] = useState<string | null>(null);
   const [unmapMaSel, setUnmapMaSel] = useState<number>(20);
   const [unmapInsertSel, setUnmapInsertSel] = useState<number>(25);
+  // 슬롯 2차 매도(누적) 펼침 상태 — 키: `${슬롯라벨}` (예 'MA120','+10%')
+  const [expandedSlots, setExpandedSlots] = useState<Record<string, boolean>>({});
+  const toggleSlotExpand = (key: string) => setExpandedSlots((p) => ({ ...p, [key]: !p[key] }));
+  // consumedTradeIds → 건별 매도 상세 (날짜·가격·수량), 날짜 오름차순
+  const slotTradeDetails = (ids: any): { date: string; price: number; qty: number }[] => {
+    if (!Array.isArray(ids) || ids.length === 0) return [];
+    const set = new Set(ids.map((x: any) => String(x)));
+    return (actualSells as any[])
+      .filter((t) => set.has(String(t.id)))
+      .map((t) => ({ date: String(t.date), price: Number(t.price) || 0, qty: Number(t.quantity) || 0 }))
+      .sort((a, b) => (a.date < b.date ? -1 : 1));
+  };
 
   // 현재 라운드에서 특정 슬롯에 속한 매도 trade id 목록
   const tradeIdsForSlot = (slotLabel: string): string[] => {
@@ -3175,7 +3187,18 @@ export default function StockDetail({
                     ? ((m.price - displayAvgPrice) / displayAvgPrice) * 100 : null;
                   const shortD = m.filledDate ? m.filledDate.slice(5) : '';
                   const isDragging = draggingMaIdx === mi;
-                  return (
+                  const maKey = `MA${m.ma}`;
+                  const maCnt = Array.isArray(m.consumedTradeIds) ? m.consumedTradeIds.length : 0;
+                  const maExpandRows = (maCnt > 1 && expandedSlots[maKey])
+                    ? slotTradeDetails(m.consumedTradeIds).map((d, di) => (
+                        <tr key={`ma-${mi}-d-${di}`} className={styles.maInsertedRow}>
+                          <td colSpan={5} style={{ paddingLeft: 28, fontSize: '0.82em', color: '#777', background: '#fafafa' }}>
+                            └ {d.date.slice(5)} · {d.price.toLocaleString()}원 × {d.qty.toLocaleString()}주
+                          </td>
+                        </tr>
+                      ))
+                    : [];
+                  return [
                     <tr
                       key={`ma-${mi}`}
                       className={`${styles.maInsertedRow} ${isDragging ? styles.maRowDragging : ''}`}
@@ -3212,7 +3235,20 @@ export default function StockDetail({
                       <td className={styles.numCell}>
                         <span className={styles.colLabel}>수량</span>
                         <span className={styles.filledQty} style={{ color: '#ff9800' }}>{m.quantity.toLocaleString()}</span>
-                        <span className={styles.cumulativeQty}>MA 매도</span>
+                        {(() => {
+                          const cnt = Array.isArray(m.consumedTradeIds) ? m.consumedTradeIds.length : 0;
+                          if (cnt > 1) {
+                            const key = `MA${m.ma}`;
+                            return (
+                              <span className={styles.cumulativeQty} style={{ color: '#1976d2', cursor: 'pointer', fontWeight: 600 }}
+                                onClick={(e) => { e.stopPropagation(); toggleSlotExpand(key); }}
+                                title="2차 매도 건별 펼치기">
+                                {cnt}회 {expandedSlots[key] ? '▴' : '▾'}
+                              </span>
+                            );
+                          }
+                          return <span className={styles.cumulativeQty}>MA 매도</span>;
+                        })()}
                       </td>
                       <td className={styles.btnCell}>
                         {typeof m.splitFromPercent === 'number' && m.splitFromPercent > 0 && maEditIdx !== mi && (
@@ -3293,8 +3329,9 @@ export default function StockDetail({
                           </div>
                         )}
                       </td>
-                    </tr>
-                  );
+                    </tr>,
+                    ...maExpandRows,
+                  ];
                 };
 
                 const rows: any[] = [];
