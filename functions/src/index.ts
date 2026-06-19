@@ -4864,13 +4864,16 @@ async function reconcileStockPlans(stockName: string): Promise<{
     }
     const unmapIds: string[] = [];
     for (const arr of Object.values(grp)) {
+      // ✅ 그룹에 사용자 확정(slotLocked)이 하나라도 있으면 = 사용자가 이 슬롯을 의도적으로
+      //   구성(같은 슬롯 2차 매도 등) → 그룹 전체 보존. 합산은 collectSlot이 처리(누적 표시).
+      const hasLocked = arr.some((t: any) => t.slotLocked);
+      if (hasLocked) continue;
+      // 순수 자동 그룹만 안전장치: 첫 (날짜,가격) 단위만 유지, 나머지 미분류.
       arr.sort((a, b) =>
-        ((b.slotLocked ? 1 : 0) - (a.slotLocked ? 1 : 0)) ||
         String(a.date).localeCompare(String(b.date)) ||
         (Number(a.price) || 0) - (Number(b.price) || 0));
       const firstDP = `${arr[0].date}|${arr[0].price}`;
       for (const t of arr) {
-        if (t.slotLocked) continue; // 사용자 확정 유지
         if (`${t.date}|${t.price}` !== firstDP) unmapIds.push(String(t.id));
       }
     }
@@ -5960,7 +5963,7 @@ export const retagSells = functions
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
-        const {tradeIds, toSlot} = req.body || {};
+        const {tradeIds, toSlot, insertAfter} = req.body || {};
         if (!Array.isArray(tradeIds) || tradeIds.length === 0 || !toSlot) {
           res.status(400).json({success: false, error: "tradeIds[], toSlot 필수"});
           return;
@@ -5986,6 +5989,21 @@ export const retagSells = functions
           });
         }
         await batch.commit();
+        // toSlot이 MA면 위치 메타(insertAfterPercent) prime — derive가 ...ex로 보존
+        const _mMatch = String(toSlot).match(/^MA(20|60|120)$/);
+        if (_mMatch && stockName && typeof insertAfter === "number") {
+          const ssnap = await db.collection("stocks").where("name", "==", stockName).limit(1).get();
+          if (!ssnap.empty) {
+            const sref = ssnap.docs[0].ref;
+            const sd = ssnap.docs[0].data() as any;
+            const maList = Array.isArray(sd.maSells) ? [...sd.maSells] : [];
+            const maNum = Number(_mMatch[1]);
+            let mi = maList.findIndex((m: any) => m.ma === maNum);
+            if (mi < 0) { maList.push({ma: maNum, price: 0, quantity: 0, filled: false}); mi = maList.length - 1; }
+            maList[mi] = {...maList[mi], insertAfterPercent: insertAfter};
+            await sref.update({maSells: maList});
+          }
+        }
         let reconcile: any = null;
         if (stockName) {
           try {
@@ -6400,9 +6418,9 @@ async function runHealthCheck(): Promise<any> {
     }
   });
 
-  // 슬롯 충돌 (date+price 단위)
+  // 슬롯 충돌 (date+price 단위). 단 hasLocked(사용자 확정 2차 매도) 그룹은 정상 — 제외.
   const tradesSnap = await db.collection("trades").get();
-  const grp: Record<string, Set<string>> = {};
+  const grp: Record<string, {dps: Set<string>; hasLocked: boolean}> = {};
   tradesSnap.forEach((doc) => {
     const t = doc.data() as any;
     if (t.type !== "sell") return;
@@ -6417,13 +6435,14 @@ async function runHealthCheck(): Promise<any> {
     for (const sl of slots) {
       if (!sl.slot || sl.slot === "unmapped") continue;
       const key = `${stock}|R${round}|${sl.slot}`;
-      if (!grp[key]) grp[key] = new Set();
-      grp[key].add(`${t.date}|${Number(t.price) || 0}`);
+      if (!grp[key]) grp[key] = {dps: new Set(), hasLocked: false};
+      grp[key].dps.add(`${t.date}|${Number(t.price) || 0}`);
+      if (t.slotLocked) grp[key].hasLocked = true;
     }
   });
   const slotConflicts: any[] = [];
-  for (const [key, dps] of Object.entries(grp)) {
-    if (dps.size >= 2) slotConflicts.push({key, units: dps.size});
+  for (const [key, g] of Object.entries(grp)) {
+    if (g.dps.size >= 2 && !g.hasLocked) slotConflicts.push({key, units: g.dps.size});
   }
 
   const totalIssues = balanceIssues.length + avgIssues.length + slotConflicts.length;

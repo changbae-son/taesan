@@ -893,55 +893,34 @@ export default function StockDetail({
   // ── 미분류 매도 이동 ──
   // 매핑 안 된 trade를 sellPlans 또는 maSells로 수동 이동
   // ✅ Phase 1: t.id를 받아서 consumedTradeIds에 누적 → 이중 처리 차단
+  // ✅ 단일진실: 미분류 매도를 수익 차수로 분류 = trade.sellSlot 변경(retagSells, slotLocked).
+  //   같은 슬롯에 기존 매도가 있으면 충돌해소가 hasLocked 보존 → collectSlot이 합산(2차 매도).
   const moveUnmappedToSell = async (t: { id: string; date: string; price: number; quantity: number }) => {
-    const percentStr = prompt('어느 차수로 이동? (5 / 10 / 15 / 20 / 25)', '25');
+    const percentStr = prompt('어느 차수로 분류? (5 / 10 / 15 / 20 / 25)', '25');
     if (!percentStr) return;
     const percent = parseInt(percentStr.replace(/\D/g, ''));
     if (![5, 10, 15, 20, 25].includes(percent)) {
       alert('5, 10, 15, 20, 25 중 하나만 가능합니다.');
       return;
     }
-    const plans = [...local.sellPlans];
-    const idx = plans.findIndex((p) => p.percent === percent);
-    if (idx < 0) return;
-
-    if (plans[idx].filled) {
-      // 합치기 모드 (가중평균)
-      const oldP = plans[idx].filledPrice || 0;
-      const oldQ = plans[idx].filledQuantity || 0;
-      const newQ = oldQ + t.quantity;
-      const newP = newQ > 0 ? Math.round((oldP * oldQ + t.price * t.quantity) / newQ) : 0;
-      const ok = confirm(
-        `+${percent}%에 합치시겠습니까?\n` +
-        `기존: ${oldP.toLocaleString()} × ${oldQ}주\n` +
-        `추가: ${t.price.toLocaleString()} × ${t.quantity}주\n` +
-        `결과: ${newP.toLocaleString()}원 (가중평균) × ${newQ}주`
-      );
-      if (!ok) return;
-      const existingIds = Array.isArray(plans[idx].consumedTradeIds) ? plans[idx].consumedTradeIds : [];
-      plans[idx] = {
-        ...plans[idx],
-        filledDate: t.date > (plans[idx].filledDate || '') ? t.date : (plans[idx].filledDate || ''),
-        filledPrice: newP,
-        filledQuantity: newQ,
-        manualOverride: true,
-        // ✅ trade.id 누적 (중복 방지)
-        consumedTradeIds: existingIds.includes(t.id) ? existingIds : [...existingIds, t.id],
-      };
-    } else {
-      plans[idx] = {
-        ...plans[idx],
-        filled: true,
-        filledDate: t.date,
-        filledPrice: t.price,
-        filledQuantity: t.quantity,
-        manualOverride: true,
-        consumedTradeIds: [t.id],
-      };
+    setRetagBusy(true);
+    try {
+      const res = await fetch(RETAG_SELLS_API, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tradeIds: [t.id], toSlot: `+${percent}%` }),
+      });
+      const data = await res.json();
+      if (!data.success) { alert('분류 실패: ' + (data.error || '')); return; }
+      lastUserActionRef.current = 0; // onSnapshot 즉시 반영
+    } catch (e: any) {
+      alert('분류 오류: ' + e.message);
+    } finally {
+      setRetagBusy(false);
     }
-    await persistSellEdit(plans, local.maSells);
   };
 
+  // ✅ 단일진실: 미분류 매도를 MA선으로 분류 = trade.sellSlot 변경(retagSells, slotLocked).
+  //   insertAfter(표시 위치)는 retagSells가 stock.maSells에 prime → derive가 보존.
   const moveUnmappedToMa = async (
     t: { id: string; date: string; price: number; quantity: number },
     ma: number,
@@ -955,51 +934,21 @@ export default function StockDetail({
       alert('0, 5, 10, 15, 20, 25 중 하나만 가능합니다.');
       return;
     }
-
-    const maList = [...(local.maSells || [])];
-    // 누락 슬롯 보강
-    for (const m of [20, 60, 120]) {
-      if (!maList.find((x) => x.ma === m)) {
-        maList.push({ ma: m, price: 0, quantity: 0, filled: false });
-      }
+    setRetagBusy(true);
+    try {
+      const res = await fetch(RETAG_SELLS_API, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tradeIds: [t.id], toSlot: `MA${ma}`, insertAfter }),
+      });
+      const data = await res.json();
+      if (!data.success) { alert('분류 실패: ' + (data.error || '')); return; }
+      setUnmapMaTradeId(null);
+      lastUserActionRef.current = 0;
+    } catch (e: any) {
+      alert('분류 오류: ' + e.message);
+    } finally {
+      setRetagBusy(false);
     }
-    const idx = maList.findIndex((m) => m.ma === ma);
-
-    if (maList[idx].filled) {
-      // 합치기: 가중평균
-      const oldP = maList[idx].price || 0;
-      const oldQ = maList[idx].quantity || 0;
-      const newQ = oldQ + t.quantity;
-      const newP = newQ > 0 ? Math.round((oldP * oldQ + t.price * t.quantity) / newQ) : 0;
-      const ok = confirm(
-        `MA${ma}와 합치시겠습니까?\n` +
-        `기존: ${oldP.toLocaleString()} × ${oldQ}주\n` +
-        `추가: ${t.price.toLocaleString()} × ${t.quantity}주\n` +
-        `결과: ${newP.toLocaleString()}원 (가중평균) × ${newQ}주`
-      );
-      if (!ok) return;
-      const existingIds = Array.isArray(maList[idx].consumedTradeIds) ? maList[idx].consumedTradeIds! : [];
-      maList[idx] = {
-        ...maList[idx],
-        price: newP,
-        quantity: newQ,
-        filledDate: t.date > (maList[idx].filledDate || '') ? t.date : (maList[idx].filledDate || ''),
-        insertAfterPercent: insertAfter,
-        // ✅ trade.id 누적 (이중 처리 차단)
-        consumedTradeIds: existingIds.includes(t.id) ? existingIds : [...existingIds, t.id],
-      };
-    } else {
-      maList[idx] = {
-        ...maList[idx],
-        filled: true,
-        price: t.price,
-        quantity: t.quantity,
-        filledDate: t.date,
-        insertAfterPercent: insertAfter,
-        consumedTradeIds: [t.id],
-      };
-    }
-    await persistSellEdit(local.sellPlans, maList);
   };
 
   // ── 수익매도 차수 간 이동 ──
