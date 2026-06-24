@@ -5884,69 +5884,75 @@ async function reconcileStockPlans(stockName: string): Promise<{
  * - trade_kiwoom_* 만 처리 (사용자 수동 작성분은 매매일지만 남고 plan에 영향 없음)
  * - 해당 종목의 buyPlans / sellPlans filled 플래그 자동 갱신
  */
-// ─── 잔고 진실 복구: 키움 잔고(kt00005) ↔ stocks.totalQuantity 대조/정정 ───
-// GET /reconcileHoldingsTruth[?apply=true]
-//   잔고의 진실 = 키움. 키움 잔고에 없는데 totalQuantity>0 인 종목(매매완료 오염,
-//   예: CS 0→60 부활)과 수량 불일치 종목을 찾아 dry-run 보고, apply=true면 정정.
-//   avgPrice는 보유>0 인 경우만 키움 값으로 갱신 (매매완료 종목은 이력 보존).
+// ─── 잔고·평단 진실 복구 (키움 정본) ───
+//   잔고/평단의 진실 = 키움(kt00005). 잔고 불일치(매매완료 오염, 수량차) + 평단 불일치
+//   (매도분 원가차감 이동평균을 sync 못 받아 매수가중 잔존)를 키움 값으로 보정.
+//   ※ reconcile은 매도종목 평단을 "유지(SKIP)"만 하고 키움으로 "올려주지" 않으므로,
+//      잔고는 맞고 평단만 어긋난 종목은 이 경로가 유일한 자동 보정처. (healthCheckCron이 매일 호출)
+async function runHoldingsTruth(apply: boolean): Promise<any> {
+  const config = await getKiwoomConfig();
+  const token = await getAccessToken(config);
+  const holdings = await fetchHoldings(config, token);
+
+  const byCode: Record<string, any> = {};
+  const byName: Record<string, any> = {};
+  for (const h of holdings) {
+    const c = String(h.code || "").replace(/^A/, "");
+    if (c) byCode[c] = h;
+    if (h.name) byName[h.name] = h;
+  }
+
+  const snap = await db.collection("stocks").get();
+  const mismatches: any[] = [];
+  let checked = 0;
+  for (const d of snap.docs) {
+    const s = d.data() as any;
+    if (!s.code) continue; // 수동 종목 제외 (키움 진실 없음)
+    checked++;
+    const code = String(s.code).replace(/^A/, "");
+    const h = byCode[code] || byName[s.name];
+    const kiwoomQty = h ? (Number(h.quantity) || 0) : 0;
+    const storedQty = Number(s.totalQuantity) || 0;
+    const kiwoomAvg = h ? (Number(h.avgPrice) || 0) : 0;
+    const storedAvg = Number(s.avgPrice) || 0;
+    const qtyMismatch = kiwoomQty !== storedQty;
+    // 평단 불일치: 보유>0 && 키움평단>0 && 차>1원
+    const avgMismatch = kiwoomQty > 0 && kiwoomAvg > 0 && Math.abs(kiwoomAvg - storedAvg) > 1;
+    if (!qtyMismatch && !avgMismatch) continue;
+    const fix: any = {updatedAt: Date.now()};
+    if (qtyMismatch) fix.totalQuantity = kiwoomQty;
+    if (kiwoomQty > 0 && kiwoomAvg > 0) fix.avgPrice = kiwoomAvg; // 평단도 키움 정본 반영
+    mismatches.push({
+      name: s.name, code: s.code, qtyMismatch, avgMismatch,
+      storedQty, kiwoomQty, storedAvg, kiwoomAvg, avgFix: fix.avgPrice || null,
+    });
+    if (apply) {
+      await d.ref.update(fix);
+      // 평단 보정 시 positions(현물/신용 평단)도 정합 위해 reconcile.
+      //   reconcile은 매도종목 avgPrice를 SKIP(=방금 보정한 키움값 유지)하므로 회귀 없음.
+      if (avgMismatch) {
+        try { await reconcileStockPlans(s.name); } catch (e) { /* best-effort */ }
+      }
+    }
+  }
+  return {checked, kiwoomHoldings: holdings.length, mismatchCount: mismatches.length, mismatches};
+}
+
+// GET /reconcileHoldingsTruth[?apply=true] — 잔고·평단 키움 보정 (dry-run 기본)
 export const reconcileHoldingsTruth = functions
   .region("asia-northeast3")
   .runWith({
     vpcConnector: "kiwoom-connector",
     vpcConnectorEgressSettings: "ALL_TRAFFIC",
-    timeoutSeconds: 300,
+    timeoutSeconds: 540,
     memory: "512MB",
   })
   .https.onRequest((req, res) => {
     corsHandler(req, res, async () => {
       try {
         const apply = String(req.query.apply || "") === "true";
-        const config = await getKiwoomConfig();
-        const token = await getAccessToken(config);
-        const holdings = await fetchHoldings(config, token);
-
-        const byCode: Record<string, any> = {};
-        const byName: Record<string, any> = {};
-        for (const h of holdings) {
-          const c = String(h.code || "").replace(/^A/, "");
-          if (c) byCode[c] = h;
-          if (h.name) byName[h.name] = h;
-        }
-
-        const snap = await db.collection("stocks").get();
-        const mismatches: any[] = [];
-        let checked = 0;
-        for (const d of snap.docs) {
-          const s = d.data() as any;
-          if (!s.code) continue; // 수동 종목 제외 (키움 진실 없음)
-          checked++;
-          const code = String(s.code).replace(/^A/, "");
-          const h = byCode[code] || byName[s.name];
-          const kiwoomQty = h ? (Number(h.quantity) || 0) : 0;
-          const storedQty = Number(s.totalQuantity) || 0;
-          if (kiwoomQty === storedQty) continue;
-          const fix: any = {totalQuantity: kiwoomQty, updatedAt: Date.now()};
-          if (kiwoomQty > 0 && h && (Number(h.avgPrice) || 0) > 0) {
-            fix.avgPrice = Number(h.avgPrice);
-          }
-          mismatches.push({
-            name: s.name, code: s.code,
-            stored: storedQty, kiwoom: kiwoomQty,
-            avgPriceFix: fix.avgPrice || null,
-          });
-          if (apply) {
-            await d.ref.update(fix);
-          }
-        }
-
-        res.json({
-          success: true,
-          applied: apply,
-          checked,
-          kiwoomHoldings: holdings.length,
-          mismatchCount: mismatches.length,
-          mismatches,
-        });
+        const r = await runHoldingsTruth(apply);
+        res.json({success: true, applied: apply, ...r});
       } catch (e: any) {
         res.status(500).json({success: false, error: e.message});
       }
@@ -6464,14 +6470,22 @@ export const diagHealthCheck = functions
     });
   });
 
-// 매일 15:50 KST 정기 헬스체크 — 이상 시에만 텔레그램
+// 매일 15:50 KST 정기 헬스체크 — 먼저 잔고·평단 키움 보정 후 진단(이상 시에만 텔레그램)
 export const healthCheckCron = functions
   .region("asia-northeast3")
-  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120})
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 540, memory: "512MB"})
   .pubsub.schedule("50 15 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
+      // ✅ 근본 자동보정: 잔고는 맞아도 평단이 키움과 어긋난 종목(매도분 원가차감 미반영)을
+      //   키움 buy_uv로 보정 → 진단 전에 정합. reconcile은 평단을 유지만 하므로 이 경로가 필요.
+      try {
+        const fixed = await runHoldingsTruth(true);
+        if (fixed.mismatchCount > 0) console.log(`[holdingsTruth] 잔고·평단 보정 ${fixed.mismatchCount}종목`);
+      } catch (e: any) {
+        console.warn(`[holdingsTruth] 자동보정 실패: ${e.message}`);
+      }
       const r = await runHealthCheck();
       if (r.totalIssues <= 0) {
         console.log("[healthCheck] 정합성 정상 (이상 0)");
