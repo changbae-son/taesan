@@ -162,8 +162,14 @@ export const jbQuote = functions
           const d: any = await r.json();
           return d && d.cur_prc ? d : null;
         };
+        // _AL(KRX+NXT 통합) → _NX(NXT 단독) → 일반(KRX) 순으로 폴백
+        //   장전 NXT(08:00~09:00)에 _AL이 빈 값을 줄 수 있어 _NX 폴백 추가
         let data = await callKa10001(code + "_AL");
-        let source: "KRX+NXT" | "KRX" = "KRX+NXT";
+        let source: "KRX+NXT" | "NXT" | "KRX" = "KRX+NXT";
+        if (!data) {
+          data = await callKa10001(code + "_NX");
+          source = "NXT";
+        }
         if (!data) {
           data = await callKa10001(code);
           source = "KRX";
@@ -1352,8 +1358,14 @@ export const jbQuoteAdmin = functions
           const d: any = await r.json();
           return d && d.cur_prc ? d : null;
         };
+        // _AL(KRX+NXT 통합) → _NX(NXT 단독) → 일반(KRX) 순으로 폴백
+        //   장전 NXT(08:00~09:00)에 _AL이 빈 값을 줄 수 있어 _NX 폴백 추가
         let data = await callKa10001(code + "_AL");
-        let source: "KRX+NXT" | "KRX" = "KRX+NXT";
+        let source: "KRX+NXT" | "NXT" | "KRX" = "KRX+NXT";
+        if (!data) {
+          data = await callKa10001(code + "_NX");
+          source = "NXT";
+        }
         if (!data) {
           data = await callKa10001(code);
           source = "KRX";
