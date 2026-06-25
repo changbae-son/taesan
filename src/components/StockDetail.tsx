@@ -3231,20 +3231,9 @@ export default function StockDetail({
                       <td className={styles.numCell}>
                         <span className={styles.colLabel}>수량</span>
                         <span className={styles.filledQty} style={{ color: '#ff9800' }}>{m.quantity.toLocaleString()}</span>
-                        {(() => {
-                          const cnt = Array.isArray(m.consumedTradeIds) ? m.consumedTradeIds.length : 0;
-                          if (cnt > 1) {
-                            const key = `MA${m.ma}`;
-                            return (
-                              <span className={styles.cumulativeQty} style={{ color: '#1976d2', cursor: 'pointer', fontWeight: 600 }}
-                                onClick={(e) => { e.stopPropagation(); toggleSlotExpand(key); }}
-                                title="2차 매도 건별 펼치기">
-                                {cnt}회 {expandedSlots[key] ? '▴' : '▾'}
-                              </span>
-                            );
-                          }
-                          return <span className={styles.cumulativeQty}>MA 매도</span>;
-                        })()}
+                        {/* MA 슬롯의 여러 체결은 합산 1줄(부분분배 진입점이 없어 전부 자연발생).
+                            N차분 분리는 수익슬롯 '이동 → 부분분배'에서만. */}
+                        <span className={styles.cumulativeQty}>MA 매도</span>
                       </td>
                       <td className={styles.btnCell}>
                         {typeof m.splitFromPercent === 'number' && m.splitFromPercent > 0 && maEditIdx !== mi && (
@@ -3430,16 +3419,20 @@ export default function StockDetail({
                   remaining -= soldThisRound;
                   const remainingAfter = Math.max(0, remaining);
                   const shortDate = realDate ? realDate.slice(5) : '';
-                  // 이 슬롯에 매핑된 매도 part 목록 (같은 슬롯 차수분이면 2개↑)
+                  // 이 슬롯의 "차수분 펼침" 대상 = 부분분배(sellSlotSplit)로 같은 슬롯에
+                  // 명시적으로 나눈 경우만. 단순 별개 체결(다른 ord_no, 같은 sellSlot)은
+                  // 합산 1줄로 표시(펼치지 않음) — 일반 이동/미분류 이동은 항상 합산.
+                  // N차분 분리가 필요하면 '이동 → 부분분배' 로 명시적으로 나눈다.
                   const slotKey = `+${sp.percent}%`;
                   const slotParts: { date: string; price: number; qty: number }[] = [];
                   for (const at of actualSells as any[]) {
                     if ((at.sellRound || 0) !== selectedBuyLevel) continue;
                     if (Array.isArray(at.sellSlotSplit) && at.sellSlotSplit.length > 0) {
-                      at.sellSlotSplit.filter((sps: any) => sps.slot === slotKey)
-                        .forEach((sps: any) => slotParts.push({ date: String(at.date), price: Number(at.price) || 0, qty: Number(sps.qty) || 0 }));
-                    } else if (at.sellSlot === slotKey) {
-                      slotParts.push({ date: String(at.date), price: Number(at.price) || 0, qty: Number(at.quantity) || 0 });
+                      const matched = at.sellSlotSplit.filter((sps: any) => sps.slot === slotKey);
+                      // 한 매도를 같은 슬롯에 2개↑로 부분분배한 경우만 차수분으로 펼침
+                      if (matched.length > 1) {
+                        matched.forEach((sps: any) => slotParts.push({ date: String(at.date), price: Number(at.price) || 0, qty: Number(sps.qty) || 0 }));
+                      }
                     }
                   }
 
