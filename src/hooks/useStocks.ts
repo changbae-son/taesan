@@ -104,6 +104,9 @@ export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): 
   const buyFilledDates = s.buyPlans.map((bp) => (bp.filled ? normDForRule(bp.filledDate || '') : ''));
   const stageRuleFor = (idx: number): 'A' | 'B' => {
     if (idx === 0) return 'A'; // 1차 진입 = 항상 룰A
+    // ✅ 사용자가 매매규칙을 룰B로 수동 전환 + 저점 설정 시: 미체결 차수는 룰B 우선 적용.
+    //   (체결된 과거 차수는 그 시점 사실대로 자동판정 유지 — 과거를 덮지 않음)
+    if (!s.buyPlans[idx].filled && rule === 'B' && (bottomPrice || 0) > 0) return 'B';
     const prevDate = buyFilledDates[idx - 1];
     if (!prevDate) return 'A'; // 직전 차수 미체결 → 매도 구간 없음 → 룰A
     const thisDate = buyFilledDates[idx] || ''; // 미체결이면 '' (지금까지)

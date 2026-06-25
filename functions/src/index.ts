@@ -1096,6 +1096,9 @@ function mapTradesToPlans(
   };
   const stageRuleFor = (level: number, thisBuyDateRaw: string): "A" | "B" => {
     if (level <= 1) return "A"; // 1차 진입 = 항상 룰A
+    // ✅ 사용자가 매매규칙을 룰B로 수동 전환 + 저점 설정 시: 미체결 차수(thisBuyDateRaw 빈값)는
+    //   룰B 우선 적용. 체결된 과거 차수는 그 시점 사실대로 자동판정 유지(과거를 덮지 않음).
+    if (!thisBuyDateRaw && ruleConfig?.rule === "B" && (ruleConfig?.bottomPrice || 0) > 0) return "B";
     const prevBuyDate = normDForRule(buyDates[level - 2] || ""); // (level-1)차 매수일 (0-based: level-2)
     if (!prevBuyDate) return "A"; // 직전 차수 미체결 → 매도 구간 없음 → 룰A
     const thisBuyDate = normDForRule(thisBuyDateRaw || ""); // 미체결이면 "" (지금까지)
@@ -4947,6 +4950,9 @@ async function reconcileStockPlans(stockName: string): Promise<{
   };
   const stageRuleFor = (level: number): "A" | "B" => {
     if (level <= 1) return "A";
+    // ✅ 사용자가 매매규칙을 룰B로 수동 전환 + 저점 설정 시: 미체결 차수(buyDates에 없음)는
+    //   룰B 우선 적용. 체결된 과거 차수는 그 시점 사실대로 자동판정 유지.
+    if (!buyDates[level - 1] && (stock as any).rule === "B" && (Number((stock as any).bottomPrice) || 0) > 0) return "B";
     const prevBuyDate = normDForRule(buyDates[level - 2] || "");
     if (!prevBuyDate) return "A";
     const thisBuyDate = normDForRule(buyDates[level - 1] || ""); // 미체결이면 "" (지금까지)
