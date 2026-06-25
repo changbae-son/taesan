@@ -3665,16 +3665,31 @@ export default function StockDetail({
                                 </div>
                               ))}
                             </div>
-                            <button
-                              onClick={applyDistribute}
-                              disabled={distributeBusy}
-                              style={{
-                                width: '100%', padding: '5px', fontSize: 12, fontWeight: 700, borderRadius: 4, border: 'none',
-                                background: distributeBusy ? '#cfd8dc' : '#1565c0', color: '#fff', cursor: 'pointer', marginBottom: 4,
-                              }}
-                            >
-                              {distributeBusy ? '저장 중…' : '분배 저장'}
-                            </button>
+                            {(() => {
+                              const t = findSlotTrades(sp.percent)[0];
+                              const q = t ? (Number(t.quantity) || 0) : 0;
+                              const entered = [5, 10, 15, 20, 25].reduce((a, p) => a + (Number(distributeDraft[p]) || 0), 0);
+                              const slotCnt = [5, 10, 15, 20, 25].filter((p) => (Number(distributeDraft[p]) || 0) > 0).length;
+                              const ready = entered === q && slotCnt >= 2;
+                              const label = distributeBusy ? '저장 중…'
+                                : entered !== q ? `합계 ${entered}/${q}주 — ${q}주 채우기`
+                                  : slotCnt < 2 ? '2개 이상 차수에 나눠주세요'
+                                    : '분배 저장';
+                              return (
+                                <button
+                                  onClick={applyDistribute}
+                                  disabled={distributeBusy || !ready}
+                                  style={{
+                                    width: '100%', padding: '5px', fontSize: 12, fontWeight: 700, borderRadius: 4, border: 'none',
+                                    background: (distributeBusy || !ready) ? '#cfd8dc' : '#1565c0',
+                                    color: (distributeBusy || !ready) ? '#607d8b' : '#fff',
+                                    cursor: (distributeBusy || !ready) ? 'not-allowed' : 'pointer', marginBottom: 4,
+                                  }}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })()}
                             <button className={styles.sellEditCancel} onClick={() => setDistributePercent(null)}>취소</button>
                           </div>
                         )}
