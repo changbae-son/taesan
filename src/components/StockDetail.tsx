@@ -1051,12 +1051,17 @@ export default function StockDetail({
     if (ts.length !== 1) { alert('대상 매도를 찾을 수 없습니다.'); return; }
     const t = ts[0];
     const totalQty = Number(t.quantity) || 0;
-    const splits = [5, 10, 15, 20, 25]
-      .map((p) => ({ slot: `+${p}%`, qty: Math.round(Number(distributeDraft[p]) || 0) }))
-      .filter((s) => s.qty > 0);
+    // 같은 슬롯에 여러 차수분: "13,13" 쉼표로 분리 → +5%:13 + +5%:13
+    const splits: { slot: string; qty: number }[] = [];
+    [5, 10, 15, 20, 25].forEach((p) => {
+      String(distributeDraft[p] || '').split(',').forEach((part) => {
+        const q = Math.round(Number(part.trim()) || 0);
+        if (q > 0) splits.push({ slot: `+${p}%`, qty: q });
+      });
+    });
     const sum = splits.reduce((a, s) => a + s.qty, 0);
     if (sum !== totalQty) { alert(`분배 합계 ${sum}주 ≠ 매도수량 ${totalQty}주`); return; }
-    if (splits.length < 2) { alert('2개 이상 차수에 나눠주세요. (1개면 일반 이동을 쓰세요)'); return; }
+    if (splits.length < 2) { alert('2개 이상으로 나눠주세요 (다른 차수 또는 같은 차수에 쉼표로 13,13). 1개면 일반 이동을 쓰세요.'); return; }
     setDistributeBusy(true);
     try {
       const res = await fetch(SET_SELL_SPLIT_API, {
@@ -3640,7 +3645,7 @@ export default function StockDetail({
                                 const t = findSlotTrades(sp.percent)[0];
                                 const q = t ? (Number(t.quantity) || 0) : 0;
                                 const pr = t ? (Number(t.price) || 0) : 0;
-                                const entered = [5, 10, 15, 20, 25].reduce((a, p) => a + (Number(distributeDraft[p]) || 0), 0);
+                                const entered = [5, 10, 15, 20, 25].reduce((a, p) => a + String(distributeDraft[p] || '').split(',').reduce((s, x) => s + (Number(x.trim()) || 0), 0), 0);
                                 return (
                                   <>
                                     {pr.toLocaleString()}원 × {q}주 →
@@ -3651,15 +3656,16 @@ export default function StockDetail({
                                 );
                               })()}
                             </div>
-                            <div className={styles.moveSellHint}>차수별 수량 입력 (합계=매도수량):</div>
+                            <div className={styles.moveSellHint}>차수별 수량 (합계=매도수량). 같은 차수에 여러 분량은 쉼표로 (예: 13,13):</div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, margin: '4px 0' }}>
                               {[5, 10, 15, 20, 25].map((p) => (
                                 <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                                   <span style={{ width: 36, fontSize: 12, color: '#1565c0', fontWeight: 700 }}>+{p}%</span>
                                   <input
-                                    type="number"
+                                    type="text"
+                                    inputMode="numeric"
                                     style={{ flex: 1, padding: '3px 6px', fontSize: 12, border: '1px solid #bbb', borderRadius: 4 }}
-                                    placeholder="0"
+                                    placeholder="0  (2차분이면 13,13)"
                                     value={distributeDraft[p] || ''}
                                     onChange={(e) => setDistributeDraft({ ...distributeDraft, [p]: e.target.value })}
                                   />
@@ -3670,12 +3676,12 @@ export default function StockDetail({
                             {(() => {
                               const t = findSlotTrades(sp.percent)[0];
                               const q = t ? (Number(t.quantity) || 0) : 0;
-                              const entered = [5, 10, 15, 20, 25].reduce((a, p) => a + (Number(distributeDraft[p]) || 0), 0);
-                              const slotCnt = [5, 10, 15, 20, 25].filter((p) => (Number(distributeDraft[p]) || 0) > 0).length;
+                              const entered = [5, 10, 15, 20, 25].reduce((a, p) => a + String(distributeDraft[p] || '').split(',').reduce((s, x) => s + (Number(x.trim()) || 0), 0), 0);
+                              const slotCnt = [5, 10, 15, 20, 25].reduce((a, p) => a + String(distributeDraft[p] || '').split(',').filter((x) => (Number(x.trim()) || 0) > 0).length, 0);
                               const ready = entered === q && slotCnt >= 2;
                               const label = distributeBusy ? '저장 중…'
                                 : entered !== q ? `합계 ${entered}/${q}주 — ${q}주 채우기`
-                                  : slotCnt < 2 ? '2개 이상 차수에 나눠주세요'
+                                  : slotCnt < 2 ? '2개 이상으로 나누기 (쉼표 13,13 가능)'
                                     : '분배 저장';
                               return (
                                 <button
