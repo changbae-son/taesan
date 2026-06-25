@@ -1726,8 +1726,10 @@ export default function StockDetail({
         const price = Number(t.price) || 0;
         let portion = 0;
         if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0) {
-          const part = t.sellSlotSplit.find((s: any) => s.slot === slotLabel);
-          portion = part ? (Number(part.qty) || 0) : 0;
+          // 같은 슬롯에 여러 차수분(2차분 등) 합산 (한 매도를 같은 +5%에 13주×2로 분리)
+          portion = t.sellSlotSplit
+            .filter((s: any) => s.slot === slotLabel)
+            .reduce((acc: number, s: any) => acc + (Number(s.qty) || 0), 0);
         } else if (t.sellSlot === slotLabel) {
           portion = Number(t.quantity) || 0;
         }
