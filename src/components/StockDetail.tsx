@@ -3430,6 +3430,18 @@ export default function StockDetail({
                   remaining -= soldThisRound;
                   const remainingAfter = Math.max(0, remaining);
                   const shortDate = realDate ? realDate.slice(5) : '';
+                  // 이 슬롯에 매핑된 매도 part 목록 (같은 슬롯 차수분이면 2개↑)
+                  const slotKey = `+${sp.percent}%`;
+                  const slotParts: { date: string; price: number; qty: number }[] = [];
+                  for (const at of actualSells as any[]) {
+                    if ((at.sellRound || 0) !== selectedBuyLevel) continue;
+                    if (Array.isArray(at.sellSlotSplit) && at.sellSlotSplit.length > 0) {
+                      at.sellSlotSplit.filter((sps: any) => sps.slot === slotKey)
+                        .forEach((sps: any) => slotParts.push({ date: String(at.date), price: Number(at.price) || 0, qty: Number(sps.qty) || 0 }));
+                    } else if (at.sellSlot === slotKey) {
+                      slotParts.push({ date: String(at.date), price: Number(at.price) || 0, qty: Number(at.quantity) || 0 });
+                    }
+                  }
 
                   rows.push(
                     <tr
@@ -3518,6 +3530,13 @@ export default function StockDetail({
                             ? `잔여 ${remainingAfter.toLocaleString()}`
                             : (remaining > 0 ? `잔여 ${remaining.toLocaleString()}` : '-')}
                         </span>
+                        {slotParts.length > 1 && (
+                          <span className={styles.cumulativeQty} style={{ color: '#1976d2', cursor: 'pointer', fontWeight: 600 }}
+                            onClick={(e) => { e.stopPropagation(); toggleSlotExpand(slotKey); }}
+                            title="차수분 펼치기">
+                            {slotParts.length}차분 {expandedSlots[slotKey] ? '▴' : '▾'}
+                          </span>
+                        )}
                       </td>
                       {/* 체결 + MA버튼 + 수동편집 */}
                       <td className={styles.btnCell}>
@@ -3825,6 +3844,17 @@ export default function StockDetail({
                       </td>
                     </tr>
                   );
+
+                  // 같은 슬롯 차수분 펼침: 13주 × N건 (키움 묶음 매도를 차수분으로 분리한 표시)
+                  if (slotParts.length > 1 && expandedSlots[slotKey]) {
+                    slotParts.forEach((d, di) => rows.push(
+                      <tr key={`sp-${i}-${di}`}>
+                        <td colSpan={5} style={{ paddingLeft: 28, fontSize: '0.82em', color: '#777', background: '#fafafa' }}>
+                          └ {di + 1}차분 · {d.date.slice(5)} · {d.price.toLocaleString()}원 × {d.qty.toLocaleString()}주
+                        </td>
+                      </tr>
+                    ));
+                  }
 
                   // 차수별 매도 분배 (신용/현금 분리 매도용) — 전체폭 1줄 서브행
                   //   미체결·현재라운드·다차수일 때만. 비례 분배 수량 + 신용/현금 배지.
