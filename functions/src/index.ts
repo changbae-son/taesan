@@ -6125,8 +6125,10 @@ export const splitSellSlot = functions
         const currentRound = Math.max(1, buyDates.length);
         const allocOf = (t: any): number => {
           if (Array.isArray(t.sellSlotSplit) && t.sellSlotSplit.length > 0) {
-            const p = t.sellSlotSplit.find((s: any) => s.slot === fromSlot);
-            return p ? (Number(p.qty) || 0) : 0;
+            // 같은 슬롯 여러 차수분 합산 (collectSlot과 일관)
+            return t.sellSlotSplit
+              .filter((s: any) => s.slot === fromSlot)
+              .reduce((a: number, s: any) => a + (Number(s.qty) || 0), 0);
           }
           return t.sellSlot === fromSlot ? (Number(t.quantity) || 0) : 0;
         };
