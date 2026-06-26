@@ -11926,8 +11926,11 @@ export const sScreenerCheck = functions
         const stockName = info.name || stk.name;
 
         // 종목명/코드를 <code>로 감싸서 텔레그램에서 탭하면 클립보드 복사 가능
+        // 맨 윗줄 보라색 띠 = "매수 후보(관심권)" 컬러코드 — 보유종목 매수/매도 액션
+        // 신호(초록/파랑/주황/빨강 띠)와 한눈에 구분되도록.
         const msg = [
-          `${emoji} <b>[${typeTag}]</b> ${lvText}`,
+          "🟪🟪🟪🟪🟪🟪🟪🟪🟪🟪",
+          `${emoji} <b>매수 후보 · ${typeTag}</b> · ${lvText}`,
           `📌 <code>${stockName}</code>  <code>${stk.code}</code>`,
           `현재가: ${cur.toLocaleString()}원`,
           `EN하단선: ${stk.lowerBand.toLocaleString()}원`,
