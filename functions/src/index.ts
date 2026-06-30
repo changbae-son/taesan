@@ -10931,6 +10931,11 @@ const S_MARKET_CAP_MIN_EOK = 13000;   // 1조 3천억 = 13,000억원
 const S2_VOLUME_MIN_EOK = 5000;       // 5,000억원
 const S2_LOOKBACK_DAYS = 150;         // 5달치 거래일
 const SCREENER_ALERT_THRESHOLD_PCT = 2.0;
+// 하단선 대비 너무 깊게(-8% 이상) 이탈한 종목은 권리락/액면분할 등으로 밴드(MA20)가
+// 옛 가격 기준으로 남아 생긴 "오신호"일 가능성이 큼 → 알림 보류 + 재계산 필요 로그.
+//   1차 진입 후보는 gap≈0(밴드 도달), 정상 이탈도 보통 -수% 이내라 영향 없음.
+//   (실제 매매엔 무관 — 알림/alert목록만 보류, 적격 밴드는 daily 재계산이 자가치유)
+const SCREENER_DEEP_GAP_PCT = -8.0;
 
 // ka10001 단건 시세/시총 조회 (스크리너 전용)
 // stk_cd 접미사 "_AL"로 KRX+NXT 통합 데이터 조회. 미지원시 일반 코드 폴백.
@@ -11824,6 +11829,7 @@ export const sScreenerCheck = functions
       const alertItems: any[] = [];
       const checkStatusItems: any[] = [];
       let alertCount = 0;
+      let suspectCount = 0; // 깊은 이탈(권리락 의심)로 알림 보류한 종목 수
 
       // S/S2 텔레그램 필터 (settings/telegram_s.{enableS, enableS2}, 기본 둘 다 true)
       const screenerFilters = await loadScreenerFilters();
@@ -11862,7 +11868,17 @@ export const sScreenerCheck = functions
         });
 
         let level: "below" | "1pct" | "2pct" | "none";
-        if (gap <= 0) level = "below";
+        if (gap <= SCREENER_DEEP_GAP_PCT) {
+          // 권리락/데이터 의심 — 하단선보다 너무 깊게 이탈 → 알림 보류 (재계산 필요)
+          //   checkStatus(모달용 gap)는 위에서 이미 실제값으로 캐시됨 → 데이터 확인은 유지
+          level = "none";
+          suspectCount++;
+          console.warn(
+            `[S체크] ⚠️ 깊은 이탈 알림 보류: ${info.name || stk.name}(${stk.code}) ` +
+            `gap=${gap.toFixed(1)}% 현재가=${cur} 하단선=${stk.lowerBand} ` +
+            "→ 권리락/데이터 의심, daily 재계산으로 자가치유 예정",
+          );
+        } else if (gap <= 0) level = "below";
         else if (gap <= 1) level = "1pct";
         else if (gap <= SCREENER_ALERT_THRESHOLD_PCT) level = "2pct";
         else level = "none";
@@ -11977,13 +11993,15 @@ export const sScreenerCheck = functions
         sentCount: alertCount,
         filteredOutCount,
         heldFilteredCount,
+        suspectCount,
         heldCount: heldCodes.size,
         filters: screenerFilters,
       });
 
       console.log(
         `[S체크] 완료. ${alertItems.length}건 알림범위, ${alertCount}건 신규 발송, ` +
-          `${filteredOutCount}건 필터 차단, ${heldFilteredCount}건 보유 제외 ` +
+          `${filteredOutCount}건 필터 차단, ${heldFilteredCount}건 보유 제외, ` +
+          `${suspectCount}건 깊은이탈 보류 ` +
           `(필터: S=${screenerFilters.enableS}, S2=${screenerFilters.enableS2}, 보유=${heldCodes.size})`,
       );
     } catch (e: any) {
@@ -12049,6 +12067,14 @@ export const sScreenerCheckNow = functions
             checkedAt: now,
           });
           if (gap > SCREENER_ALERT_THRESHOLD_PCT) continue;
+          if (gap <= SCREENER_DEEP_GAP_PCT) {
+            // 권리락/데이터 의심 — 너무 깊은 이탈은 알림 보류 (스케줄 sScreenerCheck와 동일 가드)
+            console.warn(
+              `[S체크Now] ⚠️ 깊은 이탈 보류: ${info.name || stk.name}(${stk.code}) ` +
+              `gap=${gap.toFixed(1)}% 현재가=${info.currentPrice} 하단선=${stk.lowerBand} → 권리락/데이터 의심`,
+            );
+            continue;
+          }
           const level = gap <= 0 ? "below" : gap <= 1 ? "1pct" : "2pct";
           alertItems.push({
             code: stk.code, name: info.name || stk.name,
