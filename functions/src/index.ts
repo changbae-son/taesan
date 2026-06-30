@@ -6333,11 +6333,16 @@ export const diagCreditCheck = functions
         }
         const stocksSnap = await db.collection("stocks").get();
         const mismatches: any[] = [];
+        const nameMismatches: any[] = [];
         stocksSnap.forEach((doc) => {
           const s = doc.data() as any;
           const code = String(s.code || "").replace(/^A/, "");
           const kw = byCode[code];
           if (!kw) return;
+          // 종목명(사명변경) 대조 — code 같은데 이름 다르면 미반영
+          if (kw.name && s.name && s.name !== kw.name) {
+            nameMismatches.push({code, system: s.name, kiwoom: kw.name});
+          }
           const sysCredit = s.isCreditTrade === true || (Array.isArray(s.positions) && s.positions.some((p: any) => p.type === "credit"));
           const kiwoomCredit = kw.credit > 0;
           if (sysCredit !== kiwoomCredit) {
@@ -6347,7 +6352,7 @@ export const diagCreditCheck = functions
             });
           }
         });
-        res.json({success: true, kiwoomCodes: Object.keys(byCode).length, mismatchCount: mismatches.length, mismatches});
+        res.json({success: true, kiwoomCodes: Object.keys(byCode).length, mismatchCount: mismatches.length, mismatches, nameMismatchCount: nameMismatches.length, nameMismatches});
       } catch (e: any) {
         res.status(500).json({success: false, error: e.message});
       }
