@@ -612,6 +612,14 @@ export const jbKiwoomKeysSet = functions
 interface ScreenerFilters {
   enableS: boolean;
   enableS2: boolean;
+  s2VolumeMinEok: number; // S2 거래대금 양봉 기준 (억). 기본 5000.
+}
+
+// S2 거래대금 기준 정규화 — 안전범위 [1000, 100000]억, 기본 5000
+function normalizeVolEok(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 5000;
+  return Math.min(100000, Math.max(1000, Math.round(n)));
 }
 
 async function loadScreenerFilters(): Promise<ScreenerFilters> {
@@ -622,9 +630,10 @@ async function loadScreenerFilters(): Promise<ScreenerFilters> {
     return {
       enableS: cfg?.enableS !== false,   // undefined/true → true
       enableS2: cfg?.enableS2 !== false, // undefined/true → true
+      s2VolumeMinEok: normalizeVolEok(cfg?.s2VolumeMinEok),
     };
   } catch {
-    return {enableS: true, enableS2: true};
+    return {enableS: true, enableS2: true, s2VolumeMinEok: 5000};
   }
 }
 
@@ -660,11 +669,16 @@ export const jbScreenerFiltersSet = functions
           return;
         }
         await verifyJbAuth(req);
-        const enableS = req.body?.enableS !== false;
-        const enableS2 = req.body?.enableS2 !== false;
+        // 부분 업데이트 — 보낸 필드만 갱신 (거래대금만 바꿀 때 토글 보존)
+        const update: Record<string, unknown> = {};
+        if (req.body?.enableS !== undefined) update.enableS = req.body.enableS !== false;
+        if (req.body?.enableS2 !== undefined) update.enableS2 = req.body.enableS2 !== false;
+        if (req.body?.s2VolumeMinEok !== undefined) {
+          update.s2VolumeMinEok = normalizeVolEok(req.body.s2VolumeMinEok);
+        }
         await admin.firestore().collection("settings").doc("telegram_s")
-          .set({enableS, enableS2}, {merge: true}); // 다른 필드(botToken/chatId) 보존
-        res.json({enableS, enableS2});
+          .set(update, {merge: true}); // 다른 필드(botToken/chatId/toggle) 보존
+        res.json(await loadScreenerFilters());
       } catch (e: any) {
         const msg = e?.message || String(e);
         const status = msg.includes("authorization") ? 401 : 500;

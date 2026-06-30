@@ -11162,6 +11162,19 @@ async function sendTelegramSScreener(text: string): Promise<void> {
   }
 }
 
+// S2 거래대금 양봉 기준(억) 로드 — 사용자 설정값(settings/telegram_s.s2VolumeMinEok),
+//   기본 5000, 안전범위 [1000, 100000]. jb-s-web 프리셋 버튼에서 변경.
+async function loadS2VolumeMinEok(): Promise<number> {
+  try {
+    const doc = await db.collection("settings").doc("telegram_s").get();
+    const n = Number(doc.data()?.s2VolumeMinEok);
+    if (!Number.isFinite(n) || n <= 0) return S2_VOLUME_MIN_EOK;
+    return Math.min(100000, Math.max(1000, Math.round(n)));
+  } catch {
+    return S2_VOLUME_MIN_EOK;
+  }
+}
+
 // 설정에서 S/S2 텔레그램 필터 로드
 async function loadScreenerFilters(): Promise<{enableS: boolean; enableS2: boolean}> {
   try {
@@ -11320,7 +11333,8 @@ export const sScreenerDailySNow = functions
 async function runSScreenerDailyS2(
   market: "KOSPI" | "KOSDAQ" = "KOSPI",
 ): Promise<{processed: number; eligible: number; market: string}> {
-  console.log(`[S스크리너] S2기법 ${market} 업데이트 시작`);
+  const volMinEok = await loadS2VolumeMinEok(); // 사용자 설정 거래대금 기준 (기본 5000억)
+  console.log(`[S스크리너] S2기법 ${market} 업데이트 시작 (거래대금 기준 ${volMinEok}억)`);
   const config = await getKiwoomConfig();
   const token = await getAccessToken(config);
 
@@ -11373,7 +11387,7 @@ async function runSScreenerDailyS2(
     let bigVolIdx = -1;
     for (let i = 0; i < bars.length; i++) {
       const b = bars[i];
-      if (b.tradeValueEok >= S2_VOLUME_MIN_EOK && b.close > b.open) {
+      if (b.tradeValueEok >= volMinEok && b.close > b.open) {
         bigVolIdx = i;
         break;
       }
