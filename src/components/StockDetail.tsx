@@ -3182,11 +3182,17 @@ export default function StockDetail({
 
                 // 잔여 계산용: 이 라운드 MA 매도만 차감 (displayMaSells = 이 라운드 필터링됨)
                 const maSold = displayMaSells.reduce((sum, ms) => ms.filled ? sum + ms.quantity : sum, 0);
-                // ✅ Option A: 라운드 기준 시작 보유에서 이 라운드 MA 매도 차감
-                // 1차 복기는 기존 동작(holdingAtStart) 유지, 현재는 holdingAtStart - 이번라운드 MA
+                // ✅ 미분류 매도도 잔여에서 차감: 이 라운드 실제 매도 총량 − (수익슬롯 배정 + MA)
+                //   = 아직 슬롯 배정 안 된 미분류분. 배정 전에도 잔여가 실제 보유와 일치하도록.
+                const roundSellQty = (actualSells as any[])
+                  .filter((t) => (t.sellRound || 0) === selectedBuyLevel)
+                  .reduce((a, t) => a + (Number(t.quantity) || 0), 0);
+                const assignedSellQty = roundView.sellSlots.reduce((a, s) => a + (s.filled ? (Number(s.quantity) || 0) : 0), 0);
+                const roundUnmappedSold = Math.max(0, roundSellQty - assignedSellQty - maSold);
+                // ✅ Option A: 라운드 시작 보유 − MA − 미분류. 1차 복기는 기존 동작(holdingAtStart) 유지.
                 let remaining = !isCurrentRound
                   ? roundView.holdingAtStart
-                  : (roundView.holdingAtStart - maSold);
+                  : (roundView.holdingAtStart - maSold - roundUnmappedSold);
 
                 // MA 행 렌더 헬퍼 (드래그 가능)
                 const renderMARow = (m: typeof local.maSells[0], mi: number) => {

@@ -4846,9 +4846,10 @@ async function reconcileStockPlans(stockName: string): Promise<{
     console.warn(`[reconcile/태깅] ${stockName} 자동 태깅 실패: ${e.message}`);
   }
 
-  // ✅ 2단계 분류 잠금: 같은 (라운드, 슬롯)에 서로 다른 (날짜,가격) 매도가 2단위 이상이면
-  //   둘째 단위부터 미분류(unmapped). 같은날·같은가격(부분체결)은 1단위로 합산 유지.
-  //   사용자 확정(slotLocked)은 충돌 시 우선 유지. 자동 분류만 미분류 처리.
+  // ✅ 2단계 분류 잠금: 같은 (라운드, 슬롯)에 서로 다른 "날짜" 매도가 2일 이상이면
+  //   둘째 날부터 미분류(unmapped). 같은 날 같은 슬롯은 가격이 달라도 물량조절 매도로
+  //   보고 합산 유지(대동금속 07-02 좁은구간 다가격 매도). 다른 날만 별개 라운드/매도로
+  //   구분(앱클론 6/15·6/16 보호). 사용자 확정(slotLocked)은 충돌 시 우선 유지.
   //   (3대 정본 ③: 분류=사용자 확정 / 자동은 제안. docs ARCHITECTURE_SOURCE_OF_TRUTH 2단계)
   try {
     const effSlot = (t: any): string | null => {
@@ -4873,13 +4874,12 @@ async function reconcileStockPlans(stockName: string): Promise<{
       //   구성(같은 슬롯 2차 매도 등) → 그룹 전체 보존. 합산은 collectSlot이 처리(누적 표시).
       const hasLocked = arr.some((t: any) => t.slotLocked);
       if (hasLocked) continue;
-      // 순수 자동 그룹만 안전장치: 첫 (날짜,가격) 단위만 유지, 나머지 미분류.
-      arr.sort((a, b) =>
-        String(a.date).localeCompare(String(b.date)) ||
-        (Number(a.price) || 0) - (Number(b.price) || 0));
-      const firstDP = `${arr[0].date}|${arr[0].price}`;
+      // 순수 자동 그룹만 안전장치: 첫 "날짜"만 유지(같은날 다가격=물량조절 합산),
+      //   다른 날짜 매도는 미분류(별개 라운드/매도 구분).
+      arr.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      const firstDate = String(arr[0].date);
       for (const t of arr) {
-        if (`${t.date}|${t.price}` !== firstDP) unmapIds.push(String(t.id));
+        if (String(t.date) !== firstDate) unmapIds.push(String(t.id));
       }
     }
     if (unmapIds.length > 0) {
@@ -6457,7 +6457,8 @@ async function runHealthCheck(): Promise<any> {
       if (!sl.slot || sl.slot === "unmapped") continue;
       const key = `${stock}|R${round}|${sl.slot}`;
       if (!grp[key]) grp[key] = {dps: new Set(), hasLocked: false};
-      grp[key].dps.add(`${t.date}|${Number(t.price) || 0}`);
+      // 날짜 단위 충돌 판정(같은날 다가격=물량조절 합산, 다른날만 별개) — 2단계와 일관
+      grp[key].dps.add(String(t.date));
       if (t.slotLocked) grp[key].hasLocked = true;
     }
   });
@@ -6559,23 +6560,22 @@ export const diagSlotConflict = functions
         });
         const conflicts: Array<Record<string, any>> = [];
         for (const [key, arr] of Object.entries(groups)) {
-          // 충돌 단위 = (날짜,가격). 같은날·같은가격 = 부분체결 → 1단위(합산).
-          //   다른 날 OR 같은날 다른가격 = 별개 매도 → 별도 단위.
-          const byDP: Record<string, {date: string; price: number; qty: number; ids: string[]}> = {};
+          // 충돌 단위 = 날짜. 같은 날(가격 달라도) = 물량조절 1단위(합산). 다른 날만 별개.
+          const byDate: Record<string, {date: string; qty: number; ids: string[]; prices: number[]}> = {};
           for (const x of arr) {
-            const k = `${x.date}|${x.price}`;
-            if (!byDP[k]) byDP[k] = {date: x.date, price: x.price, qty: 0, ids: []};
-            byDP[k].qty += x.qty;
-            byDP[k].ids.push(x.id);
+            const k = String(x.date);
+            if (!byDate[k]) byDate[k] = {date: x.date, qty: 0, ids: [], prices: []};
+            byDate[k].qty += x.qty;
+            byDate[k].ids.push(x.id);
+            byDate[k].prices.push(x.price);
           }
-          const units = Object.values(byDP).sort((a, b) =>
-            String(a.date).localeCompare(String(b.date)) || a.price - b.price);
+          const units = Object.values(byDate).sort((a, b) => String(a.date).localeCompare(String(b.date)));
           if (units.length >= 2) {
             conflicts.push({
               key, unitCount: units.length,
               totalQty: arr.reduce((s, x) => s + x.qty, 0),
-              keep: units[0], // 첫 단위(가장 이른 날/가격) = 슬롯 유지
-              unmapped: units.slice(1), // 나머지 = 미분류 대상
+              keep: units[0], // 첫 날 = 슬롯 유지
+              unmapped: units.slice(1), // 다른 날 = 미분류 대상
             });
           }
         }
