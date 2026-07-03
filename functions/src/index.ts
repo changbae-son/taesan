@@ -3325,6 +3325,18 @@ function maStageMessage(label: string, stage: string, gap: number): string {
 }
 
 // ─── 텔레그램 메시지 전송 ───
+// 발송 실패 일별 카운터 (일일점검 요약에 포함 — 침묵=장애 구분용)
+async function recordTelegramFailure(): Promise<void> {
+  try {
+    const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+    const today = `${kst.getFullYear()}-${String(kst.getMonth() + 1).padStart(2, "0")}-${String(kst.getDate()).padStart(2, "0")}`;
+    const ref = db.collection("settings").doc("telegramHealth");
+    const doc = await ref.get();
+    const prev = doc.exists && doc.data()?.date === today ? (Number(doc.data()?.failCount) || 0) : 0;
+    await ref.set({date: today, failCount: prev + 1, lastFailAt: Date.now()});
+  } catch (e) { /* best-effort */ }
+}
+
 async function sendTelegram(text: string): Promise<boolean> {
   try {
     const settingsDoc = await db.collection("settings").doc("telegram").get();
@@ -3335,23 +3347,31 @@ async function sendTelegram(text: string): Promise<boolean> {
     }
 
     const url = `https://api.telegram.org/bot${settings.botToken}/sendMessage`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        chat_id: settings.chatId,
-        text,
-        parse_mode: "HTML",
-      }),
-    });
-    const data = await res.json() as any;
-    if (!data.ok) {
-      console.error("[텔레그램] 전송 실패:", data.description);
-      return false;
+    // ✅ 실패 시 1회 재시도 (일시 네트워크/텔레그램 API 오류 대비)
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            chat_id: settings.chatId,
+            text,
+            parse_mode: "HTML",
+          }),
+        });
+        const data = await res.json() as any;
+        if (data.ok) return true;
+        console.error(`[텔레그램] 전송 실패(${attempt}/2):`, data.description);
+      } catch (err: any) {
+        console.error(`[텔레그램] 오류(${attempt}/2):`, err.message);
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
     }
-    return true;
+    await recordTelegramFailure();
+    return false;
   } catch (err: any) {
     console.error("[텔레그램] 오류:", err.message);
+    await recordTelegramFailure();
     return false;
   }
 }
@@ -3913,6 +3933,33 @@ async function runBuySignalCheck(): Promise<string> {
           // 단, 추가매수로 목표가(sellSignalPrice)가 바뀌면 위 조건에서 alreadySent=false → 재발송됨
         }
       });
+
+      // ✅ 발송 직전 현재가 재조회: stock doc 값은 자동동기화(≤5분) 지연 → 키움 실시간으로 갱신.
+      //   신선가가 목표 미달이면 이번 발송 제외(sent 마킹 안 함 → 재도달 시 정상 발송).
+      if (manualSellSignals.length > 0) {
+        try {
+          const cfgF = await getKiwoomConfig();
+          const tkF = await getAccessToken(cfgF);
+          const freshHoldings = await fetchHoldings(cfgF, tkF);
+          const freshByName: Record<string, number> = {};
+          for (const h of freshHoldings) freshByName[h.name] = Number(h.currentPrice) || 0;
+          for (const s of manualSellSignals) {
+            const fp = freshByName[s.name] || 0;
+            if (fp > 0) {
+              s.currentPrice = fp;
+              s.gap = ((fp - s.targetPrice) / s.targetPrice) * 100;
+            }
+          }
+          for (let i = manualSellSignals.length - 1; i >= 0; i--) {
+            if (manualSellSignals[i].currentPrice < manualSellSignals[i].targetPrice) {
+              console.log(`[매도신호] ${manualSellSignals[i].name}: 신선가 ${manualSellSignals[i].currentPrice} < 목표 ${manualSellSignals[i].targetPrice} → 이번 발송 제외`);
+              manualSellSignals.splice(i, 1);
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[매도신호] 현재가 재조회 실패(문서값 사용): ${e.message}`);
+        }
+      }
 
       if (manualSellSignals.length > 0) {
         const kst2 = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
@@ -6498,18 +6545,52 @@ export const healthCheckCron = functions
     try {
       // ✅ 근본 자동보정: 잔고는 맞아도 평단이 키움과 어긋난 종목(매도분 원가차감 미반영)을
       //   키움 buy_uv로 보정 → 진단 전에 정합. reconcile은 평단을 유지만 하므로 이 경로가 필요.
+      let fixedCount = 0;
+      let fixedNames: string[] = [];
       try {
         const fixed = await runHoldingsTruth(true);
-        if (fixed.mismatchCount > 0) console.log(`[holdingsTruth] 잔고·평단 보정 ${fixed.mismatchCount}종목`);
+        fixedCount = Number(fixed.mismatchCount) || 0;
+        fixedNames = (fixed.mismatches || []).map((m: any) => m.name).slice(0, 6);
+        if (fixedCount > 0) console.log(`[holdingsTruth] 잔고·평단 보정 ${fixedCount}종목`);
       } catch (e: any) {
         console.warn(`[holdingsTruth] 자동보정 실패: ${e.message}`);
       }
       const r = await runHealthCheck();
-      if (r.totalIssues <= 0) {
-        console.log("[healthCheck] 정합성 정상 (이상 0)");
-        return;
-      }
-      let msg = `<b>⚠️ 태산 정합성 점검 — 이상 ${r.totalIssues}건</b>\n\n`;
+
+      // ✅ 일일 요약 하트비트: 정상이어도 1일 1회 발송 (침묵=정상/장애 구분 불가 해소)
+      const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+      const today = `${kst.getFullYear()}-${String(kst.getMonth() + 1).padStart(2, "0")}-${String(kst.getDate()).padStart(2, "0")}`;
+      // 오늘 매매 요약 (trades date == today)
+      let buyCnt = 0; let buyQty = 0; let sellCnt = 0; let sellQty = 0; let todayUnmapped = 0;
+      try {
+        const todaySnap = await db.collection("trades").where("date", "==", today).get();
+        todaySnap.forEach((doc) => {
+          const t = doc.data() as any;
+          const q = Number(t.quantity) || 0;
+          if (t.type === "buy") { buyCnt++; buyQty += q; }
+          else if (t.type === "sell") {
+            sellCnt++; sellQty += q;
+            if (t.sellSlot === "unmapped") todayUnmapped++;
+          }
+        });
+      } catch (e: any) { console.warn(`[일일요약] 오늘 매매 조회 실패: ${e.message}`); }
+      // 전체 미분류 잔여
+      let totalUnmapped = -1;
+      try {
+        const unSnap = await db.collection("trades").where("sellSlot", "==", "unmapped").get();
+        totalUnmapped = unSnap.size;
+      } catch (e: any) { console.warn(`[일일요약] 미분류 조회 실패: ${e.message}`); }
+      // 오늘 텔레그램 발송실패
+      let failToday = 0;
+      try {
+        const th = await db.collection("settings").doc("telegramHealth").get();
+        if (th.exists && th.data()?.date === today) failToday = Number(th.data()?.failCount) || 0;
+      } catch (e) { /* best-effort */ }
+
+      let msg = r.totalIssues <= 0
+        ? `<b>✅ 태산 일일점검 — 정합 정상</b>\n`
+        : `<b>⚠️ 태산 일일점검 — 이상 ${r.totalIssues}건</b>\n`;
+      msg += `<i>${today} 16:10 · ${r.checkedStocks}종목 점검</i>\n\n`;
       if (r.balanceIssues.length) {
         msg += `<b>잔고 불일치 ${r.balanceIssues.length}</b>\n`;
         for (const b of r.balanceIssues.slice(0, 8)) msg += `· ${b.name}: sys ${b.sys} ≠ 키움 ${b.kiwoom}\n`;
@@ -6522,9 +6603,16 @@ export const healthCheckCron = functions
         msg += `<b>슬롯 충돌 ${r.slotConflicts.length}</b>\n`;
         for (const c of r.slotConflicts.slice(0, 8)) msg += `· ${c.key}\n`;
       }
+      if (r.totalIssues > 0) msg += `\n`;
+      msg += `오늘 매매: 매수 ${buyCnt}건 ${buyQty.toLocaleString()}주 · 매도 ${sellCnt}건 ${sellQty.toLocaleString()}주\n`;
+      msg += `자동보정: ${fixedCount}종목${fixedNames.length ? ` (${fixedNames.join(", ")})` : ""}\n`;
+      msg += `미분류 매도: 오늘 ${todayUnmapped}건 / 전체 ${totalUnmapped >= 0 ? totalUnmapped : "?"}건`;
+      if (todayUnmapped > 0) msg += ` — 종목상세에서 분류 필요`;
+      if (failToday > 0) msg += `\n⚠️ 텔레그램 발송실패(오늘): ${failToday}건`;
       await sendTelegram(msg);
     } catch (e: any) {
       console.error(`[healthCheck] 실패: ${e.message}`);
+      await sendTelegram(`⚠️ 태산 일일점검 실행 실패: ${e.message}`);
     }
   });
 
