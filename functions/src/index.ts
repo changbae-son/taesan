@@ -6486,11 +6486,13 @@ export const diagHealthCheck = functions
     });
   });
 
-// 매일 15:50 KST 정기 헬스체크 — 먼저 잔고·평단 키움 보정 후 진단(이상 시에만 텔레그램)
+// 매일 16:10 KST 정기 헬스체크 — 먼저 잔고·평단 키움 보정 후 진단(이상 시에만 텔레그램)
+//   ※ 15:50이었으나 kiwoomAutoSync(09:00~15:50 매 5분)의 마지막 실행과 동시 → 동기화
+//   중간 상태를 읽어 슬롯충돌 오탐(13건 사례). 자동동기화·백필 완전 종료 후로 이동.
 export const healthCheckCron = functions
   .region("asia-northeast3")
   .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 540, memory: "512MB"})
-  .pubsub.schedule("50 15 * * 1-5")
+  .pubsub.schedule("10 16 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
