@@ -11356,7 +11356,8 @@ async function runSScreenerDailyS(
   return {processed, eligible: eligibleCount, market};
 }
 
-// KOSPI 스케줄 (평일 21:00 KST — NXT 종료 후 1시간 마진 → 오늘 종가 정확 반영)
+// KOSPI 스케줄 (평일 08:00·21:00 KST — 21시=당일 종가 반영, 08시=장전 재계산으로
+//   밤사이 권리락·수정주가 조정 반영 + 당일 밴드 최신화)
 export const sScreenerDailyS = functions
   .region("asia-northeast3")
   .runWith({
@@ -11365,7 +11366,7 @@ export const sScreenerDailyS = functions
     timeoutSeconds: 540,
     memory: "512MB",
   })
-  .pubsub.schedule("0 21 * * 1-5")
+  .pubsub.schedule("0 8,21 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
@@ -11375,7 +11376,7 @@ export const sScreenerDailyS = functions
     }
   });
 
-// KOSDAQ 스케줄 (평일 21:02 KST — KOSPI S 직후)
+// KOSDAQ 스케줄 (평일 08:02·21:02 KST — KOSPI S 직후)
 export const sScreenerDailyS_KOSDAQ = functions
   .region("asia-northeast3")
   .runWith({
@@ -11384,7 +11385,7 @@ export const sScreenerDailyS_KOSDAQ = functions
     timeoutSeconds: 540,
     memory: "512MB",
   })
-  .pubsub.schedule("2 21 * * 1-5")
+  .pubsub.schedule("2 8,21 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
@@ -11554,8 +11555,8 @@ export const sScreenerDailyS2 = functions
     timeoutSeconds: 540,
     memory: "512MB",
   })
-  // 평일 21:05 KST — KOSPI S 완료 후 (S 처리 시간 ~5분 가정)
-  .pubsub.schedule("5 21 * * 1-5")
+  // 평일 08:05·21:05 KST — 21시=당일 종가 / 08시=장전 재계산(권리락 반영·밴드 최신화)
+  .pubsub.schedule("5 8,21 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
@@ -11565,7 +11566,7 @@ export const sScreenerDailyS2 = functions
     }
   });
 
-// KOSDAQ 스케줄 (평일 21:07 KST)
+// KOSDAQ 스케줄 (평일 08:07·21:07 KST)
 export const sScreenerDailyS2_KOSDAQ = functions
   .region("asia-northeast3")
   .runWith({
@@ -11574,7 +11575,7 @@ export const sScreenerDailyS2_KOSDAQ = functions
     timeoutSeconds: 540,
     memory: "512MB",
   })
-  .pubsub.schedule("7 21 * * 1-5")
+  .pubsub.schedule("7 8,21 * * 1-5")
   .timeZone("Asia/Seoul")
   .onRun(async () => {
     try {
@@ -12058,8 +12059,8 @@ export const sScreenerCheck = functions
           `${emoji} <b>매수 후보 · ${typeTag}</b> · ${lvText}`,
           `📌 <code>${stockName}</code>  <code>${stk.code}</code>`,
           `현재가: ${cur.toLocaleString()}원`,
-          `EN하단선: ${stk.lowerBand.toLocaleString()}원`,
-          `근접도: ${gapText}`,
+          `EN하단선(전일종가 기준): ${stk.lowerBand.toLocaleString()}원`,
+          `근접도: ${gapText} <i>(실시간 차트 지지선은 당일 MA20이라 다를 수 있음)</i>`,
           stk.marketCapEok ? `시총: ${stk.marketCapEok.toLocaleString()}억원` : "",
           stk.bigVolDay ? `5천억양봉일: ${stk.bigVolDay} (${stk.bigVolTradeValueEok?.toLocaleString() || "?"}억)` : "",
         ].filter(Boolean).join("\n");
