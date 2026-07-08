@@ -11279,6 +11279,38 @@ async function loadScreenerFilters(): Promise<{enableS: boolean; enableS2: boole
   }
 }
 
+// 하단선 "첫 접근"이 최신 일봉(오늘)에 발생하면 "매수 시점" 알림 1회 (종목·접근일 중복 방지).
+//   sScreenerCheck(10분 스냅샷)가 장중 순간 저가를 놓치는 케이스 보강 — 일봉 저가 기준.
+async function maybeSendTouchAlert(
+  code: string,
+  name: string,
+  types: string[],
+  info: {date: string; low: number; lowerBandAtDay: number},
+): Promise<void> {
+  try {
+    const ref = db.collection("sScreener").doc("touchAlert").collection("items").doc(code);
+    const prev = (await ref.get()).data();
+    if (prev?.touchDate === info.date) return; // 같은 접근일 이미 처리
+    const filters = await loadScreenerFilters();
+    const pass = shouldSendByFilter(types, filters);
+    if (pass) {
+      const gapPct = (((info.low - info.lowerBandAtDay) / info.lowerBandAtDay) * 100).toFixed(2);
+      const msg = [
+        "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩",
+        `🎯 <b>매수 시점 — 하단선 첫 접근</b> · ${types.join("+")}`,
+        `📌 <code>${name}</code>  <code>${code}</code>`,
+        `일봉 저가 ${info.low.toLocaleString()}원 ≤ EN하단선 ${info.lowerBandAtDay.toLocaleString()}원 (${gapPct}%)`,
+        `📅 ${info.date} · <i>장중 순간 저가라 실시간 알림엔 안 잡혔을 수 있음</i>`,
+      ].join("\n");
+      await sendTelegramSScreener(msg);
+      console.log(`[매수시점] ${name}(${code}) 하단선 첫 접근 알림 (${info.date} 저가 ${info.low} ≤ ${info.lowerBandAtDay})`);
+    }
+    await ref.set({touchDate: info.date, alertedAt: Date.now(), sent: pass}, {merge: true});
+  } catch (e: any) {
+    console.warn("[매수시점] 알림 실패", e?.message);
+  }
+}
+
 function shouldSendByFilter(
   types: string[],
   filters: {enableS: boolean; enableS2: boolean},
@@ -11526,6 +11558,10 @@ async function runSScreenerDailyS2(
           `첫 접근 ${firstTouchInfo?.date} @ low ${firstTouchInfo?.low}, ` +
           `당시 lowerBand ${firstTouchInfo?.lowerBandAtDay})`,
       );
+      // 첫 접근이 "최신 일봉(오늘)"이면 매수 시점 알림 1회 — 실시간 놓친 순간터치 보강
+      if (firstTouchIdx === 0 && firstTouchInfo) {
+        await maybeSendTouchAlert(stk.code, stk.name, ["S2"], firstTouchInfo);
+      }
       continue;
     }
 
@@ -11691,6 +11727,8 @@ export const screenerRawBars = functions
           res.status(400).json({error: "code (6자리) 필요"});
           return;
         }
+        // 시장 구분 진단: ?suffix=_AL(기본,KRX+NXT) | _NX(NXT) | ''(KRX 정규장)
+        const suffix = req.query.suffix !== undefined ? String(req.query.suffix) : "_AL";
         const config = await getKiwoomConfig();
         const token = await getAccessToken(config);
 
@@ -11698,11 +11736,11 @@ export const screenerRawBars = functions
         const stkDoc = await db.collection("stockCodes").doc(`stock_${code}`).get();
         const stkData = stkDoc.exists ? stkDoc.data() : null;
 
-        // 2) 일봉 데이터 — 여러 페이지 받아서 150일치 확보 (_AL 통합)
+        // 2) 일봉 데이터 — 여러 페이지 받아서 150일치 확보
         const num = (v: unknown): number => Math.abs(parseInt(String(v || "0").replace(/[+,\s]/g, "")) || 0);
         const bars: any[] = [];
         let contYn = "N", nextKey = "";
-        const stkCd = code + "_AL";
+        const stkCd = code + suffix;
         for (let page = 0; page < 6 && bars.length < 160; page++) {
           const headers: Record<string, string> = {
             "Content-Type": "application/json; charset=utf-8",
@@ -11730,10 +11768,12 @@ export const screenerRawBars = functions
           for (const c of chart) {
             const open = num(c.opn_prc || c.open_pric || c.strt_prc);
             const close = num(c.cur_prc || c.cls_prc);
+            const high = num(c.high_prc || c.hgst_prc || c.high_pric);
+            const low = num(c.low_prc || c.lwst_prc || c.low_pric);
             const tvEok = Math.round(num(c.trde_prica) / 100);
             bars.push({
               dt: c.dt || c.stk_bsop_date,
-              open, close,
+              open, high, low, close,
               tvEok,
               isYangBong: close > open,
               isBig5kEok: tvEok >= 5000,
@@ -11746,15 +11786,35 @@ export const screenerRawBars = functions
         // 3) 5천억+ 양봉 후보만 추출
         const bigVolDays = bars.filter((b) => b.isBig5kEok && b.isYangBong);
 
+        // 4) 최근 8일 저가 vs 당일 하단선(그날 MA20×0.8) — 하단선 접촉 여부 진단
+        const recentTouch = [];
+        for (let i = 0; i < Math.min(8, bars.length); i++) {
+          const window = bars.slice(i, i + 20);
+          const ma20 = window.length === 20
+            ? Math.round(window.reduce((s, b) => s + b.close, 0) / 20) : 0;
+          const lowerBand = Math.round(ma20 * 0.8);
+          recentTouch.push({
+            dt: bars[i].dt,
+            low: bars[i].low,
+            close: bars[i].close,
+            ma20,
+            lowerBand,
+            touched: ma20 > 0 && bars[i].low <= lowerBand,
+            gapLowVsBand: lowerBand > 0
+              ? Number((((bars[i].low - lowerBand) / lowerBand) * 100).toFixed(2)) : null,
+          });
+        }
+
         res.json({
           code,
+          suffix,
           stockCodes: stkData,
           totalBars: bars.length,
           oldestDate: bars[bars.length - 1]?.dt,
           newestDate: bars[0]?.dt,
           bigVolDays,
           allBigVolDays: bars.filter((b) => b.isBig5kEok),
-          firstFiveBars: bars.slice(0, 5),
+          recentTouch,
         });
       } catch (e: any) {
         res.status(500).json({error: e.message});
@@ -11791,16 +11851,22 @@ export const screenerStockInfo = functions
           res.status(400).json({error: "code (6자리) 필요"});
           return;
         }
-        const [sDoc, s2Doc, alertDoc] = await Promise.all([
+        const [sDoc, s2Doc, alertDoc, histSnap] = await Promise.all([
           db.collection("sScreener").doc("sEligible").collection("stocks").doc(code).get(),
           db.collection("sScreener").doc("s2Eligible").collection("stocks").doc(code).get(),
           db.collection("sScreener").doc("alerts").collection("items").doc(code).get(),
+          db.collection("sScreener").doc("alertHistory").collection("items")
+            .where("code", "==", code).get(),
         ]);
+        const alertHistory = histSnap.docs
+          .map((d) => d.data())
+          .sort((a: any, b: any) => String(b.date || "").localeCompare(String(a.date || "")));
         res.json({
           code,
           sEligible: sDoc.exists ? sDoc.data() : null,
           s2Eligible: s2Doc.exists ? s2Doc.data() : null,
           alert: alertDoc.exists ? alertDoc.data() : null,
+          alertHistory,
         });
       } catch (e: any) {
         res.status(500).json({error: e.message});
