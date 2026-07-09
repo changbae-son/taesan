@@ -3628,6 +3628,22 @@ async function updateWatchlistPrices(config: KiwoomConfig, token: string, enable
             }
           }
 
+          // 시가총액 (ka10001 mac, 억원) — 이 갱신 시점의 키움 현재가 기준.
+          //   부가정보라 실패해도 가격 갱신은 계속(기존 저장값 유지).
+          try {
+            const infoRes = await fetch(`${config.baseUrl}/api/dostk/stkinfo`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json;charset=UTF-8", "authorization": `Bearer ${token}`, "api-id": "ka10001"},
+              body: JSON.stringify({stk_cd: item.code}),
+            });
+            const info = await infoRes.json() as any;
+            const mac = Math.abs(Number(String(info.mac || "0").replace(/[+,\s]/g, ""))) || 0;
+            if (mac > 0) {
+              updateData.marketCapEok = mac;
+              updateData.marketCapAt = Date.now();
+            }
+          } catch (e) { /* 시총 조회 실패 무시 */ }
+
           await db.collection("watchlist").doc(item.id).update(updateData);
           updated++;
         }
@@ -4432,7 +4448,13 @@ export const watchlistRefresh = functions
         const config = await getKiwoomConfig();
         const token = await getAccessToken(config);
         const updated = await updateWatchlistPrices(config, token);
-        res.json({success: true, updated});
+        // 진단용 샘플: 시총 저장 확인 (최근 갱신 5건)
+        const snap = await db.collection("watchlist").orderBy("updatedAt", "desc").limit(5).get();
+        const sample = snap.docs.map((d) => {
+          const w = d.data() as any;
+          return {name: w.name, marketCapEok: w.marketCapEok || null, marketCapAt: w.marketCapAt || null, currentPrice: w.currentPrice};
+        });
+        res.json({success: true, updated, sample});
       } catch (error: any) {
         res.status(500).json({success: false, error: error.message});
       }

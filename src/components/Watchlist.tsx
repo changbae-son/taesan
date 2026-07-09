@@ -20,6 +20,17 @@ function getDropPercent(item: WatchItem): number {
   return ((item.currentPrice - item.peakPrice) / item.peakPrice) * 100;
 }
 
+// 시가총액 표기: 1조 미만 "743억", 이상 "5.8조" (10조↑는 정수)
+function formatMarketCap(eok?: number): string | null {
+  const v = Number(eok) || 0;
+  if (v <= 0) return null;
+  if (v >= 10000) {
+    const jo = v / 10000;
+    return `${jo >= 10 ? Math.round(jo).toLocaleString() : jo.toFixed(1).replace(/\.0$/, '')}조`;
+  }
+  return `${Math.round(v).toLocaleString()}억`;
+}
+
 type GroupKey = 'ready' | 'approaching' | 'watching';
 
 export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }: Props) {
@@ -408,7 +419,19 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
                         return (
                           <tr key={item.id} className={rowClass}>
                             <td className={styles.tdName}>
-                              <span className={styles.tName}>{item.name}</span>
+                              <span className={styles.tName}>
+                                {item.name}
+                                {formatMarketCap(item.marketCapEok) && (
+                                  <span
+                                    className={styles.mcBadge}
+                                    title={item.marketCapAt
+                                      ? `시총 기준: ${new Date(item.marketCapAt).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })} 현재가`
+                                      : '시가총액'}
+                                  >
+                                    {formatMarketCap(item.marketCapEok)}
+                                  </span>
+                                )}
+                              </span>
                               {item.code && <span className={styles.tCode}>{item.code}</span>}
                             </td>
                             <td className={styles.tdCandle}>

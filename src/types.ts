@@ -266,6 +266,8 @@ export interface WatchItem {
   prevClose: number;
   status: 'watching' | 'approaching' | 'ready' | 'bought';
   alertLevel: 0 | 1 | 2 | 3;
+  marketCapEok?: number; // 시가총액(억원) — 가격 갱신 시점 키움 ka10001 mac
+  marketCapAt?: number; // 시총 기준 시각 (갱신 timestamp)
   createdAt: number;
   updatedAt: number;
 }
