@@ -895,14 +895,8 @@ export default function StockDetail({
   // ✅ Phase 1: t.id를 받아서 consumedTradeIds에 누적 → 이중 처리 차단
   // ✅ 단일진실: 미분류 매도를 수익 차수로 분류 = trade.sellSlot 변경(retagSells, slotLocked).
   //   같은 슬롯에 기존 매도가 있으면 충돌해소가 hasLocked 보존 → collectSlot이 합산(2차 매도).
-  const moveUnmappedToSell = async (t: { id: string; date: string; price: number; quantity: number }) => {
-    const percentStr = prompt('어느 차수로 분류? (5 / 10 / 15 / 20 / 25)', '25');
-    if (!percentStr) return;
-    const percent = parseInt(percentStr.replace(/\D/g, ''));
-    if (![5, 10, 15, 20, 25].includes(percent)) {
-      alert('5, 10, 15, 20, 25 중 하나만 가능합니다.');
-      return;
-    }
+  const moveUnmappedToSell = async (t: { id: string; date: string; price: number; quantity: number }, percent: number) => {
+    if (![5, 10, 15, 20, 25].includes(percent)) return;
     setRetagBusy(true);
     try {
       const res = await fetch(RETAG_SELLS_API, {
@@ -967,6 +961,7 @@ export default function StockDetail({
   const [retagBusy, setRetagBusy] = useState(false);
   // 미분류 매도 → MA 분류 팝업 (prompt 대신 버튼 선택)
   const [unmapMaTradeId, setUnmapMaTradeId] = useState<string | null>(null);
+  const [unmapSellTradeId, setUnmapSellTradeId] = useState<string | null>(null); // 수익차수 분류 팝업
   const [unmapMaSel, setUnmapMaSel] = useState<number>(20);
   const [unmapInsertSel, setUnmapInsertSel] = useState<number>(25);
   // 슬롯 2차 매도(누적) 펼침 상태 — 키: `${슬롯라벨}` (예 'MA120','+10%')
@@ -3963,13 +3958,20 @@ export default function StockDetail({
                             </span>
                           )}
                         </span>
-                        <button className={styles.unmappedBtnSell} onClick={() => moveUnmappedToSell(t)}>
+                        <button
+                          className={styles.unmappedBtnSell}
+                          onClick={() => {
+                            setUnmapSellTradeId(unmapSellTradeId === t.id ? null : t.id);
+                            setUnmapMaTradeId(null);
+                          }}
+                        >
                           ↗ 수익매도로
                         </button>
                         <button
                           className={styles.unmappedBtnMa}
                           onClick={() => {
                             setUnmapMaTradeId(unmapMaTradeId === t.id ? null : t.id);
+                            setUnmapSellTradeId(null);
                             setUnmapMaSel(20);
                             setUnmapInsertSel(25);
                           }}
@@ -3977,6 +3979,28 @@ export default function StockDetail({
                           📉 MA매도로
                         </button>
                       </div>
+                      {unmapSellTradeId === t.id && (
+                        <div className={styles.moveSellPopup} style={{ position: 'relative', marginTop: 4, minWidth: 220 }}>
+                          <div className={styles.moveSellTitle}>↗ 수익 매도 차수로 분류</div>
+                          <div className={styles.moveSellHint}>차수 선택 (즉시 분류):</div>
+                          <div className={styles.moveSellTargets}>
+                            {[5, 10, 15, 20, 25].map((p) => (
+                              <button
+                                key={p}
+                                className={styles.moveSellTargetBtn}
+                                disabled={retagBusy}
+                                onClick={async () => {
+                                  await moveUnmappedToSell(t, p);
+                                  setUnmapSellTradeId(null);
+                                }}
+                              >+{p}%</button>
+                            ))}
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                            <button className={styles.sellEditCancel} onClick={() => setUnmapSellTradeId(null)}>취소</button>
+                          </div>
+                        </div>
+                      )}
                       {unmapMaTradeId === t.id && (
                         <div className={styles.moveSellPopup} style={{ position: 'relative', marginTop: 4, minWidth: 220 }}>
                           <div className={styles.moveSellTitle}>📉 MA 매도로 분류</div>
