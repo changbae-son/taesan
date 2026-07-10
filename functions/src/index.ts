@@ -3385,8 +3385,47 @@ async function sendTelegram(text: string): Promise<boolean> {
 //  1) taesanFirstBuyLog 컬렉션에 로그 기록
 //  2) watchlist에서 해당 문서 삭제
 //  3) 텔레그램 알림 발송
+// 룰B 시작점 연동: 전환 시 stocks 문서가 아직 없던 종목(신규 매수)을 다음 sync에서 재시도
+async function applyPendingPeakRefs(): Promise<void> {
+  try {
+    const ref = db.collection("settings").doc("pendingPeakRefs");
+    const doc = await ref.get();
+    if (!doc.exists) return;
+    const pend = doc.data() || {};
+    const applied: string[] = [];
+    for (const [key, v] of Object.entries(pend)) {
+      const p = v as any;
+      if (!p || !(Number(p.peakPrice) || 0)) { applied.push(key); continue; }
+      let snap = p.code
+        ? await db.collection("stocks").where("code", "==", p.code).limit(1).get()
+        : {empty: true} as any;
+      if (snap.empty && p.name) snap = await db.collection("stocks").where("name", "==", p.name).limit(1).get();
+      if (snap.empty) continue; // 아직 stocks 미생성 — 다음 sync에서 재시도
+      const sd = snap.docs[0].data() as any;
+      const upd: any = {};
+      if (!(Number(sd.referencePeakPrice) || 0)) upd.referencePeakPrice = Number(p.peakPrice);
+      if (!sd.referencePeakDate && p.peakPriceDate) upd.referencePeakDate = p.peakPriceDate;
+      if (Object.keys(upd).length > 0) {
+        await snap.docs[0].ref.update(upd);
+        console.log(`[시작점연동/재시도] ${p.name}: 최고가 ${p.peakPrice}${p.peakPriceDate ? ` (${p.peakPriceDate})` : ""} 연동`);
+      }
+      applied.push(key);
+    }
+    if (applied.length > 0) {
+      const next: any = {...pend};
+      for (const k of applied) delete next[k];
+      await ref.set(next);
+    }
+  } catch (e: any) {
+    console.warn(`[시작점연동/재시도] 실패: ${e.message}`);
+  }
+}
+
 async function checkWatchlistBought(holdings: any[]): Promise<number> {
   if (!holdings || holdings.length === 0) return 0;
+
+  // 이전 전환에서 못 넣은 시작점 재시도 (stocks 문서 생성 후)
+  await applyPendingPeakRefs();
 
   const watchDocs = await db.collection("watchlist").get();
   if (watchDocs.empty) return 0;
@@ -3430,6 +3469,7 @@ async function checkWatchlistBought(holdings: any[]): Promise<number> {
         name: h.name,
         code: h.code,
         peakPrice: watchData.peakPrice || 0,
+        peakPriceDate: watchData.peakPriceDate || null, // 룰B 시작점 날짜 (복구용 보존)
         targetPercent: watchData.targetPercent || -50,
         targetPrice,
         actualBuyPrice: h.avgPrice || 0,
@@ -3441,6 +3481,36 @@ async function checkWatchlistBought(holdings: any[]): Promise<number> {
         boughtTime: timeStr,
         createdAt: now,
       });
+
+      // 1.5) ✅ 룰B 시작점 연동: 관심종목의 기준 최고가/날짜를 stocks 문서로 이관.
+      //   (삭제만 하고 안 옮겨서 룰B 전환 시 시작점 재입력을 요구하던 문제의 근본 해결)
+      //   stocks 문서가 아직 없으면(신규 종목, sync가 이 뒤에 생성) pendingPeakRefs에 보관
+      //   → 다음 sync의 applyPendingPeakRefs가 연동.
+      try {
+        if ((watchData.peakPrice || 0) > 0) {
+          let sSnap = hCode
+            ? await db.collection("stocks").where("code", "==", hCode).limit(1).get()
+            : {empty: true} as any;
+          if (sSnap.empty && hName) sSnap = await db.collection("stocks").where("name", "==", hName).limit(1).get();
+          if (!sSnap.empty) {
+            const sd = sSnap.docs[0].data() as any;
+            const upd: any = {};
+            if (!(Number(sd.referencePeakPrice) || 0)) upd.referencePeakPrice = watchData.peakPrice;
+            if (!sd.referencePeakDate && watchData.peakPriceDate) upd.referencePeakDate = watchData.peakPriceDate;
+            if (Object.keys(upd).length > 0) {
+              await sSnap.docs[0].ref.update(upd);
+              console.log(`[시작점연동] ${hName}: 최고가 ${watchData.peakPrice}${watchData.peakPriceDate ? ` (${watchData.peakPriceDate})` : ""} → stocks`);
+            }
+          } else {
+            await db.collection("settings").doc("pendingPeakRefs").set({
+              [hCode || hName]: {name: hName, code: hCode, peakPrice: watchData.peakPrice || 0, peakPriceDate: watchData.peakPriceDate || null, at: now},
+            }, {merge: true});
+            console.log(`[시작점연동] ${hName}: stocks 미생성 → pending 보관`);
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[시작점연동] ${hName} 실패: ${e.message}`);
+      }
 
       // 2) 관심종목에서 삭제
       await db.collection("watchlist").doc(watchId).delete();
@@ -3470,6 +3540,97 @@ async function checkWatchlistBought(holdings: any[]): Promise<number> {
 
   return transferred;
 }
+
+// 일봉 고가 목록 (룰B 시작점 날짜 역산용, 최신순)
+async function fetchDailyHighs(config: KiwoomConfig, token: string, code: string, days: number): Promise<{date: string; high: number}[]> {
+  const num = (v: unknown): number => Math.abs(parseInt(String(v || "0").replace(/[+,\s]/g, "")) || 0);
+  const out: {date: string; high: number}[] = [];
+  let contYn = "N"; let nextKey = "";
+  for (let page = 0; page < 3 && out.length < days; page++) {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json; charset=utf-8",
+      "authorization": `Bearer ${token}`,
+      "api-id": "ka10081",
+    };
+    if (contYn === "Y" && nextKey) { headers["cont-yn"] = "Y"; headers["next-key"] = nextKey; }
+    const res = await fetch(`${config.baseUrl}/api/dostk/chart`, {
+      method: "POST", headers,
+      body: JSON.stringify({stk_cd: code, base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""), upd_stkpc_tp: "1", qry_tp: "0"}),
+    });
+    const respContYn = res.headers.get("cont-yn") || "";
+    const respNextKey = res.headers.get("next-key") || "";
+    const data = await res.json() as any;
+    const chart: any[] = data.stk_dt_pole_chart_qry || data.stk_dt_pole_chart || [];
+    for (const c of chart) {
+      const high = Math.max(num(c.high_prc || c.hgst_prc || c.high_pric), num(c.cur_prc || c.cls_prc), num(c.opn_prc || c.open_pric));
+      const date = String(c.stk_bsop_date || c.dt || "");
+      if (date) out.push({date, high});
+    }
+    if (respContYn !== "Y" || !respNextKey) break;
+    contYn = "Y"; nextKey = respNextKey;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return out;
+}
+
+// 룰B 시작점 소급 복구: GET /relinkPeakRefs[?apply=true]
+//   과거 관심종목→매수 전환이 시작점을 stocks로 안 옮겨 유실된 종목 복구.
+//   가격 = taesanFirstBuyLog.peakPrice / 날짜 = 로그(신규 저장분) 또는 일봉 고가
+//   매칭 역산(매수일 이전 최근 일치일, ±0.5%). 기본 dry-run.
+export const relinkPeakRefs = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 300})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const apply = String(req.query.apply || "") === "true";
+        const logs = await db.collection("taesanFirstBuyLog").get();
+        const byKey: Record<string, any> = {};
+        logs.forEach((d) => {
+          const l = d.data() as any;
+          const key = String(l.code || l.name || "");
+          if (!key) return;
+          if (!byKey[key] || (l.createdAt || 0) > (byKey[key].createdAt || 0)) byKey[key] = l;
+        });
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const report: any[] = [];
+        for (const l of Object.values(byKey) as any[]) {
+          const peak = Number(l.peakPrice) || 0;
+          if (peak <= 0) continue;
+          let sSnap = l.code
+            ? await db.collection("stocks").where("code", "==", l.code).limit(1).get()
+            : {empty: true} as any;
+          if (sSnap.empty && l.name) sSnap = await db.collection("stocks").where("name", "==", l.name).limit(1).get();
+          if (sSnap.empty) continue;
+          const sDoc = sSnap.docs[0];
+          const sd = sDoc.data() as any;
+          const needPrice = !(Number(sd.referencePeakPrice) || 0);
+          const needDate = !sd.referencePeakDate;
+          if (!needPrice && !needDate) continue;
+          let date: string | null = l.peakPriceDate || null;
+          if (!date && needDate && l.code) {
+            try {
+              const bars = await fetchDailyHighs(config, token, l.code, 500);
+              const boughtCompact = String(l.boughtDate || "9999-99-99").replace(/-/g, "");
+              const match = (b: {date: string; high: number}) => b.high > 0 && Math.abs(b.high - peak) / peak <= 0.005;
+              const hit = bars.find((b) => b.date <= boughtCompact && match(b)) || bars.find(match);
+              if (hit) date = `${hit.date.slice(0, 4)}-${hit.date.slice(4, 6)}-${hit.date.slice(6, 8)}`;
+            } catch (e) { /* 날짜 역산 실패 — 가격만 연동 */ }
+          }
+          const upd: any = {};
+          if (needPrice) upd.referencePeakPrice = peak;
+          if (needDate && date) upd.referencePeakDate = date;
+          if (Object.keys(upd).length === 0) continue;
+          report.push({name: l.name, code: l.code, peak, date, fields: Object.keys(upd)});
+          if (apply) await sDoc.ref.update(upd);
+        }
+        res.json({success: true, applied: apply, count: report.length, report});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
 
 // ─── 시가 조회 (ka10001 주식기본정보 또는 ka10081 일봉) ───
 async function fetchOpenPrices(
