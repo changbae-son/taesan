@@ -319,6 +319,34 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
     setTimeout(() => { setKiwoomStatus('idle'); setKiwoomMsg(''); }, 5000);
   };
 
+  // 매도갭 즉시 보정: 부분체결 순간 캡처로 매도 수량이 모자란 종목을
+  // kt00007 주문 정본으로 보강 (16:10 자동과 동일 로직, 발견 즉시 수동 실행용)
+  const handleSellGapFix = async () => {
+    setKiwoomStatus('loading');
+    setKiwoomMsg('매도갭 검사·보정 중...');
+    try {
+      const res = await fetch(
+        'https://asia-northeast3-teasan-f4c17.cloudfunctions.net/sellGapFix?apply=true'
+      );
+      const data = await res.json();
+      if (data.success) {
+        setKiwoomStatus('success');
+        setKiwoomMsg(
+          (data.gapFixed || 0) > 0
+            ? `매도갭 보정 ${data.gapFixed}건: ${(data.fixes || []).map((f: { name: string }) => f.name).join(', ')}`
+            : '매도갭 없음 — 오늘 매도 수량 정합 ✓'
+        );
+      } else {
+        setKiwoomStatus('error');
+        setKiwoomMsg(data.error || '갭보정 실패');
+      }
+    } catch {
+      setKiwoomStatus('error');
+      setKiwoomMsg('갭보정 호출 실패');
+    }
+    setTimeout(() => { setKiwoomStatus('idle'); setKiwoomMsg(''); }, 8000);
+  };
+
   // 이름 없는 빈 종목 + 매매완료 종목 필터링
   const activeStocks = stocks.filter(
     (s) => (s.name && s.name.trim()) && ((s.totalQuantity || 0) > 0 || !(s.buyPlans || []).some((bp) => bp.filled))
@@ -534,6 +562,15 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
         disabled={kiwoomStatus === 'loading'}
       >
         {kiwoomStatus === 'loading' ? '수신 중...' : '키움 데이터 받기'}
+      </button>
+      <button
+        className={styles.kiwoomBtn}
+        style={{ marginTop: 4, background: '#546e7a' }}
+        onClick={handleSellGapFix}
+        disabled={kiwoomStatus === 'loading'}
+        title="오늘 매도 수량을 키움 주문 정본(kt00007)과 대조해 부족분을 즉시 보정 (매일 16:10 자동 실행되는 것과 동일)"
+      >
+        🔧 매도갭 보정
       </button>
       {kiwoomMsg && (
         <div

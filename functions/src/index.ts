@@ -6745,11 +6745,22 @@ export const healthCheckCron = functions
       } catch (e: any) {
         console.warn(`[holdingsTruth] 자동보정 실패: ${e.message}`);
       }
-      const r = await runHealthCheck();
-
-      // ✅ 일일 요약 하트비트: 정상이어도 1일 1회 발송 (침묵=정상/장애 구분 불가 해소)
+      // ✅ 매도 갭 자동 보정: 부분체결 순간 캡처로 매도 수량이 모자란 종목을 kt00007
+      //   주문 정본으로 보강 (DB하이텍 2주→1주 사례). 실부족만, 분류 승계.
       const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
       const today = `${kst.getFullYear()}-${String(kst.getMonth() + 1).padStart(2, "0")}-${String(kst.getDate()).padStart(2, "0")}`;
+      let gapFixed = 0;
+      let gapNames: string[] = [];
+      try {
+        const g = await runSellGapFix(today.replace(/-/g, ""), true);
+        gapFixed = Number(g.gapFixed) || 0;
+        gapNames = (g.fixes || []).map((f: any) => f.name).slice(0, 5);
+        if (gapFixed > 0) console.log(`[갭보정] ${gapFixed}종목 자동 보정`);
+      } catch (e: any) {
+        console.warn(`[갭보정] 실패: ${e.message}`);
+      }
+
+      const r = await runHealthCheck();
       // 오늘 매매 요약 (trades date == today)
       let buyCnt = 0; let buyQty = 0; let sellCnt = 0; let sellQty = 0; let todayUnmapped = 0;
       try {
@@ -6796,6 +6807,7 @@ export const healthCheckCron = functions
       if (r.totalIssues > 0) msg += `\n`;
       msg += `오늘 매매: 매수 ${buyCnt}건 ${buyQty.toLocaleString()}주 · 매도 ${sellCnt}건 ${sellQty.toLocaleString()}주\n`;
       msg += `자동보정: ${fixedCount}종목${fixedNames.length ? ` (${fixedNames.join(", ")})` : ""}\n`;
+      msg += `매도갭 보정: ${gapFixed}건${gapNames.length ? ` (${gapNames.join(", ")})` : ""}\n`;
       msg += `미분류 매도: 오늘 ${todayUnmapped}건 / 전체 ${totalUnmapped >= 0 ? totalUnmapped : "?"}건`;
       if (todayUnmapped > 0) msg += ` — 종목상세에서 분류 필요`;
       if (failToday > 0) msg += `\n⚠️ 텔레그램 발송실패(오늘): ${failToday}건`;
@@ -6993,6 +7005,118 @@ export const diagSellGap = functions
           }
         }
         res.json({success: true, date: dateDash, kiwoomSellCodes: Object.keys(kiwoomByCode).length, gapCount: gaps.length, gaps});
+      } catch (e: any) {
+        res.status(500).json({success: false, error: e.message});
+      }
+    });
+  });
+
+// ─── 매도 갭 자동 보정: kt00007(주문 정본) vs 저장 trades — 수량 실부족만 정정 ───
+//   부분체결 순간 캡처(fallback qty < 주문 체결량)로 매도 수량이 모자란 종목을 정본
+//   주문 trade로 보강(DB하이텍 2주→1주 캡처 사례). 부분캡처 fallback은 제거하되
+//   분류(sellSlot·slotLocked·sellRound) 승계.
+//   안전조건: ① 키움>저장 실부족만 ② 이미 저장된 ord 제외 ③ fallback 정리는 같은날·
+//   가격±0.5%·수량<주문수량인 trade_kiwoom_sell_*만 ④ 보정 후 총량 ≤ 키움 수량.
+async function runSellGapFix(dateCompact: string, apply: boolean): Promise<any> {
+  const config = await getKiwoomConfig();
+  const token = await getAccessToken(config);
+  const r = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "kt00007"},
+    body: JSON.stringify({ord_dt: dateCompact, qry_tp: "1", stk_bond_tp: "0", sell_tp: "0", stk_cd: "", fr_ord_no: "", dmst_stex_tp: "%"}),
+  });
+  const data = await r.json() as any;
+  let items: any[] = [];
+  for (const k of Object.keys(data)) {
+    if (Array.isArray(data[k]) && data[k].length > 0) { items = data[k]; break; }
+  }
+  const sells = items.filter((x: any) => String(x.io_tp_nm || "").includes("매도") && parseInt(x.cntr_qty || "0") > 0);
+  const kiwoomByCode: Record<string, {name: string; qty: number; ords: string[]; detail: Record<string, any>}> = {};
+  for (const s of sells) {
+    const code = cleanKiwoomField(s.stk_cd).replace(/^A/, "");
+    const qty = parseInt(s.cntr_qty || "0");
+    const ord = String(s.ord_no || "").trim();
+    const price = parseInt(s.cntr_uv || s.cntr_pric || s.ord_uv || "0");
+    const isCredit = String(s.io_tp_nm || "").includes("신용") || String(s.io_tp_nm || "").includes("융자");
+    if (!kiwoomByCode[code]) kiwoomByCode[code] = {name: cleanKiwoomField(s.stk_nm), qty: 0, ords: [], detail: {}};
+    kiwoomByCode[code].qty += qty;
+    if (ord) { kiwoomByCode[code].ords.push(ord); kiwoomByCode[code].detail[ord] = {qty, price, credit: isCredit}; }
+  }
+  const dateDash = `${dateCompact.slice(0, 4)}-${dateCompact.slice(4, 6)}-${dateCompact.slice(6, 8)}`;
+  const tsnap = await db.collection("trades").where("date", "==", dateDash).where("type", "==", "sell").get();
+  const savedByCode: Record<string, {qty: number; ords: Set<string>; fallbacks: Array<{id: string; qty: number; price: number; sellSlot: any; slotLocked: boolean; sellRound: any}>}> = {};
+  tsnap.forEach((doc) => {
+    const t = doc.data() as any;
+    const code = String(t.code || "").replace(/^A/, "");
+    if (!savedByCode[code]) savedByCode[code] = {qty: 0, ords: new Set(), fallbacks: []};
+    savedByCode[code].qty += Number(t.quantity) || 0;
+    const m = doc.id.match(/^trade_kiwoom_(\d+)_/);
+    if (m) savedByCode[code].ords.add(m[1]);
+    if (/^trade_kiwoom_sell_/.test(doc.id)) {
+      savedByCode[code].fallbacks.push({id: doc.id, qty: Number(t.quantity) || 0, price: Number(t.price) || 0, sellSlot: t.sellSlot || null, slotLocked: !!t.slotLocked, sellRound: t.sellRound || null});
+    }
+  });
+  const fixes: any[] = [];
+  for (const [code, kw] of Object.entries(kiwoomByCode)) {
+    const saved = savedByCode[code] || {qty: 0, ords: new Set<string>(), fallbacks: []};
+    if (kw.qty <= saved.qty) continue; // 실부족만 (형식 차이는 대상 아님)
+    const missing = kw.ords.filter((o) => !saved.ords.has(o));
+    if (missing.length === 0) continue;
+    const stockName = kw.name;
+    const actions: any[] = [];
+    let projected = saved.qty;
+    for (const ord of missing) {
+      const det = kw.detail[ord];
+      if (!det || !(det.qty > 0) || !(det.price > 0)) continue;
+      const partials = saved.fallbacks.filter((f) => f.qty < det.qty && f.price > 0 && Math.abs(f.price - det.price) / det.price <= 0.005);
+      const partialQty = partials.reduce((a, f) => a + f.qty, 0);
+      if (projected - partialQty + det.qty > kw.qty) continue; // 초과 방지 가드
+      projected = projected - partialQty + det.qty;
+      const inherit = (partials.length === 1 && partials[0].sellSlot && partials[0].sellSlot !== "unmapped" && partials[0].sellSlot !== "split")
+        ? {sellSlot: partials[0].sellSlot, slotLocked: partials[0].slotLocked, sellRound: partials[0].sellRound} : null;
+      actions.push({ord, qty: det.qty, price: det.price, credit: det.credit, removeFallbacks: partials.map((f) => f.id), inherit: inherit ? inherit.sellSlot : null, _inherit: inherit});
+      const usedIds = new Set(partials.map((f) => f.id));
+      saved.fallbacks = saved.fallbacks.filter((f) => !usedIds.has(f.id));
+    }
+    if (actions.length === 0) continue;
+    fixes.push({code, name: stockName, kiwoomQty: kw.qty, savedQty: saved.qty, actions: actions.map(({_inherit, ...rest}) => rest)});
+    if (apply) {
+      for (const a of actions) {
+        const newId = `trade_kiwoom_${a.ord}_${code}`;
+        const tDoc: any = {
+          stockName, code, date: dateDash, type: "sell", price: a.price, quantity: a.qty,
+          isCreditTrade: !!a.credit, isKiwoom: true, createdAt: Date.now(),
+          memo: `kt00007 갭보정 (ord ${a.ord})`,
+        };
+        if (a._inherit) {
+          tDoc.sellSlot = a._inherit.sellSlot;
+          tDoc.slotLocked = !!a._inherit.slotLocked;
+          if (a._inherit.sellRound) tDoc.sellRound = a._inherit.sellRound;
+        }
+        await db.collection("trades").doc(newId).set(tDoc);
+        for (const fid of a.removeFallbacks) await db.collection("trades").doc(fid).delete();
+      }
+      try { await reconcileStockPlans(stockName); } catch (e: any) { console.warn(`[갭보정] ${stockName} reconcile 실패: ${e.message}`); }
+      console.log(`[갭보정] ${stockName}: ${actions.length}건 주입 (${actions.map((a: any) => `${a.ord}:${a.qty}주`).join(", ")})`);
+    }
+  }
+  return {date: dateDash, gapFixed: fixes.length, fixes};
+}
+
+// GET /sellGapFix[?apply=true&date=YYYYMMDD] — 매도 갭(부분체결 캡처) 보정. 기본 dry-run.
+//   앱 "매도갭 보정" 버튼·일일점검(16:10 자동)·수동 진단이 공유.
+export const sellGapFix = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 300})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const apply = String(req.query.apply || "") === "true";
+        const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const date = (req.query.date as string || "").replace(/-/g, "") ||
+          `${kstNow.getFullYear()}${String(kstNow.getMonth() + 1).padStart(2, "0")}${String(kstNow.getDate()).padStart(2, "0")}`;
+        const r2 = await runSellGapFix(date, apply);
+        res.json({success: true, applied: apply, ...r2});
       } catch (e: any) {
         res.status(500).json({success: false, error: e.message});
       }
