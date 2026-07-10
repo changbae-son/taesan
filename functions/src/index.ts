@@ -1096,13 +1096,10 @@ function mapTradesToPlans(
   };
   const stageRuleFor = (level: number, thisBuyDateRaw: string): "A" | "B" => {
     if (level <= 1) return "A"; // 1차 진입 = 항상 룰A
-    // ✅ 룰B 수동 전환 시 미체결 차수 룰B 우선은 "발동 조건(마지막 매수 후 매도 3회)" 충족 시에만.
-    //   룰B 대기(매도<3)엔 아래 자동판정(룰A) 폴백 — 대기인데 저점×0.9가 직전 매수가보다
-    //   높은 기준가로 나오던 모순(성호전자 23,625 > 21,100) 수정.
-    if (!thisBuyDateRaw && ruleConfig?.rule === "B" && (ruleConfig?.bottomPrice || 0) > 0) {
-      const lastBuyDate = normDForRule(buyDates[buyDates.length - 1] || "");
-      if (lastBuyDate && countSellRoundsBetween(lastBuyDate, "") >= 3) return "B";
-    }
+    // ✅ 룰B 수동 전환(사용자 확정 = 정본 ③) 시 미체결 차수는 룰B 즉시 적용 (로킷 케이스).
+    //   저점>마지막 매수가 모순(성호전자 23,625>21,100)은 reconcile의 룰B 저점 캡이 정정
+    //   → 캡 후 기준가 = min(저점, 마지막 매수가)×0.9 (성호 18,990 = 사용자 확정값과 일치).
+    if (!thisBuyDateRaw && ruleConfig?.rule === "B" && (ruleConfig?.bottomPrice || 0) > 0) return "B";
     const prevBuyDate = normDForRule(buyDates[level - 2] || ""); // (level-1)차 매수일 (0-based: level-2)
     if (!prevBuyDate) return "A"; // 직전 차수 미체결 → 매도 구간 없음 → 룰A
     const thisBuyDate = normDForRule(thisBuyDateRaw || ""); // 미체결이면 "" (지금까지)
@@ -5165,6 +5162,23 @@ async function reconcileStockPlans(stockName: string): Promise<{
 
   const buyDates = Object.keys(buyByDate).sort();
 
+  // ✅ 룰B 저점 캡: 저점이 마지막 체결 매수가보다 높으면(낡은 저점) 마지막 매수가로 리셋.
+  //   기준가(저점×0.9)가 직전 매수가보다 높아지는 모순 차단(성호전자 26,250>21,100 → 18,990).
+  //   추가매수 후 리셋 누락·매수 후 룰B 전환 케이스 정합 복원. 리셋 후 재트리거 reconcile은
+  //   조건 불충족(저점==마지막 매수가)이라 무한루프 없음. 트래커(daily_low)가 이후 더 낮은
+  //   저점을 찾으면 정상 갱신.
+  if ((stock as any).rule === "B") {
+    const lastBuyD = buyDates[buyDates.length - 1];
+    const lb = lastBuyD ? buyByDate[lastBuyD] : null;
+    const lastBuyAvg = lb && lb.qty > 0 ? Math.round(lb.amt / lb.qty) : 0;
+    const bpv = Number((stock as any).bottomPrice) || 0;
+    if (lastBuyAvg > 0 && bpv > lastBuyAvg) {
+      await stockDoc.ref.update({bottomPrice: lastBuyAvg, bottomPriceDate: lastBuyD, bottomPriceSource: "manual"});
+      (stock as any).bottomPrice = lastBuyAvg;
+      console.log(`[룰B저점캡] ${stockName}: 저점 ${bpv} > 마지막 매수가 ${lastBuyAvg} → 리셋`);
+    }
+  }
+
   // ─── 차수별 룰 판정 (mapTradesToPlans와 동일 규칙) ───
   // N차 rule = (N-1차 매수 직후 ~ N차 매수 직전) 매도 회수 >= 3 ? 'B' : 'A'
   const normDForRule = (d: string): string => {
@@ -5184,12 +5198,9 @@ async function reconcileStockPlans(stockName: string): Promise<{
   };
   const stageRuleFor = (level: number): "A" | "B" => {
     if (level <= 1) return "A";
-    // ✅ 룰B 수동 전환 시 미체결 차수 룰B 우선은 "발동 조건(마지막 매수 후 매도 3회)" 충족 시에만.
-    //   룰B 대기(매도<3)엔 아래 자동판정(룰A) 폴백 (mapTradesToPlans·recalcStock과 동일 게이트).
-    if (!buyDates[level - 1] && (stock as any).rule === "B" && (Number((stock as any).bottomPrice) || 0) > 0) {
-      const lastBuyDate = normDForRule(buyDates[buyDates.length - 1] || "");
-      if (lastBuyDate && countSellRoundsBetween(lastBuyDate, "") >= 3) return "B";
-    }
+    // ✅ 룰B 수동 전환(사용자 확정 = 정본 ③) 시 미체결 차수는 룰B 즉시 적용.
+    //   저점>마지막 매수가 모순은 아래 룰B 저점 캡이 정정 (mapTradesToPlans·recalcStock 동일).
+    if (!buyDates[level - 1] && (stock as any).rule === "B" && (Number((stock as any).bottomPrice) || 0) > 0) return "B";
     const prevBuyDate = normDForRule(buyDates[level - 2] || "");
     if (!prevBuyDate) return "A";
     const thisBuyDate = normDForRule(buyDates[level - 1] || ""); // 미체결이면 "" (지금까지)

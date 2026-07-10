@@ -2782,7 +2782,7 @@ export default function StockDetail({
                 lineHeight: 1.5,
               }}>
                 <div style={{ fontWeight: 700, color: active ? '#2e7d32' : '#e65100', marginBottom: 4 }}>
-                  {signaled ? '🟢 룰B 매수 신호 발송됨' : active ? '🟡 룰B 활성 — 양봉 대기중' : '⚪ 룰B 대기 (매도 3회 미만)'}
+                  {signaled ? '🟢 룰B 매수 신호 발송됨' : active ? '🟡 룰B 활성 — 양봉 대기중' : '🟠 룰B 적용 중 (수동 전환 · 매도 3회 전)'}
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px', color: '#555' }}>
                   <span>매도 카운트: <strong>{sellCount}/3</strong></span>
