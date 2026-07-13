@@ -77,16 +77,9 @@ export function recalcStock(stock: Stock, opts?: { trustStoredQty?: boolean }): 
   const ruleBActive = rule === 'B' && sellsSinceLastBuy >= 3 && (bottomPrice || 0) > 0;
   s.ruleBActive = ruleBActive;
 
-  // ✅ 룰B 저점 캡: 저점이 마지막 체결 매수가보다 높으면(낡은 저점) 마지막 매수가 기준으로 계산.
-  //   기준가(저점×0.9)가 직전 매수가보다 높아지는 모순 차단(성호전자 26,250>21,100 → 18,990).
-  //   reconcile이 Firestore bottomPrice를 영구 리셋하지만, 그 전에도 화면이 맞도록 방어 계산.
-  const lastFilledBuyPlan = s.buyPlans
-    .filter((bp) => bp.filled && !!bp.filledDate)
-    .reduce((best, bp) => ((bp.filledDate || '') > ((best && best.filledDate) || '') ? bp : best), null as (typeof s.buyPlans)[0] | null);
-  const lastFilledBuyPrice = lastFilledBuyPlan ? (lastFilledBuyPlan.filledPrice || lastFilledBuyPlan.price || 0) : 0;
-  const effBottomPrice = (rule === 'B' && (bottomPrice || 0) > 0 && lastFilledBuyPrice > 0)
-    ? Math.min(bottomPrice as number, lastFilledBuyPrice)
-    : (bottomPrice || 0);
+  // 룰B 기준가 = bottomPrice × 0.9. bottomPrice는 ruleBTracker가 [시작점~마지막 매수일]
+  //   구간 장중 최저가로 이미 확정한 값(정본)이라 그대로 사용.
+  const effBottomPrice = bottomPrice || 0;
 
   // ─── 차수별 룰 판정 (백엔드 mapTradesToPlans와 동일 규칙) ───
   // N차 rule = (N-1차 매수 직후 ~ N차 매수 직전) 매도 회수 >= 3 ? 'B' : 'A'

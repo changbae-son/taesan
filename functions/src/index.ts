@@ -1415,6 +1415,8 @@ async function syncToFirestore(
   const now = Date.now();
   let syncedStocks = 0;
   let syncedTrades = 0;
+  // 룰B 종목 중 이번 sync에서 추가매수가 감지된 코드 — 루프 후 저점(구간 최저가) 즉시 재계산
+  const newBuyRuleBCodes: string[] = [];
 
   // 단일 진실 모드: sync는 매도 슬롯 미기록 (reconcile이 태그 파생으로 단독 관리)
   const syncTagMode = await getTagModeEnabled();
@@ -1560,16 +1562,17 @@ async function syncToFirestore(
         updateData.firstBuyPrice = mapped.firstBuyPrice;
         updateData.firstBuyQuantity = mapped.firstBuyQty;
 
-        // Rule B: 추가매수 감지 → bottomPrice 리셋
-        // 새 매수 차수가 생기면 저점을 새 매수가로 초기화
+        // Rule B: 추가매수 감지 → bottomPrice 재계산 필요 표시 (값은 트래커가 소유)
+        //   태산 확정 규칙: bottomPrice = [시작점~마지막 매수일] 구간 장중 최저가.
+        //   새 매수로 구간 끝이 확장되므로 "매수가로 리셋"(구규칙)이 아니라 ruleBTracker
+        //   (cron 15:35 / ruleBTrackerNow)가 일봉 low로 재계산하도록 위임. 여기서 매수가로
+        //   덮으면 로킷 50,100처럼 잘못된 저점이 됨(정답 44,000 = 6/08 장중저가).
         if (existingData?.rule === "B") {
           const prevFilledBuys = ((existingData?.buyPlans || []) as any[]).filter((b) => b.filled).length;
           const newFilledBuys = mapped.buyPlans.filter((b) => b.filled).length;
           if (newFilledBuys > prevFilledBuys) {
-            // 새 매수 발생 → bottomPrice = 새 매수가 (마지막 체결 매수 차수의 가격)
-            const lastBuy = [...mapped.buyPlans].filter((b) => b.filled).pop();
-            updateData.bottomPrice = lastBuy?.filledPrice || lastBuy?.price || h.avgPrice;
-            console.log(`[Rule B] ${h.name}: 추가매수 감지 → bottomPrice 리셋: ${updateData.bottomPrice}원`);
+            newBuyRuleBCodes.push(String(h.code || "").replace(/^A/, ""));
+            console.log(`[Rule B] ${h.name}: 추가매수 감지 → 저점 재계산 예약 (트래커)`);
           }
         }
       } else {
@@ -2060,6 +2063,15 @@ async function syncToFirestore(
     stocks: syncedStocks,
     trades: syncedTrades,
   });
+
+  // 룰B 추가매수 감지 종목: 저점(구간 최저가)을 즉시 재계산 (reconcile 전에 실행해
+  //   갱신된 마지막 매수일 기준 저점이 미체결 차수 기준가에 반영되도록).
+  for (const code of Array.from(new Set(newBuyRuleBCodes))) {
+    if (!code) continue;
+    try { await runRuleBTracker(code); } catch (e: any) {
+      console.warn(`[kiwoomSync→ruleBTracker] ${code} 저점 재계산 실패: ${e.message}`);
+    }
+  }
 
   // ✅ Phase 1a step 7: 동기화 후 positions 자동 분리
   // 다음 조건 중 하나라도 해당하면 reconcileStockPlans 호출:
@@ -4437,59 +4449,49 @@ async function runRuleBTracker(codeFilter?: string): Promise<{checked: number; b
         continue;
       }
 
-      // ─── 저점 구간 freeze (마지막 매도일) ───
-      // 룰B 저점 = [기준 최고가(referencePeakDate)] ~ [마지막 매도일] 구간의 최저가.
-      // 매도 3회(룰B 활성 조건) 이상이면, 구간 끝은 "3차 이후 마지막 매도 차수의 날짜".
-      //   예) 나이벡: 4/15(+5/+10/+15), 4/23(MA20) → freeze = 4/23 (마지막 매도)
-      // 매도 3회 미달이면 freeze 없이 계속 추적 (룰B 활성 전).
-      const sellDatesRaw: string[] = [];
-      for (const sp of (stockData.sellPlans || [])) {
-        if (sp?.filled && sp.filledDate) sellDatesRaw.push(String(sp.filledDate));
+      // ─── 저점 구간 = [기준 최고가(referencePeakDate)] ~ [마지막 체결 매수일] ───
+      // 태산 룰B 확정 규칙(2026-07-10): N차 룰B 기준가 = 이 구간의 장중 최저가(low) × 0.9.
+      //   구간 끝 = "마지막 매수일" (오늘·마지막 매도일 아님) — 매수일 이후 하락은 다음
+      //   차수 저점으로 넘어가고, 매수가 체결될 때만 구간이 그 매수일까지 확장된다.
+      //   예) 로킷 3차 6/10 매수 → 구간 [4/01~6/10] 최저 6/08 44,000 → 4차 44,000×0.9=39,600.
+      const buyYmds: string[] = [];
+      for (const bp of (stockData.buyPlans || [])) {
+        if (bp?.filled && bp.filledDate) buyYmds.push(String(bp.filledDate).replace(/-/g, ""));
       }
-      for (const ms of (stockData.maSells || [])) {
-        if (ms?.filled && ms.filledDate) sellDatesRaw.push(String(ms.filledDate));
-      }
-      // YYYY-MM-DD / YYYYMMDD 모두 YYYYMMDD 로 정규화 후 오름차순
-      const sellYmds = sellDatesRaw
-        .map((d) => d.replace(/-/g, ""))
-        .filter((d) => d.length === 8)
-        .sort();
-      // freeze 기준일 = 매도 3회 이상일 때 "마지막(가장 늦은) 매도일"
-      const freezeYMD = sellYmds.length >= 3 ? sellYmds[sellYmds.length - 1] : null;
+      const validBuyYmds = buyYmds.filter((d) => d.length === 8).sort();
+      const lastBuyYMD = validBuyYmds.length > 0 ? validBuyYmds[validBuyYmds.length - 1] : null;
 
-      // 일봉 low 중 최저값 (freeze 적용 시 freezeYMD 이하 구간만)
+      // 일봉 low 중 최저값 (마지막 매수일 이하 구간만)
       let lowestLow = Infinity;
       let lowestDate = "";
       for (const c of candles) {
         if (c.low <= 0) continue;
-        if (freezeYMD && c.date.replace(/-/g, "") > freezeYMD) continue; // 마지막 매도 이후 제외
+        if (lastBuyYMD && c.date.replace(/-/g, "") > lastBuyYMD) continue; // 마지막 매수일 이후 제외
         if (c.low < lowestLow) {
           lowestLow = c.low;
           lowestDate = c.date;
         }
       }
-      if (freezeYMD) {
-        console.log(`[ruleB] ${stockData.name} 저점구간 freeze: ~${freezeYMD} (마지막 매도일)`);
+      if (lastBuyYMD) {
+        console.log(`[ruleB] ${stockData.name} 저점구간: ~${lastBuyYMD} (마지막 매수일)`);
       }
 
       const update: Record<string, any> = {};
       const currentBottom = Number(stockData.bottomPrice) || 0;
-      // bottomPrice 갱신:
-      //   freeze 구간(3차 매도 확정): 구간 내 최저가로 권위있게 SET (값이 달라지면 보정)
-      //     → 과거 freeze 미적용 시절 잘못 내려간 저점도 올바른 값으로 교정됨
-      //   freeze 전(추적중): 더 낮은 값이거나 처음일 때만 갱신
+      // bottomPrice 갱신: 구간 끝(마지막 매수일)이 확정된 과거 시점이므로 구간 내 최저가로
+      //   권위있게 SET (값이 달라지면 항상 보정). 매수 미체결(신규)이면 running-min 폴백.
       const shouldUpdate = lowestLow !== Infinity && (
-        freezeYMD
+        lastBuyYMD
           ? lowestLow !== currentBottom
           : (currentBottom === 0 || lowestLow < currentBottom)
       );
       if (shouldUpdate) {
         update.bottomPrice = lowestLow;
         update.bottomPriceDate = lowestDate;
-        update.bottomPriceSource = freezeYMD ? "daily_low_frozen" : "daily_low";
+        update.bottomPriceSource = lastBuyYMD ? "daily_low_frozen" : "daily_low";
         result.bottomUpdated++;
         console.log(
-          `[ruleB] ${stockData.name} bottomPrice ${freezeYMD ? "확정" : "갱신"}: ${currentBottom} → ${lowestLow} (${lowestDate})`
+          `[ruleB] ${stockData.name} bottomPrice ${lastBuyYMD ? "확정" : "갱신"}: ${currentBottom} → ${lowestLow} (${lowestDate})`
         );
       }
 
@@ -5161,23 +5163,6 @@ async function reconcileStockPlans(stockName: string): Promise<{
     });
 
   const buyDates = Object.keys(buyByDate).sort();
-
-  // ✅ 룰B 저점 캡: 저점이 마지막 체결 매수가보다 높으면(낡은 저점) 마지막 매수가로 리셋.
-  //   기준가(저점×0.9)가 직전 매수가보다 높아지는 모순 차단(성호전자 26,250>21,100 → 18,990).
-  //   추가매수 후 리셋 누락·매수 후 룰B 전환 케이스 정합 복원. 리셋 후 재트리거 reconcile은
-  //   조건 불충족(저점==마지막 매수가)이라 무한루프 없음. 트래커(daily_low)가 이후 더 낮은
-  //   저점을 찾으면 정상 갱신.
-  if ((stock as any).rule === "B") {
-    const lastBuyD = buyDates[buyDates.length - 1];
-    const lb = lastBuyD ? buyByDate[lastBuyD] : null;
-    const lastBuyAvg = lb && lb.qty > 0 ? Math.round(lb.amt / lb.qty) : 0;
-    const bpv = Number((stock as any).bottomPrice) || 0;
-    if (lastBuyAvg > 0 && bpv > lastBuyAvg) {
-      await stockDoc.ref.update({bottomPrice: lastBuyAvg, bottomPriceDate: lastBuyD, bottomPriceSource: "manual"});
-      (stock as any).bottomPrice = lastBuyAvg;
-      console.log(`[룰B저점캡] ${stockName}: 저점 ${bpv} > 마지막 매수가 ${lastBuyAvg} → 리셋`);
-    }
-  }
 
   // ─── 차수별 룰 판정 (mapTradesToPlans와 동일 규칙) ───
   // N차 rule = (N-1차 매수 직후 ~ N차 매수 직전) 매도 회수 >= 3 ? 'B' : 'A'
