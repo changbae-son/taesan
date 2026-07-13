@@ -12169,8 +12169,12 @@ export const screenerRawBars = functions
           const lowerBand = Math.round(ma20 * 0.8);
           recentTouch.push({
             dt: bars[i].dt,
-            low: bars[i].low,
+            open: bars[i].open,
             close: bars[i].close,
+            low: bars[i].low,
+            tvEok: bars[i].tvEok,
+            isYangBong: bars[i].isYangBong,
+            isBig5kEok: bars[i].isBig5kEok,
             ma20,
             lowerBand,
             touched: ma20 > 0 && bars[i].low <= lowerBand,
