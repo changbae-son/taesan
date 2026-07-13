@@ -331,9 +331,13 @@ export default function Sidebar({ stocks, selectedId, onSelect, onAdd, onTabChan
       const data = await res.json();
       if (data.success) {
         setKiwoomStatus('success');
+        const gap = data.gapFixed || 0;
+        const dup = data.dupFixed || 0;
+        const gapNm = (data.fixes || []).map((f: { name: string }) => f.name).join(', ');
+        const dupNm = (data.dupFixes || []).map((f: { name: string }) => f.name).join(', ');
         setKiwoomMsg(
-          (data.gapFixed || 0) > 0
-            ? `매도갭 보정 ${data.gapFixed}건: ${(data.fixes || []).map((f: { name: string }) => f.name).join(', ')}`
+          gap > 0 || dup > 0
+            ? [gap > 0 ? `부족 보정 ${gap}건 (${gapNm})` : '', dup > 0 ? `중복 삭제 ${dup}건 (${dupNm})` : ''].filter(Boolean).join(' · ')
             : '매도갭 없음 — 오늘 매도 수량 정합 ✓'
         );
       } else {

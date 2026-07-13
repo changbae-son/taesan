@@ -6747,11 +6747,15 @@ export const healthCheckCron = functions
       const today = `${kst.getFullYear()}-${String(kst.getMonth() + 1).padStart(2, "0")}-${String(kst.getDate()).padStart(2, "0")}`;
       let gapFixed = 0;
       let gapNames: string[] = [];
+      let dupFixed = 0;
+      let dupNames: string[] = [];
       try {
         const g = await runSellGapFix(today.replace(/-/g, ""), true);
         gapFixed = Number(g.gapFixed) || 0;
         gapNames = (g.fixes || []).map((f: any) => f.name).slice(0, 5);
-        if (gapFixed > 0) console.log(`[갭보정] ${gapFixed}종목 자동 보정`);
+        dupFixed = Number(g.dupFixed) || 0;
+        dupNames = (g.dupFixes || []).map((f: any) => f.name).slice(0, 5);
+        if (gapFixed > 0 || dupFixed > 0) console.log(`[갭보정] 부족 ${gapFixed}종목 · 중복 ${dupFixed}종목`);
       } catch (e: any) {
         console.warn(`[갭보정] 실패: ${e.message}`);
       }
@@ -6803,7 +6807,7 @@ export const healthCheckCron = functions
       if (r.totalIssues > 0) msg += `\n`;
       msg += `오늘 매매: 매수 ${buyCnt}건 ${buyQty.toLocaleString()}주 · 매도 ${sellCnt}건 ${sellQty.toLocaleString()}주\n`;
       msg += `자동보정: ${fixedCount}종목${fixedNames.length ? ` (${fixedNames.join(", ")})` : ""}\n`;
-      msg += `매도갭 보정: ${gapFixed}건${gapNames.length ? ` (${gapNames.join(", ")})` : ""}\n`;
+      msg += `매도갭 보정: 부족 ${gapFixed}건${gapNames.length ? ` (${gapNames.join(", ")})` : ""} · 중복 ${dupFixed}건${dupNames.length ? ` (${dupNames.join(", ")})` : ""}\n`;
       msg += `미분류 매도: 오늘 ${todayUnmapped}건 / 전체 ${totalUnmapped >= 0 ? totalUnmapped : "?"}건`;
       if (todayUnmapped > 0) msg += ` — 종목상세에서 분류 필요`;
       if (failToday > 0) msg += `\n⚠️ 텔레그램 발송실패(오늘): ${failToday}건`;
@@ -7007,12 +7011,14 @@ export const diagSellGap = functions
     });
   });
 
-// ─── 매도 갭 자동 보정: kt00007(주문 정본) vs 저장 trades — 수량 실부족만 정정 ───
-//   부분체결 순간 캡처(fallback qty < 주문 체결량)로 매도 수량이 모자란 종목을 정본
-//   주문 trade로 보강(DB하이텍 2주→1주 캡처 사례). 부분캡처 fallback은 제거하되
-//   분류(sellSlot·slotLocked·sellRound) 승계.
-//   안전조건: ① 키움>저장 실부족만 ② 이미 저장된 ord 제외 ③ fallback 정리는 같은날·
-//   가격±0.5%·수량<주문수량인 trade_kiwoom_sell_*만 ④ 보정 후 총량 ≤ 키움 수량.
+// ─── 매도 갭 자동 보정: kt00007(주문 정본) vs 저장 trades — 부족(주입)+초과(중복삭제) ───
+//   ① 부족: 부분체결 순간 캡처(fallback qty < 주문 체결량)로 매도 수량이 모자란 종목을
+//      정본 주문 trade로 보강(DB하이텍 2주→1주 캡처). 부분캡처 fallback 제거+분류 승계.
+//   ② 초과(중복): 정본(ord id) 존재 + 같은 매도의 fallback 부활 공존으로 매도 수량이
+//      키움보다 많은 경우, 중복 fallback 삭제(DB하이텍 정본 2주+부활 1주=3>2). 정본은
+//      절대 삭제 안 함. fallback이 사용자 분류(locked) 가졌고 정본이 미분류면 분류 승계.
+//   안전조건: 정본(ord 기반) 불가침, 삭제는 trade_kiwoom_sell_* 중 가격±0.5% 매칭·초과분
+//   이하만, 미분류·미잠금 우선, 보정 후 저장 매도수량 == 키움 수량.
 async function runSellGapFix(dateCompact: string, apply: boolean): Promise<any> {
   const config = await getKiwoomConfig();
   const token = await getAccessToken(config);
@@ -7053,8 +7059,66 @@ async function runSellGapFix(dateCompact: string, apply: boolean): Promise<any> 
     }
   });
   const fixes: any[] = [];
+  const dupFixes: any[] = [];
   for (const [code, kw] of Object.entries(kiwoomByCode)) {
     const saved = savedByCode[code] || {qty: 0, ords: new Set<string>(), fallbacks: []};
+
+    // ── ① 중복 fallback 정리 (초과): 주문 정본(ord id)이 이미 있는데 같은 매도의 fallback이
+    //    공존해 저장 매도수량이 키움보다 많은 경우, 그 fallback을 삭제(정본은 절대 삭제 안 함).
+    //    DB하이텍 사례: 정본 2주(ord 0286882, MA120) + 부활 fallback 1주(unmapped) = 3 > 키움 2.
+    if (saved.qty > kw.qty && saved.fallbacks.length > 0) {
+      // 정본(ord 기반)이 이미 있는 주문의 가격 = 그 가격 매도는 정본으로 커버됨
+      const coveredOrds = kw.ords.filter((o) => saved.ords.has(o));
+      const coveredPrices = coveredOrds.map((o) => kw.detail[o]?.price).filter((p) => p > 0);
+      const dupCandidates = saved.fallbacks.filter((f) =>
+        f.price > 0 && coveredPrices.some((cp) => Math.abs(f.price - cp) / cp <= 0.005));
+      // 삭제 우선순위: 미분류(unmapped)·미잠금 먼저, 그다음 작은 수량 (사용자 분류 보존)
+      dupCandidates.sort((a, b) => {
+        const au = (!a.sellSlot || a.sellSlot === "unmapped") && !a.slotLocked ? 0 : 1;
+        const bu = (!b.sellSlot || b.sellSlot === "unmapped") && !b.slotLocked ? 0 : 1;
+        if (au !== bu) return au - bu;
+        return a.qty - b.qty;
+      });
+      let overage = saved.qty - kw.qty;
+      const toRemove: typeof saved.fallbacks = [];
+      for (const f of dupCandidates) {
+        if (overage <= 0) break;
+        if (f.qty <= overage) { toRemove.push(f); overage -= f.qty; }
+      }
+      if (toRemove.length > 0) {
+        dupFixes.push({code, name: kw.name, kiwoomQty: kw.qty, savedQty: saved.qty,
+          removed: toRemove.map((f) => ({id: f.id, qty: f.qty, slot: f.sellSlot || "unmapped"}))});
+        if (apply) {
+          for (const f of toRemove) {
+            // 삭제되는 fallback이 사용자 분류(locked)를 가졌고, 매칭 정본이 미분류면 분류 승계
+            if (f.slotLocked && f.sellSlot && f.sellSlot !== "unmapped" && f.sellSlot !== "split") {
+              const ord = coveredOrds.find((o) => {
+                const cp = kw.detail[o]?.price || 0;
+                return cp > 0 && Math.abs(f.price - cp) / cp <= 0.005;
+              });
+              if (ord) {
+                const ordRef = db.collection("trades").doc(`trade_kiwoom_${ord}_${code}`);
+                const ordSnap = await ordRef.get();
+                const od = ordSnap.exists ? (ordSnap.data() as any) : null;
+                if (od && (!od.sellSlot || od.sellSlot === "unmapped") && !od.slotLocked) {
+                  const upd: any = {sellSlot: f.sellSlot, slotLocked: true};
+                  if (f.sellRound) upd.sellRound = f.sellRound;
+                  await ordRef.update(upd);
+                  console.log(`[중복정리] ${kw.name}: 정본 ${ord}에 분류 ${f.sellSlot} 승계`);
+                }
+              }
+            }
+            await db.collection("trades").doc(f.id).delete();
+          }
+          try { await reconcileStockPlans(kw.name); } catch (e: any) { console.warn(`[중복정리] ${kw.name} reconcile 실패: ${e.message}`); }
+          console.log(`[중복정리] ${kw.name}: 중복 fallback ${toRemove.length}건 삭제 (${toRemove.map((f) => `${f.qty}주`).join(", ")})`);
+        }
+        const rem = new Set(toRemove.map((f) => f.id));
+        saved.fallbacks = saved.fallbacks.filter((f) => !rem.has(f.id));
+        saved.qty -= toRemove.reduce((a, f) => a + f.qty, 0);
+      }
+    }
+
     if (kw.qty <= saved.qty) continue; // 실부족만 (형식 차이는 대상 아님)
     const missing = kw.ords.filter((o) => !saved.ords.has(o));
     if (missing.length === 0) continue;
@@ -7096,7 +7160,7 @@ async function runSellGapFix(dateCompact: string, apply: boolean): Promise<any> 
       console.log(`[갭보정] ${stockName}: ${actions.length}건 주입 (${actions.map((a: any) => `${a.ord}:${a.qty}주`).join(", ")})`);
     }
   }
-  return {date: dateDash, gapFixed: fixes.length, fixes};
+  return {date: dateDash, gapFixed: fixes.length, fixes, dupFixed: dupFixes.length, dupFixes};
 }
 
 // GET /sellGapFix[?apply=true&date=YYYYMMDD] — 매도 갭(부분체결 캡처) 보정. 기본 dry-run.
