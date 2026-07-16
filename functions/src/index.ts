@@ -12328,12 +12328,16 @@ export const sScreenerCheck = functions
     const kst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
     const h = kst.getHours(); const m = kst.getMinutes(); const d = kst.getDay();
     const t = h * 100 + m;
-    if (d === 0 || d === 6 || t < 900 || t > 1530) {
+    // 08:00~20:00 KST 운영 (정규장 09:00~15:30 + NXT 08~09·15:30~20:00) — holdingsCheck와 동일 커버리지.
+    //   시세는 screenerFetchStockInfo가 _AL(KRX+NXT 통합)이라 NXT 가격 반영됨.
+    if (d === 0 || d === 6 || t < 800 || t > 2000) {
       console.log(`[S체크] 장외 시간 (${h}:${m}, 요일:${d}) - 스킵`);
       return;
     }
+    // NXT 시간(정규장 밖) 여부 — 알림에 표시
+    const isNxt = t < 900 || t > 1530;
 
-    console.log("[S체크] 장중 체크 시작");
+    console.log(`[S체크] ${isNxt ? "NXT" : "정규장"} 체크 시작`);
     try {
       const config = await getKiwoomConfig();
       const token = await getAccessToken(config);
@@ -12502,7 +12506,7 @@ export const sScreenerCheck = functions
           "🟪🟪🟪🟪🟪🟪🟪🟪🟪🟪",
           `${emoji} <b>매수 후보 · ${typeTag}</b> · ${lvText}`,
           `📌 <code>${stockName}</code>  <code>${stk.code}</code>`,
-          `현재가: ${cur.toLocaleString()}원`,
+          `현재가: ${cur.toLocaleString()}원${isNxt ? " 🌙<i>NXT</i>" : ""}`,
           `EN하단선(전일종가 기준): ${stk.lowerBand.toLocaleString()}원`,
           `근접도: ${gapText} <i>(실시간 차트 지지선은 당일 MA20이라 다를 수 있음)</i>`,
           stk.marketCapEok ? `시총: ${stk.marketCapEok.toLocaleString()}억원` : "",
