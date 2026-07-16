@@ -11752,6 +11752,8 @@ async function runSScreenerDailyS(
       market,
       ma20,
       lowerBand,
+      // 실시간 밴드 근사용 — MA20 창의 가장 오래된 종가(다음날 빠질 값)
+      close20dAgo: bars[19]?.close ?? 0,
       marketCapEok: info.marketCapEok,
       types: ["S"],
       updatedAt: Date.now(),
@@ -11945,6 +11947,8 @@ async function runSScreenerDailyS2(
       market,
       ma20,
       lowerBand,
+      // 실시간 밴드 근사용 — MA20 창의 가장 오래된 종가(다음날 빠질 값). 20일 미만이면 0.
+      close20dAgo: bars[19]?.close ?? 0,
       bigVolDay: bars[bigVolIdx].date,
       bigVolTradeValueEok: bars[bigVolIdx].tradeValueEok,
       types: ["S2"],
@@ -12410,7 +12414,12 @@ export const sScreenerCheck = functions
         if (!info || info.currentPrice <= 0) continue;
 
         const cur = info.currentPrice;
-        const gap = ((cur - stk.lowerBand) / stk.lowerBand) * 100;
+        // 실시간 밴드 — 저장 MA20에서 20일전 종가를 빼고 현재가를 넣어 오늘 MA20 근사
+        //   → 차트 지지선(당일 MA20×0.8)과 일치. close20dAgo 없으면(구 문서) 저장값 폴백.
+        const band = (stk.close20dAgo && stk.ma20)
+          ? Math.round(((stk.ma20 * 20 - stk.close20dAgo + cur) / 20) * 0.8)
+          : stk.lowerBand;
+        const gap = ((cur - band) / band) * 100;
 
         // 전체 eligible 종목 현재가/gap 캐시 (모달용)
         checkStatusItems.push({
@@ -12442,7 +12451,8 @@ export const sScreenerCheck = functions
             code: stk.code,
             name: info.name || stk.name,
             currentPrice: cur,
-            lowerBand: stk.lowerBand,
+            lowerBand: band, // 실시간 밴드 (차트 지지선과 일치)
+            lowerBandDaily: stk.lowerBand, // 전일 종가 기준(참고)
             ma20: stk.ma20,
             gap: parseFloat(gap.toFixed(2)),
             level,
@@ -12458,7 +12468,7 @@ export const sScreenerCheck = functions
             info.name || stk.name,
             stk.types,
             cur,
-            stk.lowerBand,
+            band,
             gap,
             level as "below" | "1pct" | "2pct",
             stk.marketCapEok || null,
@@ -12507,8 +12517,8 @@ export const sScreenerCheck = functions
           `${emoji} <b>매수 후보 · ${typeTag}</b> · ${lvText}`,
           `📌 <code>${stockName}</code>  <code>${stk.code}</code>`,
           `현재가: ${cur.toLocaleString()}원${isNxt ? " 🌙<i>NXT</i>" : ""}`,
-          `EN하단선(전일종가 기준): ${stk.lowerBand.toLocaleString()}원`,
-          `근접도: ${gapText} <i>(실시간 차트 지지선은 당일 MA20이라 다를 수 있음)</i>`,
+          `EN하단선(실시간): ${band.toLocaleString()}원`,
+          `근접도: ${gapText}`,
           stk.marketCapEok ? `시총: ${stk.marketCapEok.toLocaleString()}억원` : "",
           stk.bigVolDay ? `5천억양봉일: ${stk.bigVolDay} (${stk.bigVolTradeValueEok?.toLocaleString() || "?"}억)` : "",
         ].filter(Boolean).join("\n");
@@ -12612,7 +12622,11 @@ export const sScreenerCheckNow = functions
           await new Promise((r) => setTimeout(r, 130));
           const info = await screenerFetchStockInfo(config, token, stk.code);
           if (!info || info.currentPrice <= 0) continue;
-          const gap = ((info.currentPrice - stk.lowerBand) / stk.lowerBand) * 100;
+          // 실시간 밴드 (sScreenerCheck와 동일) — 20일전 종가 빼고 현재가 넣어 오늘 MA20 근사
+          const band = (stk.close20dAgo && stk.ma20)
+            ? Math.round(((stk.ma20 * 20 - stk.close20dAgo + info.currentPrice) / 20) * 0.8)
+            : stk.lowerBand;
+          const gap = ((info.currentPrice - band) / band) * 100;
           checkStatusItems.push({
             code: stk.code,
             currentPrice: info.currentPrice,
@@ -12631,7 +12645,7 @@ export const sScreenerCheckNow = functions
           const level = gap <= 0 ? "below" : gap <= 1 ? "1pct" : "2pct";
           alertItems.push({
             code: stk.code, name: info.name || stk.name,
-            currentPrice: info.currentPrice, lowerBand: stk.lowerBand, ma20: stk.ma20,
+            currentPrice: info.currentPrice, lowerBand: band, lowerBandDaily: stk.lowerBand, ma20: stk.ma20,
             gap: parseFloat(gap.toFixed(2)), level, types: stk.types,
             marketCapEok: stk.marketCapEok || null, bigVolDay: stk.bigVolDay || null,
             checkedAt: now,
