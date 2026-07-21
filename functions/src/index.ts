@@ -6700,8 +6700,92 @@ async function runHealthCheck(): Promise<any> {
     if (g.dps.size >= 2 && !g.hasLocked) slotConflicts.push({key, units: g.dps.size});
   }
 
-  const totalIssues = balanceIssues.length + avgIssues.length + slotConflicts.length;
-  return {checkedStocks: stocksSnap.size, totalIssues, balanceIssues, avgIssues, slotConflicts};
+  // ─── 매도 수량 감사 (최근 7일) ───
+  //   DB하이텍 유형(정본 + fallback 중복 → 매도 과다 저장) 감지.
+  //   잔고는 우연히 맞을 수 있어 balanceIssues로는 안 잡힘 → 별도 게이트 필요.
+  //   전 기간 전수 진단은 diagSellQtyAudit. 여기선 최근분만 매일 점검(cron 부담 최소).
+  const sellQtyIssues: any[] = [];
+  try {
+    const kstNow2 = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+    const fmtD = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const fromD = fmtD(new Date(kstNow2.getTime() - 7 * 24 * 60 * 60 * 1000));
+    const sellGroups = new Map<string, {name: string; code: string; date: string; dt: string; qty: number}>();
+    tradesSnap.forEach((doc) => {
+      const t = doc.data() as any;
+      if (t.type !== "sell") return;
+      const date = String(t.date || "");
+      if (!date || date < fromD) return;
+      const code = String(t.code || "").replace(/^A/, "");
+      if (!code) return;
+      const dt = date.replace(/-/g, "");
+      const key = `${code}_${dt}`;
+      if (!sellGroups.has(key)) sellGroups.set(key, {name: String(t.stockName || ""), code, date, dt, qty: 0});
+      sellGroups.get(key)!.qty += Number(t.quantity) || 0;
+    });
+    const dts = Array.from(new Set(Array.from(sellGroups.values()).map((g) => g.dt))).sort();
+    const kt7m = new Map<string, number>();
+    const ka72m = new Map<string, number>();
+    for (const dt of dts) {
+      try {
+        const r7 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "kt00007"},
+          body: JSON.stringify({ord_dt: dt, qry_tp: "1", stk_bond_tp: "0", sell_tp: "0", stk_cd: "", fr_ord_no: "", dmst_stex_tp: "%"}),
+        });
+        const d7 = await r7.json() as any;
+        let items: any[] = [];
+        for (const k of Object.keys(d7)) {
+          if (Array.isArray(d7[k]) && d7[k].length > 0) {items = d7[k]; break;}
+        }
+        for (const it of items) {
+          const q = parseInt(it.cntr_qty || "0");
+          if (q <= 0) continue;
+          if (!String(it.io_tp_nm || "").includes("매도")) continue;
+          const c = cleanKiwoomField(it.stk_cd).replace(/^[A-Za-z]/, "");
+          if (!c) continue;
+          const k = `${c}_${dt}`;
+          kt7m.set(k, (kt7m.get(k) || 0) + q);
+        }
+      } catch (e) { /* skip */ }
+      await new Promise((r) => setTimeout(r, 120));
+      try {
+        const r72 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "ka10072"},
+          body: JSON.stringify({strt_dt: dt, end_dt: dt, ord_dt: dt, stk_cd: "", sell_tp: "1", qry_tp: "0", stk_bond_tp: "1", dmst_stex_tp: "KRX"}),
+        });
+        const d72 = await r72.json() as any;
+        const items = d72.dt_stk_div_rlzt_pl || [];
+        for (const it of items) {
+          if (!(it.stk_nm || "").trim()) continue;
+          const q = parseInt(it.cntr_qty || "0");
+          if (q <= 0) continue;
+          const c = cleanKiwoomField(it.stk_cd).replace(/^[A-Za-z]/, "");
+          if (!c) continue;
+          const k = `${c}_${dt}`;
+          ka72m.set(k, (ka72m.get(k) || 0) + q);
+        }
+      } catch (e) { /* skip */ }
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    for (const g of sellGroups.values()) {
+      const k = `${g.code}_${g.dt}`;
+      const a = kt7m.get(k) || 0;
+      const b = ka72m.get(k) || 0;
+      if (g.qty === a || g.qty === b) continue; // 어느 API와도 일치하면 정상
+      const mx = Math.max(a, b);
+      sellQtyIssues.push({
+        name: g.name, date: g.date, saved: g.qty, kt7: a, ka72: b,
+        diff: g.qty - mx, kind: g.qty > mx ? "과다(중복의심)" : "누락",
+      });
+    }
+  } catch (e: any) {
+    console.warn(`[healthCheck] 매도수량 감사 실패: ${e.message}`);
+  }
+
+  const totalIssues = balanceIssues.length + avgIssues.length + slotConflicts.length + sellQtyIssues.length;
+  return {checkedStocks: stocksSnap.size, totalIssues, balanceIssues, avgIssues, slotConflicts, sellQtyIssues};
 }
 
 // GET /diagHealthCheck — 수동 정합성 점검
@@ -6803,6 +6887,12 @@ export const healthCheckCron = functions
       if (r.slotConflicts.length) {
         msg += `<b>슬롯 충돌 ${r.slotConflicts.length}</b>\n`;
         for (const c of r.slotConflicts.slice(0, 8)) msg += `· ${c.key}\n`;
+      }
+      if (r.sellQtyIssues?.length) {
+        msg += `<b>매도수량 불일치 ${r.sellQtyIssues.length}</b> (최근 7일)\n`;
+        for (const q of r.sellQtyIssues.slice(0, 8)) {
+          msg += `· ${q.name} ${q.date}: 저장 ${q.saved} vs 키움 kt7 ${q.kt7}/ka72 ${q.ka72} (${q.kind})\n`;
+        }
       }
       if (r.totalIssues > 0) msg += `\n`;
       msg += `오늘 매매: 매수 ${buyCnt}건 ${buyQty.toLocaleString()}주 · 매도 ${sellCnt}건 ${sellQty.toLocaleString()}주\n`;
@@ -13601,6 +13691,196 @@ export const migrateSellExecute = functions
         });
       } catch (e: any) {
         console.error("[migrateSellExecute] 실패:", e.message);
+        res.status(500).json({success: false, error: e.message, elapsedMs: Date.now() - startedAt});
+      }
+    });
+  });
+
+/**
+ * ════════════════════════════════════════════════════════════════
+ *  diagSellQtyAudit — 매도 수량 전수 대조 (키움 vs 시스템, Read-Only)
+ *
+ *  목적: DB하이텍 유형(정본+fallback 중복으로 매도 과다 저장)을 전 종목에서 탐지.
+ *   기존 게이트 구멍: healthCheck는 잔고/평단만 보고, dedupV2는 "부분합 일치"일 때만
+ *   제거 → 정본2주+fallback1주 같은 케이스는 통과(잔고가 우연히 맞아 안 걸림).
+ *
+ *  방법: (종목코드, 날짜) 단위로 저장합계 / kt00007 합계 / ka10072 합계를 나란히 비교.
+ *  판정:
+ *    matched     : 저장 = 키움(양 API 동일)
+ *    apiDiff     : kt7 ≠ ka72 이지만 저장이 둘 중 하나와 일치 (API 표현 차이 — 정상 가능)
+ *    savedExcess : 저장 > 키움(둘 다) → 중복 의심 (DB하이텍 유형)
+ *    savedShort  : 저장 < 키움(둘 다) → 누락 의심
+ *
+ *  GET /diagSellQtyAudit                     (최근 90일, 이슈만)
+ *  GET /diagSellQtyAudit?from=20260401&to=20260726
+ *  GET /diagSellQtyAudit?stockName=DB하이텍
+ *  GET /diagSellQtyAudit?onlyIssues=false    (전체 그룹 포함)
+ * ════════════════════════════════════════════════════════════════
+ */
+export const diagSellQtyAudit = functions
+  .region("asia-northeast3")
+  .runWith({
+    vpcConnector: "kiwoom-connector",
+    vpcConnectorEgressSettings: "ALL_TRAFFIC",
+    timeoutSeconds: 540,
+    memory: "512MB",
+  })
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      const startedAt = Date.now();
+      try {
+        const kstNow = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Seoul"}));
+        const fmtDash = (d: Date) =>
+          `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const toDash = (req.query.to as string) ?
+          (req.query.to as string).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : fmtDash(kstNow);
+        const fromDefault = new Date(kstNow.getTime() - 90 * 24 * 60 * 60 * 1000);
+        const fromDash = (req.query.from as string) ?
+          (req.query.from as string).replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3") : fmtDash(fromDefault);
+        const stockNameFilter = (req.query.stockName as string || "").trim();
+        const onlyIssues = (req.query.onlyIssues as string) !== "false";
+
+        const isFallbackOrd = (on: string): boolean =>
+          !on || on.startsWith("sell_") || on.startsWith("buy_") ||
+          on.startsWith("fb_") || on.startsWith("kt07_") || on.startsWith("kt15_");
+
+        // ─── 1) Firestore 매도 수집 → (code_date) 그룹 ───
+        type SavedTrade = {id: string; qty: number; price: number; ord: string; fallback: boolean; slot: string};
+        type Grp = {code: string; date: string; dt: string; stockName: string; savedQty: number; trades: SavedTrade[]};
+        const groups = new Map<string, Grp>();
+        const tsnap = await db.collection("trades").where("type", "==", "sell").get();
+        tsnap.docs.forEach((doc) => {
+          const t = doc.data() as any;
+          const date = String(t.date || "");
+          if (!date || date < fromDash || date > toDash) return;
+          const stockName = String(t.stockName || "");
+          if (stockNameFilter && !stockName.includes(stockNameFilter)) return;
+          const code = String(t.code || "").replace(/^A/, "");
+          if (!code) return;
+          const dt = date.replace(/-/g, "");
+          const key = `${code}_${dt}`;
+          if (!groups.has(key)) {
+            groups.set(key, {code, date, dt, stockName, savedQty: 0, trades: []});
+          }
+          const g = groups.get(key)!;
+          const qty = Number(t.quantity) || 0;
+          const ord = String(t.orderNo || "").trim();
+          g.savedQty += qty;
+          g.trades.push({
+            id: doc.id, qty, price: Number(t.price) || 0,
+            ord: ord || "(none)", fallback: isFallbackOrd(ord),
+            slot: t.sellSlot || "(none)",
+          });
+        });
+
+        // ─── 2) 필요한 날짜만 키움 kt00007 / ka10072 조회 ───
+        const dates = Array.from(new Set(Array.from(groups.values()).map((g) => g.dt))).sort();
+        const config = await getKiwoomConfig();
+        const token = await getAccessToken(config);
+        const kt7 = new Map<string, number>();
+        const ka72 = new Map<string, number>();
+        let apiFail = 0;
+
+        for (const dt of dates) {
+          try {
+            const r7 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "kt00007"},
+              body: JSON.stringify({ord_dt: dt, qry_tp: "1", stk_bond_tp: "0", sell_tp: "0", stk_cd: "", fr_ord_no: "", dmst_stex_tp: "%"}),
+            });
+            const d7 = await r7.json() as any;
+            let items: any[] = [];
+            for (const k of Object.keys(d7)) {
+              if (Array.isArray(d7[k]) && d7[k].length > 0) {items = d7[k]; break;}
+            }
+            for (const it of items) {
+              const q = parseInt(it.cntr_qty || "0");
+              if (q <= 0) continue;
+              if (!String(it.io_tp_nm || "").includes("매도")) continue;
+              const c = cleanKiwoomField(it.stk_cd).replace(/^[A-Za-z]/, "");
+              if (!c) continue;
+              const k = `${c}_${dt}`;
+              kt7.set(k, (kt7.get(k) || 0) + q);
+            }
+          } catch (e) {
+            apiFail++;
+          }
+          await new Promise((r) => setTimeout(r, 120));
+
+          try {
+            const r72 = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+              method: "POST",
+              headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "ka10072"},
+              body: JSON.stringify({strt_dt: dt, end_dt: dt, ord_dt: dt, stk_cd: "", sell_tp: "1", qry_tp: "0", stk_bond_tp: "1", dmst_stex_tp: "KRX"}),
+            });
+            const d72 = await r72.json() as any;
+            const items = d72.dt_stk_div_rlzt_pl || [];
+            for (const it of items) {
+              if (!(it.stk_nm || "").trim()) continue;
+              const q = parseInt(it.cntr_qty || "0");
+              if (q <= 0) continue;
+              const c = cleanKiwoomField(it.stk_cd).replace(/^[A-Za-z]/, "");
+              if (!c) continue;
+              const k = `${c}_${dt}`;
+              ka72.set(k, (ka72.get(k) || 0) + q);
+            }
+          } catch (e) {
+            apiFail++;
+          }
+          await new Promise((r) => setTimeout(r, 120));
+        }
+
+        // ─── 3) 비교 ───
+        type Row = Grp & {kt7Qty: number; ka72Qty: number; verdict: string; diffVsKiwoom: number};
+        const rows: Row[] = [];
+        const counts: Record<string, number> = {};
+        for (const g of groups.values()) {
+          const key = `${g.code}_${g.dt}`;
+          const a = kt7.get(key) || 0;
+          const b = ka72.get(key) || 0;
+          const kiwoomMax = Math.max(a, b);
+          let verdict: string;
+          if (g.savedQty === a || g.savedQty === b) {
+            verdict = (a !== b) ? "apiDiff" : "matched";
+          } else if (g.savedQty > kiwoomMax) {
+            verdict = "savedExcess";
+          } else {
+            verdict = "savedShort";
+          }
+          counts[verdict] = (counts[verdict] || 0) + 1;
+          rows.push({...g, kt7Qty: a, ka72Qty: b, verdict, diffVsKiwoom: g.savedQty - kiwoomMax});
+        }
+
+        const issues = rows.filter((r) => r.verdict === "savedExcess" || r.verdict === "savedShort");
+        issues.sort((x, y) => Math.abs(y.diffVsKiwoom) - Math.abs(x.diffVsKiwoom));
+
+        const byStock: Record<string, {excess: number; short: number; qtyDiff: number}> = {};
+        for (const r of issues) {
+          if (!byStock[r.stockName]) byStock[r.stockName] = {excess: 0, short: 0, qtyDiff: 0};
+          if (r.verdict === "savedExcess") byStock[r.stockName].excess++;
+          else byStock[r.stockName].short++;
+          byStock[r.stockName].qtyDiff += r.diffVsKiwoom;
+        }
+
+        res.json({
+          success: true,
+          summary: {
+            dateRange: {from: fromDash, to: toDash},
+            datesQueried: dates.length,
+            apiFail,
+            groups: rows.length,
+            verdicts: counts,
+            issueGroups: issues.length,
+            elapsedMs: Date.now() - startedAt,
+          },
+          byStock: Object.entries(byStock)
+            .map(([name, v]) => ({name, ...v}))
+            .sort((a, b) => Math.abs(b.qtyDiff) - Math.abs(a.qtyDiff)),
+          issues,
+          ...(onlyIssues ? {} : {allRows: rows}),
+        });
+      } catch (e: any) {
+        console.error("[diagSellQtyAudit] 실패:", e.message);
         res.status(500).json({success: false, error: e.message, elapsedMs: Date.now() - startedAt});
       }
     });
