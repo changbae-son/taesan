@@ -11482,7 +11482,14 @@ export const creditMaturityCheck = functions
 // ══════════════════════════════════════════════════════════════════════════════
 
 const S_MARKET_CAP_MIN_EOK = 13000;   // 1조 3천억 = 13,000억원
-const S2_VOLUME_MIN_EOK = 5000;       // 5,000억원
+const S2_VOLUME_MIN_EOK = 5000;       // 5,000억원 (= 5조 티어 대금 기준, 프리셋으로 조정)
+// S2 시가총액 2단 티어 (2026-08-05 규칙):
+//   ① 대금 ≥ 5천억(설정값) AND 시총 ≥ 5조   → 5조 티어
+//   ② 대금 ≥ 3천억           AND 시총 ≥ 10조  → 10조 티어(대형주는 대금 문턱 완화)
+//   둘 중 하나라도 충족 시 후보. 시총 5조 미만은 대금 무관 제외.
+const S2_TIER1_CAP_EOK = 50000;       // 5조 = 50,000억원
+const S2_TIER2_VOL_EOK = 3000;        // 3,000억원
+const S2_TIER2_CAP_EOK = 100000;      // 10조 = 100,000억원
 const S2_LOOKBACK_DAYS = 150;         // 5달치 거래일
 const SCREENER_ALERT_THRESHOLD_PCT = 2.0;
 // 하단선 대비 너무 깊게(-8% 이상) 이탈한 종목은 권리락/액면분할 등으로 밴드(MA20)가
@@ -11922,8 +11929,8 @@ export const sScreenerDailySNow = functions
 async function runSScreenerDailyS2(
   market: "KOSPI" | "KOSDAQ" = "KOSPI",
 ): Promise<{processed: number; eligible: number; market: string}> {
-  const volMinEok = await loadS2VolumeMinEok(); // 사용자 설정 거래대금 기준 (기본 5000억)
-  console.log(`[S스크리너] S2기법 ${market} 업데이트 시작 (거래대금 기준 ${volMinEok}억)`);
+  const volMinEok = await loadS2VolumeMinEok(); // 5조 티어 거래대금 기준 (기본 5000억, 프리셋 조정)
+  console.log(`[S스크리너] S2기법 ${market} 업데이트 시작 (티어: 시총5조↑=${volMinEok}억, 시총10조↑=${S2_TIER2_VOL_EOK}억)`);
   const config = await getKiwoomConfig();
   const token = await getAccessToken(config);
 
@@ -11972,11 +11979,38 @@ async function runSScreenerDailyS2(
     if (ma20 <= 0) continue;
     const lowerBand = Math.round(ma20 * 0.8);
 
-    // 가장 최근 5천억+ 양봉 찾기 (bars는 최신→오래된 순, idx 작을수록 최근)
+    // ── 시가총액 2단 티어 ─────────────────────────────────────────────
+    // 먼저 스캔 하한(3천억)으로 양봉 존재만 확인 → 없으면 시총 조회 생략(호출 절약)
+    const scanFloorEok = Math.min(volMinEok, S2_TIER2_VOL_EOK);
+    const hasAnyBigVol = bars.some((b) => b.tradeValueEok >= scanFloorEok && b.close > b.open);
+    if (!hasAnyBigVol) continue;
+
+    // 시가총액 조회 (현재가 기준) — 티어 판정용
+    await new Promise((r) => setTimeout(r, 100));
+    const capInfo = await screenerFetchStockInfo(config, token, stk.code);
+    const marketCapEok = capInfo?.marketCapEok ?? 0;
+    if (marketCapEok <= 0) {
+      console.log(`[S2] ${stk.code} ${stk.name} 시총 조회 실패 → 이번 스캔 제외(다음 재계산 자가치유)`);
+      continue;
+    }
+    // 티어별 유효 거래대금 임계: 10조+ → 3천억(설정과 낮은 값), 5~10조 → 설정(기본 5천억)
+    let effVolEok: number;
+    let tier: 1 | 2;
+    if (marketCapEok >= S2_TIER2_CAP_EOK) {
+      effVolEok = Math.min(volMinEok, S2_TIER2_VOL_EOK);
+      tier = 2;
+    } else if (marketCapEok >= S2_TIER1_CAP_EOK) {
+      effVolEok = volMinEok;
+      tier = 1;
+    } else {
+      continue; // 시총 5조 미만 → 대금 무관 제외
+    }
+
+    // 가장 최근 유효대금 이상 양봉 찾기 (bars는 최신→오래된 순, idx 작을수록 최근)
     let bigVolIdx = -1;
     for (let i = 0; i < bars.length; i++) {
       const b = bars[i];
-      if (b.tradeValueEok >= volMinEok && b.close > b.open) {
+      if (b.tradeValueEok >= effVolEok && b.close > b.open) {
         bigVolIdx = i;
         break;
       }
@@ -12041,6 +12075,8 @@ async function runSScreenerDailyS2(
       close20dAgo: bars[19]?.close ?? 0,
       bigVolDay: bars[bigVolIdx].date,
       bigVolTradeValueEok: bars[bigVolIdx].tradeValueEok,
+      marketCapEok,   // 시총 티어 판정 근거 (억원)
+      tier,           // 1 = 5조↑/5천억, 2 = 10조↑/3천억
       types: ["S2"],
       updatedAt: Date.now(),
     });
@@ -12548,6 +12584,7 @@ export const sScreenerCheck = functions
             level,
             types: stk.types,
             marketCapEok: stk.marketCapEok || null,
+            tier: stk.tier ?? null,
             bigVolDay: stk.bigVolDay || null,
             bigVolTradeValueEok: stk.bigVolTradeValueEok || null,
             checkedAt: now,
@@ -12609,8 +12646,8 @@ export const sScreenerCheck = functions
           `현재가: ${cur.toLocaleString()}원${isNxt ? " 🌙<i>NXT</i>" : ""}`,
           `EN하단선(실시간): ${band.toLocaleString()}원`,
           `근접도: ${gapText}`,
-          stk.marketCapEok ? `시총: ${stk.marketCapEok.toLocaleString()}억원` : "",
-          stk.bigVolDay ? `5천억양봉일: ${stk.bigVolDay} (${stk.bigVolTradeValueEok?.toLocaleString() || "?"}억)` : "",
+          stk.marketCapEok ? `시총: ${stk.marketCapEok.toLocaleString()}억원${stk.tier === 2 ? " · 10조↑티어" : stk.tier === 1 ? " · 5조↑티어" : ""}` : "",
+          stk.bigVolDay ? `대량양봉일: ${stk.bigVolDay} (${stk.bigVolTradeValueEok?.toLocaleString() || "?"}억)` : "",
         ].filter(Boolean).join("\n");
 
         await sendTelegramSScreener(msg);
@@ -12737,7 +12774,7 @@ export const sScreenerCheckNow = functions
             code: stk.code, name: info.name || stk.name,
             currentPrice: info.currentPrice, lowerBand: band, lowerBandDaily: stk.lowerBand, ma20: stk.ma20,
             gap: parseFloat(gap.toFixed(2)), level, types: stk.types,
-            marketCapEok: stk.marketCapEok || null, bigVolDay: stk.bigVolDay || null,
+            marketCapEok: stk.marketCapEok || null, tier: stk.tier ?? null, bigVolDay: stk.bigVolDay || null,
             checkedAt: now,
           });
           // 오늘 알림 이력 기록
