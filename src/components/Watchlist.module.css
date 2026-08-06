@@ -38,6 +38,122 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 조건 필터 토글 버튼 */
+.filterToggle {
+  flex-shrink: 0;
+  border: 1px solid #c5cae9;
+  background: #fff;
+  color: #3949ab;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.filterToggle:hover {
+  background: #eef1fb;
+}
+
+.filterToggleOn {
+  background: #3949ab;
+  color: #fff;
+  border-color: #3949ab;
+}
+
+/* 조건 필터 바 */
+.filterBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 12px;
+  background: #f7f8fd;
+  border: 1.5px solid #c5cae9;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.filterLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  white-space: nowrap;
+}
+
+.filterNum {
+  width: 60px;
+  border: 1px solid #cfd8dc;
+  border-radius: 5px;
+  padding: 4px 6px;
+  font-size: 12px;
+  outline: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.filterNum:focus {
+  border-color: #3949ab;
+}
+
+.filterTilde {
+  color: #999;
+  font-size: 12px;
+}
+
+.filterUnit {
+  font-size: 12px;
+  color: #777;
+}
+
+.filterCheck {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #c62828;
+  cursor: pointer;
+  user-select: none;
+}
+
+.filterCheck input {
+  cursor: pointer;
+}
+
+.filterResultCount {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1565c0;
+  background: #e8f0fe;
+  padding: 3px 9px;
+  border-radius: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.filterReset {
+  border: 1px solid #ef9a9a;
+  background: #fff;
+  color: #c62828;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.filterReset:hover {
+  background: #fdecea;
+}
+
 .searchClear {
   width: 22px;
   height: 22px;

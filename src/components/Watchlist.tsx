@@ -49,6 +49,21 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
   // 관심종목 리스트 내 검색 (실시간 필터)
   const [filterQuery, setFilterQuery] = useState('');
 
+  // 조건 필터 (시총/하락률/현재가/진행률/양봉)
+  const [fMcapMin, setFMcapMin] = useState('');   // 시총 이상 (억)
+  const [fMcapMax, setFMcapMax] = useState('');   // 시총 이하 (억)
+  const [fDropMin, setFDropMin] = useState('');   // 하락률 이상 (%, 절대값)
+  const [fPriceMin, setFPriceMin] = useState(''); // 현재가 이상 (원)
+  const [fProgMin, setFProgMin] = useState('');   // 진행률 이상 (%)
+  const [fYangOnly, setFYangOnly] = useState(false); // 양봉만
+  const [showFilter, setShowFilter] = useState(false);
+
+  const resetFilters = () => {
+    setFMcapMin(''); setFMcapMax(''); setFDropMin('');
+    setFPriceMin(''); setFProgMin(''); setFYangOnly(false);
+  };
+  const filterActive = !!(fMcapMin || fMcapMax || fDropMin || fPriceMin || fProgMin || fYangOnly);
+
   // 정적 종목 리스트 로드 (한 번만)
   const stockListRef = useRef<[string, string, string][]>([]);
   const [stockListLoaded, setStockListLoaded] = useState(false);
@@ -178,15 +193,42 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
     setTimeout(() => setRefreshMsg(''), 4000);
   };
 
-  // 검색 필터 적용
+  // 검색 필터 적용 (텍스트 + 조건)
   const filterQ = filterQuery.trim().toLowerCase();
-  const filteredItems = filterQ
-    ? items.filter((it) => {
-        const nameMatch = it.name.toLowerCase().includes(filterQ);
-        const codeMatch = (it.code || '').toLowerCase().includes(filterQ);
-        return nameMatch || codeMatch;
-      })
-    : items;
+  const mcapMin = parseFloat(fMcapMin) || 0;
+  const mcapMax = parseFloat(fMcapMax) || 0;
+  const dropMin = parseFloat(fDropMin) || 0;   // 절대값 기준 (5 → -5% 이하)
+  const priceMin = parseFloat(fPriceMin) || 0;
+  const progMin = parseFloat(fProgMin) || 0;
+  const filteredItems = items.filter((it) => {
+    // 1) 텍스트 (종목명/코드)
+    if (filterQ) {
+      const nameMatch = it.name.toLowerCase().includes(filterQ);
+      const codeMatch = (it.code || '').toLowerCase().includes(filterQ);
+      if (!nameMatch && !codeMatch) return false;
+    }
+    // 2) 시총 범위 (억)
+    const mcap = Number(it.marketCapEok) || 0;
+    if (mcapMin > 0 && mcap < mcapMin) return false;
+    if (mcapMax > 0 && (mcap === 0 || mcap > mcapMax)) return false;
+    // 3) 하락률 이상 (최고점 대비 -X% 이하)
+    if (dropMin > 0) {
+      const drop = getDropPercent(it); // 음수
+      if (drop > -dropMin) return false;
+    }
+    // 4) 현재가 이상
+    if (priceMin > 0 && (Number(it.currentPrice) || 0) < priceMin) return false;
+    // 5) 진행률 이상 (목표 -50%까지 근접도)
+    if (progMin > 0) {
+      const drop = getDropPercent(it);
+      const prog = it.peakPrice > 0 && it.targetPercent
+        ? Math.min(100, Math.abs(drop) / Math.abs(it.targetPercent) * 100) : 0;
+      if (prog < progMin) return false;
+    }
+    // 6) 양봉만 (현재가 > 시가)
+    if (fYangOnly && !(it.openPrice > 0 && it.currentPrice > it.openPrice)) return false;
+    return true;
+  });
 
   // 그룹별 분류 + 하락률 기준 정렬
   const grouped: Record<GroupKey, WatchItem[]> = { ready: [], approaching: [], watching: [] };
@@ -201,8 +243,8 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
     grouped[key].sort((a, b) => getDropPercent(a) - getDropPercent(b));
   }
 
-  // 검색 중에는 매칭된 그룹 모두 자동 펼침
-  const effectiveCollapsed = filterQ ? {} : collapsed;
+  // 검색/필터 중에는 매칭된 그룹 모두 자동 펼침
+  const effectiveCollapsed = (filterQ || filterActive) ? {} : collapsed;
 
   const groupConfig: { key: GroupKey; label: string; icon: string; color: string }[] = [
     { key: 'ready', label: '매수준비', icon: '!', color: '#c62828' },
@@ -261,6 +303,54 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
                 ✕
               </button>
             </>
+          )}
+          <button
+            className={`${styles.filterToggle} ${filterActive ? styles.filterToggleOn : ''}`}
+            onClick={() => setShowFilter((v) => !v)}
+            title="조건 필터 (시총/하락률/현재가/진행률/양봉)"
+          >
+            🔎 필터{filterActive ? ' ●' : ''}
+          </button>
+        </div>
+      )}
+
+      {/* 조건 필터 바 */}
+      {items.length > 0 && showFilter && (
+        <div className={styles.filterBar}>
+          <div className={styles.filterRow}>
+            <label className={styles.filterLabel}>시총</label>
+            <input className={styles.filterNum} type="number" inputMode="numeric"
+              placeholder="이상" value={fMcapMin} onChange={(e) => setFMcapMin(e.target.value)} />
+            <span className={styles.filterTilde}>~</span>
+            <input className={styles.filterNum} type="number" inputMode="numeric"
+              placeholder="이하" value={fMcapMax} onChange={(e) => setFMcapMax(e.target.value)} />
+            <span className={styles.filterUnit}>억</span>
+          </div>
+          <div className={styles.filterRow}>
+            <label className={styles.filterLabel}>하락률 ≥</label>
+            <input className={styles.filterNum} type="number" inputMode="numeric"
+              placeholder="예: 40" value={fDropMin} onChange={(e) => setFDropMin(e.target.value)} />
+            <span className={styles.filterUnit}>%</span>
+          </div>
+          <div className={styles.filterRow}>
+            <label className={styles.filterLabel}>현재가 ≥</label>
+            <input className={styles.filterNum} style={{ width: 80 }} type="number" inputMode="numeric"
+              placeholder="원" value={fPriceMin} onChange={(e) => setFPriceMin(e.target.value)} />
+            <span className={styles.filterUnit}>원</span>
+          </div>
+          <div className={styles.filterRow}>
+            <label className={styles.filterLabel}>진행률 ≥</label>
+            <input className={styles.filterNum} type="number" inputMode="numeric"
+              placeholder="예: 80" value={fProgMin} onChange={(e) => setFProgMin(e.target.value)} />
+            <span className={styles.filterUnit}>%</span>
+          </div>
+          <label className={styles.filterCheck}>
+            <input type="checkbox" checked={fYangOnly} onChange={(e) => setFYangOnly(e.target.checked)} />
+            <span>🔴 양봉만</span>
+          </label>
+          <span className={styles.filterResultCount}>{filteredItems.length}/{items.length}</span>
+          {filterActive && (
+            <button className={styles.filterReset} onClick={resetFilters}>필터 초기화</button>
           )}
         </div>
       )}
@@ -355,8 +445,13 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
         </div>
       ) : filteredItems.length === 0 ? (
         <div className={styles.empty}>
-          "<strong>{filterQuery}</strong>"에 일치하는 등록 종목이 없습니다.<br />
-          <span style={{ fontSize: 13, color: '#aaa' }}>종목명 또는 코드를 확인해주세요.</span>
+          {filterQuery && <>"<strong>{filterQuery}</strong>" </>}조건에 맞는 종목이 없습니다.<br />
+          <span style={{ fontSize: 13, color: '#aaa' }}>검색어 또는 필터 조건을 조정해주세요.</span>
+          {filterActive && (
+            <div style={{ marginTop: 10 }}>
+              <button className={styles.filterReset} onClick={resetFilters}>필터 초기화</button>
+            </div>
+          )}
         </div>
       ) : (
         <div className={styles.groups}>
