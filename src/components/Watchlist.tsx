@@ -69,13 +69,27 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
   const [stockListLoaded, setStockListLoaded] = useState(false);
 
   useEffect(() => {
-    fetch('/stock_codes.json')
-      .then((r) => r.json())
-      .then((data: [string, string, string][]) => {
-        stockListRef.current = data;
-        setStockListLoaded(true);
-      })
-      .catch(() => {});
+    // 라이브 마스터(stockCodesList) 우선 — 사명변경·신규상장 즉시 반영(HT로보틱스 등).
+    //   실패 시 빌드에 포함된 정적 파일로 폴백.
+    const load = async () => {
+      try {
+        const res = await fetch('https://asia-northeast3-teasan-f4c17.cloudfunctions.net/stockCodesList');
+        const data = (await res.json()) as [string, string, string][];
+        if (Array.isArray(data) && data.length > 0) {
+          stockListRef.current = data;
+          setStockListLoaded(true);
+          return;
+        }
+        throw new Error('empty');
+      } catch {
+        try {
+          const r2 = await fetch('/stock_codes.json');
+          stockListRef.current = (await r2.json()) as [string, string, string][];
+          setStockListLoaded(true);
+        } catch { /* 최종 실패: 검색 비활성 */ }
+      }
+    };
+    load();
   }, []);
 
   // 종목명 입력 시 로컬 검색

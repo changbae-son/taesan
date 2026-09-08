@@ -4729,6 +4729,50 @@ export const stockListUpdate = functions
     });
   });
 
+// 종목 마스터 자동 갱신 (매주 월요일 08:00 KST) — 사명변경·신규상장 반영
+export const stockListRefreshCron = functions
+  .region("asia-northeast3")
+  .runWith({vpcConnector: "kiwoom-connector", vpcConnectorEgressSettings: "ALL_TRAFFIC", timeoutSeconds: 120, memory: "512MB"})
+  .pubsub.schedule("0 8 * * 1")
+  .timeZone("Asia/Seoul")
+  .onRun(async () => {
+    try {
+      const config = await getKiwoomConfig();
+      const token = await getAccessToken(config);
+      let totalCount = 0;
+      for (const marketCode of ["0", "10"]) {
+        const apiRes = await fetch(`${config.baseUrl}/api/dostk/stkinfo`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json; charset=utf-8", "authorization": `Bearer ${token}`, "api-id": "ka10099"},
+          body: JSON.stringify({mrkt_tp: marketCode}),
+        });
+        const data = await apiRes.json() as any;
+        const items: any[] = Array.isArray(data.list) ? data.list : [];
+        const marketName = marketCode === "0" ? "KOSPI" : "KOSDAQ";
+        for (let i = 0; i < items.length; i += 400) {
+          const batch = db.batch();
+          for (const item of items.slice(i, i + 400)) {
+            const code = item.code || item.stk_cd || "";
+            const name = item.name || item.stk_nm || "";
+            if (code && /^\d{6}$/.test(code) && name) {
+              batch.set(db.collection("stockCodes").doc(`stock_${code}`), {
+                name: name.trim(), code, market: marketName,
+                state: item.state || "", upSizeName: item.upSizeName || "", kind: item.kind || "",
+              });
+              totalCount++;
+            }
+          }
+          await batch.commit();
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      await db.collection("settings").doc("stockListCache").set({updatedAt: Date.now(), count: totalCount});
+      console.log(`[종목리스트 cron] ${totalCount}개 갱신 완료`);
+    } catch (e: any) {
+      console.error(`[종목리스트 cron] 실패: ${e.message}`);
+    }
+  });
+
 /**
  * 종목코드 검색 (Firestore 캐시에서 검색)
  * GET /stockSearch?q=삼성
@@ -4778,6 +4822,35 @@ export const stockSearch = functions
       } catch (error: any) {
         console.error("종목검색 오류:", error.message);
         res.json({results: []});
+      }
+    });
+  });
+
+/**
+ * 전체 종목 리스트 (프론트 관심종목 검색용) — [[name, code, market], ...]
+ * GET /stockCodesList
+ *   stockCodes 컬렉션(ka10099 마스터)을 정적 stock_codes.json과 같은 형식으로 반환.
+ *   프론트가 정적 파일 대신 이걸 로드하면 사명변경·신규상장이 stockListUpdate 갱신
+ *   즉시 반영됨(HT로보틱스=396300 사례). 실패 시 프론트는 정적 파일로 폴백.
+ */
+export const stockCodesList = functions
+  .region("asia-northeast3")
+  .runWith({timeoutSeconds: 30, memory: "256MB"})
+  .https.onRequest((req, res) => {
+    corsHandler(req, res, async () => {
+      try {
+        const snapshot = await db.collection("stockCodes").get();
+        const list: [string, string, string][] = [];
+        snapshot.forEach((doc) => {
+          const d = doc.data();
+          if (d.name && d.code) list.push([d.name, d.code, d.market || ""]);
+        });
+        list.sort((a, b) => a[0].localeCompare(b[0], "ko"));
+        res.set("Cache-Control", "public, max-age=3600"); // 1시간 브라우저 캐시
+        res.json(list);
+      } catch (error: any) {
+        console.error("종목리스트 오류:", error.message);
+        res.status(500).json([]);
       }
     });
   });
