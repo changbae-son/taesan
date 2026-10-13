@@ -3812,6 +3812,12 @@ async function updateWatchlistPrices(config: KiwoomConfig, token: string, enable
               updateData.marketCapEok = mac;
               updateData.marketCapAt = Date.now();
             }
+            // 사명변경 반영: 키움이 돌려주는 현재 종목명이 저장된 이름과 다르면 갱신
+            //   (예: 탑코미디어→엔키AX). code 기준 추적이라 가격/신호엔 영향 없음.
+            const liveName = typeof info.stk_nm === "string" ? info.stk_nm.trim() : "";
+            if (liveName && liveName !== item.name) {
+              updateData.name = liveName;
+            }
           } catch (e) { /* 시총 조회 실패 무시 */ }
 
           await db.collection("watchlist").doc(item.id).update(updateData);
