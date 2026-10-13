@@ -73,7 +73,7 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
     //   실패 시 빌드에 포함된 정적 파일로 폴백.
     const load = async () => {
       try {
-        const res = await fetch('https://asia-northeast3-teasan-f4c17.cloudfunctions.net/stockCodesList');
+        const res = await fetch('https://asia-northeast3-teasan-f4c17.cloudfunctions.net/stockCodesList', { cache: 'no-store' });
         const data = (await res.json()) as [string, string, string][];
         if (Array.isArray(data) && data.length > 0) {
           stockListRef.current = data;

@@ -4852,7 +4852,7 @@ export const stockCodesList = functions
           if (d.name && d.code) list.push([d.name, d.code, d.market || ""]);
         });
         list.sort((a, b) => a[0].localeCompare(b[0], "ko"));
-        res.set("Cache-Control", "public, max-age=3600"); // 1시간 브라우저 캐시
+        res.set("Cache-Control", "public, max-age=300"); // 5분 브라우저 캐시 (프론트는 no-store로 매번 우회)
         res.json(list);
       } catch (error: any) {
         console.error("종목리스트 오류:", error.message);
