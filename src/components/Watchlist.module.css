@@ -482,12 +482,49 @@
   color: #333;
   display: block;
   line-height: 1.2;
+  cursor: pointer;
+  position: relative;
+}
+
+.tName:hover {
+  color: #1565c0;
+  text-decoration: underline;
+  text-decoration-style: dotted;
 }
 
 .tCode {
   font-size: 10px;
   color: #aaa;
   font-family: monospace;
+  cursor: pointer;
+  position: relative;
+  display: inline-block;
+}
+
+.tCode:hover {
+  color: #1565c0;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+
+.copiedTag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  vertical-align: 1px;
+  animation: copiedFade 1.2s ease forwards;
+}
+
+@keyframes copiedFade {
+  0% { opacity: 0; transform: translateY(-2px); }
+  15% { opacity: 1; transform: translateY(0); }
+  75% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 /* 시가총액 배지 (종목명 옆, B안) */

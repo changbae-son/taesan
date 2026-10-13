@@ -185,6 +185,29 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
     setEditingPeakId(null);
   };
 
+  // 종목명/종목코드 클릭 복사
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleCopy = async (text: string, key: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch { /* 복사 실패 무시 */ }
+      document.body.removeChild(ta);
+    }
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    setCopiedKey(key);
+    copiedTimerRef.current = setTimeout(() => setCopiedKey(null), 1200);
+  };
+
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState('');
 
@@ -530,8 +553,13 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
                         return (
                           <tr key={item.id} className={rowClass}>
                             <td className={styles.tdName}>
-                              <span className={styles.tName}>
+                              <span
+                                className={styles.tName}
+                                onClick={(e) => handleCopy(item.name, `${item.id}-name`, e)}
+                                title="클릭하여 종목명 복사"
+                              >
                                 {item.name}
+                                {copiedKey === `${item.id}-name` && <span className={styles.copiedTag}>복사됨</span>}
                                 {formatMarketCap(item.marketCapEok) && (
                                   <span
                                     className={styles.mcBadge}
@@ -543,7 +571,16 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
                                   </span>
                                 )}
                               </span>
-                              {item.code && <span className={styles.tCode}>{item.code}</span>}
+                              {item.code && (
+                                <span
+                                  className={styles.tCode}
+                                  onClick={(e) => handleCopy(item.code, `${item.id}-code`, e)}
+                                  title="클릭하여 종목코드 복사"
+                                >
+                                  {item.code}
+                                  {copiedKey === `${item.id}-code` && <span className={styles.copiedTag}>복사됨</span>}
+                                </span>
+                              )}
                             </td>
                             <td className={styles.tdCandle}>
                               {item.currentPrice > 0 && item.openPrice > 0 && (
