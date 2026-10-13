@@ -73,7 +73,9 @@ export default function Watchlist({ items, onAdd, onRemove, onUpdatePeakPrice }:
     //   실패 시 빌드에 포함된 정적 파일로 폴백.
     const load = async () => {
       try {
-        const res = await fetch('https://asia-northeast3-teasan-f4c17.cloudfunctions.net/stockCodesList', { cache: 'no-store' });
+        // URL 자체에 캐시버스터를 붙여 구글 프런트엔드/CDN 엣지 캐시까지 우회
+        //   (cache:'no-store'는 브라우저 캐시만 막고, 동일 URL의 엣지 캐시는 못 막음)
+        const res = await fetch(`https://asia-northeast3-teasan-f4c17.cloudfunctions.net/stockCodesList?t=${Date.now()}`, { cache: 'no-store' });
         const data = (await res.json()) as [string, string, string][];
         if (Array.isArray(data) && data.length > 0) {
           stockListRef.current = data;
