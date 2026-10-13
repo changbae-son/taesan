@@ -11711,7 +11711,7 @@ function isExcludedSecurity(name: string, kind?: string): boolean {
     "ACE ", "ACE_", "PLUS ", "PLUS_", "SOL ", "SOL_",
     "KBSTAR", "TIMEFOLIO", "1Q ", "HK ", "KIWOOM",
     "TREX", "WON ", "WOORI", "DAISHIN", "히어로즈",
-    "KCGI", "BNK", "FOCUS", "VITA",
+    "KCGI", "BNK", "FOCUS", "VITA", "RISE", "마이티",
   ];
   for (const p of etfPrefixes) {
     if (upper.startsWith(p.toUpperCase())) return true;
@@ -11723,6 +11723,11 @@ function isExcludedSecurity(name: string, kind?: string): boolean {
   // 4) 스팩 (SPAC)
   if (name.includes("스팩") || upper.includes("SPAC")) return true;
   if (name.includes("기업인수목적")) return true;
+
+  // 5) 액티브 ETF — 신생 운용사(에셋플러스/파워/DS/IBK/KoAct 등) prefix가
+  //   계속 늘어나 전부 나열 불가. "액티브"는 실제 상장사명에 쓰이지 않는
+  //   펀드 전용 표현이라 키워드 하나로 커버.
+  if (name.includes("액티브")) return true;
 
   return false;
 }
