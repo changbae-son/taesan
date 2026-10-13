@@ -4663,7 +4663,7 @@ export const stockListUpdate = functions
               for (const item of items.slice(i, i + 400)) {
                 const code = item.code || item.stk_cd || "";
                 const name = item.name || item.stk_nm || "";
-                if (code && /^\d{6}$/.test(code) && name) {
+                if (code && /^[0-9A-Z]{6}$/i.test(code) && name) {
                   // kind="A"는 일반종목, 다른 값은 ETF/ETN 등 (S/S2 필터에서 활용)
                   // state에 "투자유의" 등 포함되어도 일단 저장 (필터링은 별도)
                   batch.set(db.collection("stockCodes").doc(`stock_${code}`), {
@@ -4702,7 +4702,7 @@ export const stockListUpdate = functions
                 if (cells.length >= 2) {
                   const name = (cells[0] || "").replace(/<[^>]*>/g, "").trim();
                   const code = (cells[1] || "").replace(/<[^>]*>/g, "").trim();
-                  if (name && /^\d{6}$/.test(code)) {
+                  if (name && /^[0-9A-Z]{6}$/i.test(code)) {
                     await db.collection("stockCodes").doc(`stock_${code}`).set({
                       name, code, market: market.name,
                     });
@@ -4754,7 +4754,7 @@ export const stockListRefreshCron = functions
           for (const item of items.slice(i, i + 400)) {
             const code = item.code || item.stk_cd || "";
             const name = item.name || item.stk_nm || "";
-            if (code && /^\d{6}$/.test(code) && name) {
+            if (code && /^[0-9A-Z]{6}$/i.test(code) && name) {
               batch.set(db.collection("stockCodes").doc(`stock_${code}`), {
                 name: name.trim(), code, market: marketName,
                 state: item.state || "", upSizeName: item.upSizeName || "", kind: item.kind || "",
