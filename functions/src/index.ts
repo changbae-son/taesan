@@ -4838,6 +4838,9 @@ export const stockSearch = functions
  *   stockCodes 컬렉션(ka10099 마스터)을 정적 stock_codes.json과 같은 형식으로 반환.
  *   프론트가 정적 파일 대신 이걸 로드하면 사명변경·신규상장이 stockListUpdate 갱신
  *   즉시 반영됨(HT로보틱스=396300 사례). 실패 시 프론트는 정적 파일로 폴백.
+ *   ETF/ETN/스팩은 관심종목 분할매매 대상이 아니므로 검색 결과에서 제외
+ *   (isExcludedSecurity — S/S2 스크리너와 동일 기준). stockCodes 컬렉션
+ *   자체는 다른 기능(종목코드→이름 조회 등)에서 쓰므로 원본은 그대로 둠.
  */
 export const stockCodesList = functions
   .region("asia-northeast3")
@@ -4849,7 +4852,9 @@ export const stockCodesList = functions
         const list: [string, string, string][] = [];
         snapshot.forEach((doc) => {
           const d = doc.data();
-          if (d.name && d.code) list.push([d.name, d.code, d.market || ""]);
+          if (d.name && d.code && !isExcludedSecurity(d.name, d.kind)) {
+            list.push([d.name, d.code, d.market || ""]);
+          }
         });
         list.sort((a, b) => a[0].localeCompare(b[0], "ko"));
         res.set("Cache-Control", "public, max-age=300"); // 5분 브라우저 캐시 (프론트는 no-store로 매번 우회)
