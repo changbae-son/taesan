@@ -65,13 +65,21 @@ async function getKiwoomConfig(): Promise<KiwoomConfig> {
 }
 
 // ─── 키움 토큰 발급 ───
-async function getAccessToken(config: KiwoomConfig): Promise<string> {
-  // 캐시된 토큰 확인
-  const tokenDoc = await db.collection("settings").doc("kiwoom_token").get();
-  const tokenData = tokenDoc.data();
+// 키움 응답이 "토큰 무효(8005)" 인지 감지 — 같은 appkey로 다른 곳에서 토큰 재발급 시
+//   기존 토큰이 23시간 캐시 만료 전이라도 무효화됨([8005:Token이 유효하지 않습니다]).
+function isKiwoomTokenInvalid(data: any): boolean {
+  const msg = String(data?.return_msg ?? "");
+  return msg.includes("8005") || msg.includes("Token이 유효하지 않") || msg.includes("인증에 실패");
+}
 
-  if (tokenData && tokenData.expiresAt > Date.now()) {
-    return tokenData.accessToken;
+async function getAccessToken(config: KiwoomConfig, forceNew = false): Promise<string> {
+  // 캐시된 토큰 확인 (forceNew=true면 캐시 무시하고 강제 재발급)
+  if (!forceNew) {
+    const tokenDoc = await db.collection("settings").doc("kiwoom_token").get();
+    const tokenData = tokenDoc.data();
+    if (tokenData && tokenData.expiresAt > Date.now()) {
+      return tokenData.accessToken;
+    }
   }
 
   // 새 토큰 발급
@@ -289,19 +297,28 @@ async function fetchHoldings(
   config: KiwoomConfig,
   token: string
 ): Promise<any[]> {
-  const res = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "authorization": `Bearer ${token}`,
-      "api-id": "kt00005",
-    },
-    body: JSON.stringify({
-      dmst_stex_tp: "KRX",
-    }),
-  });
+  const callBalance = async (tok: string) => {
+    const res = await fetch(`${config.baseUrl}/api/dostk/acnt`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": `Bearer ${tok}`,
+        "api-id": "kt00005",
+      },
+      body: JSON.stringify({dmst_stex_tp: "KRX"}),
+    });
+    return await res.json() as any;
+  };
 
-  const data = await res.json() as any;
+  let data = await callBalance(token);
+
+  // 토큰 무효(8005) 자가복구: 강제 재발급(캐시 갱신) 후 1회 재시도.
+  //   같은 appkey로 외부(영웅문 등)에서 토큰 재발급 시 기존 토큰이 캐시 만료 전 무효화됨.
+  if (isKiwoomTokenInvalid(data)) {
+    console.warn("[잔고조회] 토큰 무효(8005) 감지 → 강제 재발급 후 재시도");
+    const fresh = await getAccessToken(config, true);
+    data = await callBalance(fresh);
+  }
 
   // 에러 체크
   if (data.return_code && data.return_code !== "0") {
@@ -3648,25 +3665,37 @@ async function fetchOpenPrices(
   stockCodes: string[]
 ): Promise<Record<string, number>> {
   const openPrices: Record<string, number> = {};
+  let tok = token; // 8005 자가복구 시 갱신된 토큰으로 교체
+  let refreshed = false;
 
   for (const code of stockCodes) {
     try {
       // ka10081 (주식일봉차트조회) - 시가 포함
-      const res = await fetch(`${config.baseUrl}/api/dostk/chart`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "authorization": `Bearer ${token}`,
-          "api-id": "ka10081",
-        },
-        body: JSON.stringify({
-          stk_cd: code,
-          base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
-          upd_stkpc_tp: "0",
-          qry_tp: "0",
-        }),
-      });
-      const data = await res.json() as any;
+      const callChart = async (t: string) => {
+        const res = await fetch(`${config.baseUrl}/api/dostk/chart`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "authorization": `Bearer ${t}`,
+            "api-id": "ka10081",
+          },
+          body: JSON.stringify({
+            stk_cd: code,
+            base_dt: new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+            upd_stkpc_tp: "0",
+            qry_tp: "0",
+          }),
+        });
+        return await res.json() as any;
+      };
+      let data = await callChart(tok);
+      // 토큰 무효(8005) 자가복구: 1회만 강제 재발급 후 재시도, 이후 코드들은 갱신 토큰 사용
+      if (isKiwoomTokenInvalid(data) && !refreshed) {
+        console.warn("[시가조회] 토큰 무효(8005) 감지 → 강제 재발급 후 재시도");
+        tok = await getAccessToken(config, true);
+        refreshed = true;
+        data = await callChart(tok);
+      }
       console.log(`[시가조회] ${code}: keys=${Object.keys(data).join(",")}`);
 
       // 응답 구조 분석
